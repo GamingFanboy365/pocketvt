@@ -2,13 +2,16 @@
 
 PocketVT is a highly optimized, low-level System-on-a-Chip (SoC) translation layer designed to run unreleased budget famiclone and commercial VT03/VT09 hardware software natively on the Game Boy Advance (ARM7TDMI). It has been made with the assistance of AI over the course of 2 months.
 
+Made especially for Kelvin Donna, a permabanned user on bootleg.games who just needed to wait for AI to become advanced enough to fulfill his dream of playing VT03 games on the GBA. :P
+
+## Details
 By decoupling the architecture from platform-locked Win32 desktop frameworks and squeezing the guest system execution loop directly into the strict real-time memory boundaries of a 16.78 MHz handheld processor, PocketVT establishes a definitive baseline for physical hardware constraints and low-level preservation performance.
 
 * Verified Core: Core 6502 processing, opcode fetches, and unaligned memory mappings are 100% physically stable.
 * Overworld Fixed: Sprite tile configurations and background nametables render with zero artifacts or left-path boundary distortions.
 * Audio Active: Music engine and system-level audio pacing are dynamically tracking real-time frame updates.
 
-* **Please note:** Only Lonely Island.nes has been tested to work fully. Other games still need to be tested!
+* **Please note:** Only Lonely Island.nes has been tested to work fully with the above. Other games still need to be tested and fixed for compatibility!
 
 ## Compile
 
