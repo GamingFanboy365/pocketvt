@@ -27,7 +27,7 @@ PocketVT is a preservation project built upon decades of collective community re
 
 * MAME (The MAME Team): Acknowledgment to the MAME development community for their relentless dedication to legacy hardware documentation and structural chipset preservation, including VT03.
 
-* NESdev community: The factual anchor of this entire project. Without the collective research, hardware register diagrams, and documentation hosted by the NESdev Wiki community, mapping out this territory would have been completely impossible.
+* NESdev community: The factual anchor of this entire project. Without the collective research, hardware register diagrams, and documentation hosted by the NESdev Wiki community, mapping out this territory would have been much harder.
 
 * Claude Opus 4.8 and Fable 5 for allowing this all to be reverse-engineered.
 
