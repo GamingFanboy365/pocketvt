@@ -23,7 +23,7 @@ PocketVT is a preservation project built upon decades of collective community re
 
 * PocketNES (Loopy, Flubba, Dwedit): The spiritual blueprint and foundational technical inspiration for performance-driven NES emulation layout on the Game Boy Advance. PocketVT utilizes legacy memory-squeezing paradigms pioneered by the PocketNES development team to manipulate the ARM7TDMI memory footprint cleanly.
 
-* Nintendulator-NRS (NewRisingSun): Universal gratitude is extended to NewRisingSun for their invaluable, industry-standard Windows implementation of the VT03 architecture. Their deep, surgical reverse-engineering documentation of niche famiclone hardware registers, mapper xml specifications, and scrambled opcode tables served as the definitive behavioral truth for verifying our state machine logic.
+* Nintendulator-NRS (NewRisingSun): Credit is extended to NewRisingSun for their invaluable, industry-standard Windows implementation of the VT03 architecture. Their deep, surgical reverse-engineering documentation of niche famiclone hardware registers, mapper xml specifications, and scrambled opcode tables served as the definitive behavioral truth for verifying our state machine logic.
 
 * MAME (The MAME Team): Acknowledgment to the MAME development community for their relentless dedication to legacy hardware documentation and structural chipset preservation, including VT03.
 
@@ -32,6 +32,10 @@ PocketVT is a preservation project built upon decades of collective community re
 * Claude Opus 4.8 and Fable 5 for allowing this all to be reverse-engineered.
 
 * Gemini for helping generate the documentation.
+
+## Also
+
+To the elitist emulation gatekeepers who can't accept the new reality that AI empowers everyday folks like me to do something I couldn't have done on my own: pack up and get out.
 
 ## See also
 
