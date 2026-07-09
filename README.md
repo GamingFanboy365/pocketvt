@@ -8,7 +8,7 @@ By decoupling the architecture from platform-locked Win32 desktop frameworks and
 * Overworld Fixed: Sprite tile configurations and background nametables render with zero artifacts or left-path boundary distortions.
 * Audio Active: Music engine and system-level audio pacing are dynamically tracking real-time frame updates.
 
-* **Please note:** Only Lonely Island.nes has been tested to work fully. Other games still need to be added!
+* **Please note:** Only Lonely Island.nes has been tested to work fully. Other games still need to be tested!
 
 ## Compile
 
