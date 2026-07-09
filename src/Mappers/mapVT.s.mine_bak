@@ -1,0 +1,279 @@
+@ mapVT.s -- VT03 / VT09 OneBus mapper for PocketVT
+@
+@ The VT-series chips (VT03 / VT09 / VT32 / VT369) are "NES-on-a-chip"
+@ designs that integrate PRG ROM, CHR ROM, RAM, and all peripherals onto
+@ a single die.  From a software perspective the bankswitching is driven
+@ by the extended $4100-$41FF register block (handled in vt_regs.c) rather
+@ than by writes to cartridge address lines.
+@
+@ OneBus PRG layout (per Furbtendulator/src-mappers/h_OneBus.cpp):
+@   $8000-$9FFF  = bank PQ0 (= $4107)
+@   $A000-$BFFF  = bank PQ1 (= $4108)
+@   $C000-$DFFF  = bank PQ2 (= $4109) IF PQ2EN ($410B bit 6), ELSE 0xFE
+@   $E000-$FFFF  = bank 0xFF (FIXED last)
+@ The high bank-bits OR'd from PQ3 ($410A) and PA21 ($4100>>4) are ignored
+@ here -- our test ROMs (64-256 KB) fit in a 6-bit bank space and never
+@ touch them.  Extend prg_bank_compose if you hit a larger ROM.
+@
+@ This mapper file provides the GBA-side glue:
+@   mapVTinit     -- called by loadcart_asm to initialise the VT mapper
+@   write_vt4xxx  -- writemem_4 hook: dispatches APU vs VT-register vs
+@                    bank-switch writes inline in asm (so we don't have
+@                    to call map89_ etc. from C, which would force us to
+@                    add -ffixed-r10 to the entire build).
+@
+@ Implementation notes
+@ --------------------
+@ 1. RESET VECTOR ANCHOR
+@    Reset vectors for all known VT mapper-256 ROMs sit in the topmost
+@    16KB.  We set up $C000-$FFFF as banks 0xFE/0xFF (last 16KB) and
+@    $8000-$BFFF as bank 0 to match real chip default after power-on.
+@
+@ 2. PPU $2008+ DIVERT GATE
+@    The PPU register divert at ppu.s only activates when vt_active != 0.
+@    Without that gate, every standard NES PPU mirror access would be
+@    redirected to the VT extension handler.  We set vt_active here and
+@    loadcart_asm clears it for non-VT cartridges (see cart.s).
+@
+@ 3. WRITEMEM_4 CALLING CONVENTION
+@    On entry to write_vt4xxx the NES bus address is in addy (r12), NOT
+@    in r1.  r1 holds the negated bank index from writememabs's dispatch.
+@    The first PocketVT cut got this wrong and dropped every $4xxx write
+@    (APU $4015, DMA $4014, controllers $4016/$4017) -- which is what
+@    caused the black screens before this version.
+
+#include "../equates.h"
+#include "../6502mac.h"
+
+    .global mapVTinit
+    .global write_vt4xxx
+
+@ Imported from vt_regs.c
+    .extern vt_reg_write
+    .extern vt_reg_read
+    .extern vt_reset
+    .extern vt_resync_prg_banks
+    .extern vt_mmc3_forward
+    .extern vt_active
+
+@ Imported from io.s / 6502.s / cart.s
+    .extern IO_W
+    .extern map89_
+    .extern mapAB_
+    .extern mapCD_
+    .extern mapEF_
+    .extern void
+
+@ ============================================================================
+@ mapVTinit
+@ Called by loadcart_asm when mapper_number == MAPPER_VT.
+@
+@ ** CALLING CONVENTION QUIRK **
+@ PocketNES's mapper-dispatch loop in cart.s does this BEFORE jumping to
+@ a mapperinit function:
+@
+@     ldr r0, [r1, #-4]            ; r0 = mappertbl2[index] = mapVTinit
+@     ldmia r0!, {r1-r4}           ; r1-r4 = first FOUR words at mapVTinit;
+@                                  ; r0 now advanced by 16 bytes
+@     str r1, writemem_8           ; writemem_8 := first  .word
+@     str r2, writemem_A           ; writemem_A := second .word
+@     str r3, writemem_C           ; writemem_C := third  .word
+@     str r4, writemem_E           ; writemem_E := fourth .word
+@     mov pc, r0                   ; jump to mapVTinit + 16  (PAST the header)
+@
+@ So **every** mapperinit must start with a 4-word table giving the
+@ writemem handlers for $8000-$9FFF / $A000-$BFFF / $C000-$DFFF /
+@ $E000-$FFFF.  PocketVT's first cut omitted this header, with the
+@ result that:
+@   (1) the first four ARM instructions of mapVTinit got installed as
+@       bogus writemem handlers, so any $8000+ write jumped into the
+@       middle of an instruction byte sequence
+@   (2) mapVTinit started executing 16 bytes in, skipping `stmfd sp!,{lr}`
+@       and the vt_active=1 store; the eventual `ldmfd sp!,{pc}` then
+@       popped garbage off the stack and returned to garbage land
+@
+@ THIS WAS THE PRIMARY REASON ALL VT ROMS BLACK-SCREENED in 0.3.0.
+@ The reset code in $E000-$FFFF (which is fixed-bank for OneBus) never
+@ even got a chance to execute -- loadcart_asm crashed before issuing
+@ the JMP to the reset vector.
+@
+@ VT cartridges don't write to $8000-$FFFF (the OneBus bus is bank-locked
+@ ROM in that range; bank-switch registers are at $4100+).  Every entry
+@ in the header is therefore `void` (the empty-function handler in
+@ memory.s).  Submapper-1 Waixing VT03 and a handful of others use the
+@ MMC3 protocol over $8000-$9FFF and would need a different first word,
+@ but none of the test ROMs do.
+@ ============================================================================
+mapVTinit:
+    .word   write_vt_rom, write_vt_rom, write_vt_rom, write_vt_rom
+    @
+    @ The four entries above are writemem_8 / writemem_A / writemem_C /
+    @ writemem_E -- they get installed by the cart.s dispatcher when it
+    @ jumps to this function.  Earlier PocketVT versions used `void` here,
+    @ which silently dropped every write to $8000-$FFFF.  Per the NESdev
+    @ wiki article "VT02+ MMC3 Compatibility Registers", real VT silicon
+    @ FORWARDS those writes to the corresponding VT-native registers by
+    @ default; dropping them caused every game's "STA $8000 / STA $8001"
+    @ bank-switch sequence to disappear, which is why the user saw an
+    @ infinite reset loop (cart crashes -> PocketNES crash handler
+    @ returns to menu -> menu auto-launches the same cart on single-ROM
+    @ multicarts).  See vt_mmc3_forward() in vt_regs.c for the exact
+    @ MMC3-to-VT translation table.
+    @
+    stmfd   sp!, {lr}
+
+    @ --- Mark this cartridge as a VT cartridge -----------------------
+    @ The PPU $2008+ extended-register divert in ppu.s is gated on
+    @ vt_active so non-VT mappers still behave as standard NES.
+    ldr     r0, =vt_active
+    mov     r1, #1
+    strb    r1, [r0]
+
+    @ --- Install VT extra opcode handlers BEFORE vt_reset ------------
+    @ Patches PHX/PLX/PHY/PLY/TAD/TDA/ADX/JMP-VT09 into op_table at
+    @ their canonical (decrypted) positions.  This MUST happen before
+    @ vt_reset() because vt_reset() calls vt_rebuild_optable(), which
+    @ takes a one-time snapshot of op_table[] on its first invocation
+    @ and uses that snapshot as the source for every subsequent
+    @ encryption-state rebuild.  If the VT extras weren't already
+    @ installed at snapshot time, encryption-mode permutations would
+    @ route encrypted bytes whose decryption is a VT extra (e.g.
+    @ 0x3A -> 0x5A=TAD under submapper 15) to the *stock* slot's
+    @ canonical handler (NOP/illegal) instead of the VT handler.
+    @ vt_patch_optable touches only op_table[], not VTState, so the
+    @ "VTState must be zeroed first" concern from earlier comments
+    @ was incorrect.
+#if VT_EXTRA_OPCODES
+    bl_long vt_patch_optable
+#endif
+
+    @ --- Initialise the VT C-side state block (zeros vt.reg[] etc) ---
+    @ Must come BEFORE vt_resync_prg_banks so the register shadow it
+    @ reads is in a defined state.  Also calls vt_rebuild_optable(),
+    @ which snapshots op_table NOW (with VT extras already in place)
+    @ and permutes it per current encryption state.
+    bl      vt_reset
+
+    @ --- Power-on PRG layout per MAME's update_banks() ---------------
+    @ With all $4100-$410B zero (the state vt_reset leaves us in):
+    @   $8000-$9FFF = phys bank get_phys_bank(0)    = 0
+    @   $A000-$BFFF = phys bank get_phys_bank(0)    = 0
+    @   $C000-$DFFF = phys bank get_phys_bank(0xFE) = 0x3E
+    @   $E000-$FFFF = phys bank get_phys_bank(0xFF) = 0x3F
+    @ map89_/mapAB_/mapCD_/mapEF_ then AND the physical bank against
+    @ rommask, so 0x3E/0x3F wrap to second-to-last/last for any ROM
+    @ size: 256 KB -> banks 30/31, 128 KB -> banks 14/15, etc.
+    bl_long vt_resync_prg_banks
+
+    @ --- Removed in 0.5.2: redundant chr01234567_ and mirror2V_ -------
+    @ loadcart_asm itself calls chr01234567_(0) at line 454-455 (BEFORE
+    @ mapperinit) and mirror2H_ with proper iNES-flag-derived EQ/NE at
+    @ line 507-509 (AFTER mapperinit returns).  Our duplicate calls
+    @ were:
+    @
+    @   (a) Pointless -- loadcart_asm covers both already
+    @   (b) Dangerous in the mirror case -- mirror2V_ uses ldreq/ldrne
+    @       conditional on caller flags, and chr01234567_'s tail return
+    @       doesn't set any flag in a defined direction, so mirror2V_
+    @       was picking m0011 vs m0101 essentially at random and then
+    @       falling through into mirrorchange/ubg2_, which clobber
+    @       registers and read chrold/chrline that may not be in a
+    @       defined state mid-cart-load.  That's a strong candidate for
+    @       the fast reset cycle the video shows: every cart load
+    @       wedged some bit of PocketNES state, the cart reload retried,
+    @       the cycle continued at the cart-load tempo (~45 frames =
+    @       the time it takes for one cart-load -> immediate retry).
+    @
+    @ Install the $4100-$41FF write hook ------------------------------
+    adr     r1, write_vt4xxx
+    str_    r1, writemem_4
+
+    @ --- VT extra opcode handlers were installed at the top of this
+    @ function (before vt_reset).  See the long comment there.
+
+    ldmfd   sp!, {pc}
+
+
+@ ============================================================================
+@ write_vt4xxx  (writemem_4 hook)
+@
+@ Calling convention (PocketNES writemem path):
+@   r0   = byte value being written
+@   addy (r12) = NES bus address ($4000-$5FFF range)
+@   lr   = return address (set up by writememabs's adr lr,0f)
+@
+@ Dispatch:
+@   $4000-$40FF -> IO_W (standard APU/joypad/DMA)
+@   $4100-$41FF -> vt_reg_write(addr_lo, val)
+@                  (which calls vt_resync_prg_banks() for $4100/$4105/
+@                   $4107/$4108/$4109/$410A/$410B writes)
+@   else        -> ignore (open bus / $42xx-$5FFF)
+@ ============================================================================
+write_vt4xxx:
+    stmfd   sp!, {r4, r5, lr}
+
+    mov     r4, r0          @ r4 = value
+    mov     r5, addy        @ r5 = NES address (r12, NOT r1)
+
+    @ Is this a standard APU register ($4000-$40FF)?
+    lsr     r0, r5, #8
+    cmp     r0, #0x40
+    bne     .Lvt41xx
+
+    @ --- Standard APU write ($4000-$40FF) ---
+    @ IO_W reads addy (r12) directly, so we just need r0 = value.
+    mov     r0, r4
+    bl_long IO_W
+    b       .Lvt_write_done
+
+.Lvt41xx:
+    cmp     r0, #0x41
+    bne     .Lvt_write_done     @ $42xx-$5Fxx: ignore (open bus / mirrors)
+
+    @ $4100-$41FF: forward to vt_reg_write.  Bank-switch dispatch now
+    @ happens inside vt_reg_write itself (via vt_resync_prg_banks),
+    @ which lets us match MAME's bank logic exactly instead of just
+    @ remapping individual windows.
+    and     r0, r5, #0xFF       @ r0 = addr_lo
+    mov     r1, r4              @ r1 = val
+    bl      vt_reg_write
+
+.Lvt_write_done:
+    ldmfd   sp!, {r4, r5, pc}
+
+
+@ ============================================================================
+@ write_vt_rom  (writemem_8 / writemem_A / writemem_C / writemem_E hook)
+@
+@ Forwards $8000-$FFFF writes to the MMC3-compatibility translator in C.
+@ Real VT silicon does this by default (per the NESdev wiki "VT02+ MMC3
+@ Compatibility Registers" article); the only way to disable it is to set
+@ the FWEN bit in $410B, which vt_mmc3_forward checks for us.
+@
+@ Calling convention (same writememabs path as write_vt4xxx):
+@   r0 = byte value being written
+@   addy (r12) = NES bus address ($8000-$FFFF)
+@   lr = return address (set by writememabs's `adr lr, 0f`)
+@
+@ vt_mmc3_forward is C, so its args are (r0=addr, r1=val) per AAPCS.
+@ ============================================================================
+    .global write_vt_rom
+write_vt_rom:
+    stmfd   sp!, {lr}
+    mov     r1, r0              @ r1 = val (C arg 2)
+    mov     r0, addy            @ r0 = addr (C arg 1)
+    bl      vt_mmc3_forward
+    ldmfd   sp!, {pc}
+
+
+@ ============================================================================
+@ Mapper number registration
+@ ---------------------------------------------------------------------------
+@ PocketNES cart.s includes a mappertbl byte array and a corresponding
+@ jump table (mapperinit_tbl).  We declare MAPPER_VT = 253 here; add it
+@ to both tables in cart.s using the existing .byte / .word pattern.
+@ ============================================================================
+
+    MAPPER_VT = 253
+
+    .end
