@@ -203,7 +203,7 @@ set_cpu_hack:
 	@ ------------------------------------------------------------------
 	ldr r1,=vt
 	ldrb r1,[r1,#0x20]
-	ldr r2,=sh_encrypted
+	ldr r2,=_sh_encrypted
 	strb r1,[r2]
 #endif
 	strb_ r0,speedhacknumber
@@ -232,7 +232,7 @@ set_cpu_hack:
 	ldr r0,=_D0y
 	ldr r2,=op_table+0xD0*4
 #if VT_MODE
-	ldr r1,=sh_encrypted
+	ldr r1,=_sh_encrypted
 	ldrb r1,[r1]
 	cmp r1,#0
 	ldrne r2,=op_table+0xB0*4
@@ -258,7 +258,7 @@ set_cpu_hack:
 #if VT_MODE
 	@ Encryption: allow only invariant branch rows 0,3,4,7 (mask $99);
 	@ swapped rows and $4C would repeat the session-6 corruption.
-	ldr r2,=sh_encrypted
+	ldr r2,=_sh_encrypted
 	ldrb r2,[r2]
 	cmp r2,#0
 	beq 9f
@@ -647,8 +647,12 @@ konamihack8:  @gradius2
 
 _speedhack_pc: .word 0
 _speedhack_pc2: .word 0
-	.global sh_encrypted
-sh_encrypted: .byte 0
+	@ s21b6b: the storage label MUST follow the block's _name convention.
+	@ Plain 'sh_encrypted' is ALSO the equates.h offset symbol (0x82C), and
+	@ the equate wins, so ldr rX,=sh_encrypted loaded 0x82C and every write
+	@ to this flag went to a dead address (mGBA: Bad memory Store8 0x82C).
+	.global _sh_encrypted
+_sh_encrypted: .byte 0
 	.align
 _speedhacknumber: .byte 0
  .byte 0

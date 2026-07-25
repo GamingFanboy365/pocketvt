@@ -1328,7 +1328,7 @@ END GROUP
                 0x03007aac                dontstop
                 0x03007aae                _crash_disabled
  .data.107      0x03007ab0       0x14 speedhack_asm.o
-                0x03007ab8                sh_encrypted
+                0x03007ab8                _sh_encrypted
                 0x03007ac0                _deadbeef
  *(.gnu.linkonce.d*)
                 0x03007ac4                        . = ALIGN (0x4)
