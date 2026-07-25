@@ -504,9 +504,24 @@ lc1:				@call mapper*init
 	adr_ m6502_mmap,memmap_tbl @r4 gets clobbered, reset it here
 	mov pc,r0			@Jump to MapperInit
 0:
+	@ SESSION 21b2: on VT/OneBus carts the nametable arrangement is driven by
+	@ the $4106 register (power-on default 0 = the two pages SIDE BY SIDE per
+	@ the VT02/VT03 datasheets), NOT by the iNES header mirror bit -- OneBus
+	@ dumps carry a meaningless header flag.  mapVTinit already applied the
+	@ $4106 arrangement via vt_set_mirroring(); re-applying the header bit
+	@ here clobbered it to the STACKED map (Star Ally: header bit 0, game
+	@ never writes $4106), which let the vertical auto-scroll walk out of the
+	@ playfield page into the HUD page = the "HUD + orange bricks scroll
+	@ down" bug.  Runtime $4106 (and MMC3-compat $A000) writes still change
+	@ mirroring normally through write_vt4xxx.
+	ldr r1,=vt_active
+	ldrb r1,[r1]
+	cmp r1,#0
+	bne 8f			@ VT cart: keep the $4106-driven arrangement
 	ldrb_ r1,cartflags
 	tst r1,#MIRROR		@set default mirror
 	bl_long mirror2H_		@(call after mapperinit to allow mappers to set up cartflags first)
+8:
 
 	bl CPU_reset		@reset everything else - Call AFTER mapperinit
 	

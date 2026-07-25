@@ -151,16 +151,32 @@ void vt_timer_tick_frame(void)
        and a vblank-phased IRQ forced stale $2000/$2001 shadows every
        frame, blanking the picture. */
 
-    // Session-11: keep the wait-loop speed hack armed.  cpuhack_reset (and
-    // any encryption-mode rebuild) restores stock handlers, wiping the hack
-    // seeded at vt_reset; set_cpu_hack early-outs when the hack is already
-    // current, so re-arming every 60 frames is idempotent and free.
+    // Keep the registered wait-loop speed hack armed.  cpuhack_reset (and any
+    // encryption-mode op-table rebuild) restores stock handlers, wiping the
+    // hack; set_cpu_hack early-outs when the hack is already current, so
+    // re-arming every frame is idempotent and effectively free.
+    //
+    // Session-20b3 NOTE: this block used to also carry an SA-specific
+    // "mode-adaptive y-variant" installer that hand-seeded a cycle-drain hack
+    // for Star Ally's CMP $6816 / BNE *-5 wait loop.  It was removed.  Two
+    // findings killed it:
+    //   1. The "~58% of guest time in the wait loop" figure that motivated it
+    //      was measured at BOOT.  At steady-state GAMEPLAY the loop is only
+    //      ~8% of execution (PC-histogram, f300+); the game spends its time
+    //      in real per-frame logic (~0x0600F8xx), which no loop-skip touches.
+    //   2. The cycle-drain (usespeedhack) fires on a SMALL remaining budget
+    //      each visit -- events are frequent -- so each drain skips few
+    //      iterations while paying fixed per-call overhead.  Net result:
+    //      the armed build measured 33-41% vs 67% unarmed, i.e. the hack made
+    //      SA SLOWER.  SA is now left to the general finder, which installs
+    //      the semantically-correct _D0y (BNE) handler benignly (67%, stable
+    //      through an f2400 soak).  The finder must therefore NOT be gated off
+    //      for VT carts (see new_speed_hack.c) -- doing so also removed the
+    //      hack Lonely Island genuinely relies on and dropped LI 100% -> ~22%.
     if (vt_active && speedhacks[1].hack_pc) {
-        // Every frame: speedhack_manager's not-used heuristic periodically
-        // uninstalls the hack (the 2.0/2.9 frame oscillation); set_cpu_hack
-        // early-outs when already current, so this is ~free when armed.
         set_cpu_hack(1);
     }
+
     if (!vt_timer_render_seen) {
         if (VT_PPUCTRL1_SHADOW & 0x18) vt_timer_render_seen = 1;
     }
@@ -273,6 +289,7 @@ void vt_reset(void)
             set_cpu_hack(1);
         }
     }
+
 }
 
 // ---------------------------------------------------------------------------

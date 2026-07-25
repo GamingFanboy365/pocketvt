@@ -31,6 +31,33 @@ fix (never set vt_chr4_dirty from palette writes); and the session-10
 input fix (joycfg bit30 set: the famiclone controller is NES PLAYER 2 —
 LI's movement handler reads the $4017-derived pressed-edge at zp $36).
 
+## 2b. Current verified state (session 21, July 2026) -- read this first
+
+Section 2 above describes session 10 and is kept for the Lonely Island
+history; it is no longer the current picture.  Star Ally is NOT deferred any
+more -- it has driven sessions 18-21 and is the harder of the two targets,
+so PocketVT now supports both.
+
+Lonely Island: unchanged and still correct (60fps, palette, sprites, walk
+test), and it is the standing regression control -- its f400 framebuffer has
+been bit-identical across every session-21 build.
+
+Star Ally: boots, title, menu, and the $1A gameplay/attract stages render.
+Two long-standing bugs closed this session.  (1) The orange band -- the
+"HUD and bricks scroll down" symptom -- was the loader re-applying the iNES
+header mirror bit over the $4106-derived nametable arrangement; VT carts now
+keep the register-driven arrangement (guide section 6, s21b2).  (2) Missing
+ships and enemies in gameplay were the 2bpp-EVA gap: SPEXTEN with SP16EN
+clear still means extension addressing, only at 2bpp fetch width (guide
+section 8b, s21b3).  Sprite data is verified bit-exact against the ROM.
+
+Known remaining on Star Ally: speed sits at ~67% (interpreter ceiling --
+the speedhack avenue is exhausted; 60fps would need a core rewrite, which is
+Michael's call), and no full-level playthrough has been ground-truthed
+against the 2.png reference frame, because the headless route reaches a
+different moment of the stage than the screenshot.  The multicart hang
+(guide section 9) is still open and its old explanation was falsified.
+
 ## 3. How the game actually works (reverse-engineered, trust this)
 Bit layout as the game sees the pad after its serial read: A=$80 B=$40
 Sel=$20 Start=$10 U=$08 D=$04 L=$02 R=$01, current state in zp $00 (P1) /
@@ -198,3 +225,15 @@ is retracted. It was blank nametable tiles.
 Remaining: M2 in-game video mode ($2010 = $1E/$1F, BKEXTEN/PIX16EN) if any
 stage reaches it; M3 audio-by-ear (channel correctness never examined);
 M4 full playthrough; M5-opt horizontal affine BG scaling for the 8px/side crop.
+
+== Session 18 addendum ==
+BKEXTEN backgrounds are implemented (ppu_vt.c vt_bk_* + ppu.s hooks): ten
+64-tile slots keyed (page,attr), palette forced to set 0, fed by an
+eighth-per-vblank scrub because the stock BG cache producer self-modifies
+OFF on ring overflow. Two engine bugs fixed: the orphaned per-scanline
+buffer pointers (loadcart.c -- they let raster-split games memset16 over
+the tilemap) and slot-key stomps (biased key encoding, self-healing).
+Star Ally still needs: PIX16EN sprites (full spec in MAINTAINERS_GUIDE.md
+section 8), scrub speed work (20.6fps), and a late-crash bisect.
+MAINTAINERS_GUIDE.md is now the canonical continuation document -- read it
+before this file.

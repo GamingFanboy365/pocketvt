@@ -890,6 +890,13 @@ _m_ ,8
 
  _m_ speedhack_pc,4
  _m_ speedhack_pc2,4
+@ SESSION 21b4: sh_encrypted (session 11) has storage in speedhack_asm.s but
+@ had no entry here, so its byte physically occupied the macro address of
+@ _dontstop -- every set_cpu_hack() call wrote vt.encryption_active over the
+@ run() "keep running" flag.  With an unencrypted cart that wrote 0, and the
+@ next frame boundary took run's single-frame return path, popping a stack
+@ frame that run(1) never pushed -> branch through a garbage lr -> reset.
+ _m_ sh_encrypted,4
  _m_ speedhacknumber,1
  _m_ ,3
  _m_ deadbeef,4

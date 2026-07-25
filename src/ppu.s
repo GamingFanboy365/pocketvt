@@ -1202,6 +1202,12 @@ skip_this_kilobyte:
 
 @r2 = NES_VRAM address
 @addy = GBA_VRAM address
+@ Constants the BKEXTEN C module (ppu_vt.c, session 18) needs from the
+@ assembly world.  Lives in code space; addresses resolve at link time.
+	.global vt_bk_consts
+vt_bk_consts:
+	.word BG_CACHE, NES_VRAM2, NES_VRAM4, AGB_BG
+
 update_tile_init:
 	ldr r5,=0x00FF00FF
 	ldr r4,=0x00030003
@@ -1242,6 +1248,21 @@ consume_bg_cache:
 	@bg_cache_produce_base_consume_end = end
 	@bg_cache_produce_limit_consume_begin = start
 	bl update_tile_init
+
+	@ BKEXTEN (session 18): the packed slot encoding cannot be expressed by
+	@ the split name/attr writers below; hand the ring to the C consumer.
+	ldr r0,=vt_bkexten_live
+	ldrb r0,[r0]
+	cmp r0,#0
+	beq no_bkexten_consume
+	mov r0,r6
+	mov r1,r7
+	bl_long vt_bk_consume
+	mov r6,r7
+	ldmfd sp!,{r10,lr}
+	mov r0,r6
+	b_long set_bg_cache_produce_limit_consume_begin
+no_bkexten_consume:
 	@don't touch r4,r5
 	@r0,r1,r3 get destroyed
 	@r6-r11,lr free
@@ -1670,7 +1691,21 @@ display_whole_map:
 @	strb_ r0,bg_cache_full
 	
 	bl_long update_tile_init	
-	
+
+	@ BKEXTEN (session 18): rebuild in the packed slot encoding instead.
+	ldr r0,=vt_bkexten_live
+	ldrb r0,[r0]
+	cmp r0,#0
+	beq no_bkexten_whole
+	@ SESSION 20: defer the ~1920-cell whole rebuild to the throttled stepper
+	@ (vt_bk_whole_step, driven each vblank from vt_chr4_rebuild_if_dirty).
+	@ Running it synchronously here overran the vblank and re-entered the
+	@ handler, trampling the stack / timeout.s table -> SA wild-PC crash.
+	ldr r0,=vt_bk_pending_whole
+	mov r1,#1
+	strb r1,[r0]
+	b 0f
+no_bkexten_whole:
 	ldr addy,=AGB_BG
 	ldr r2,=NES_VRAM2
 	bl_long update_whole_map
@@ -1722,6 +1757,17 @@ vrom_update_tiles:
 	bne 0b
 	
 	@AGB BG is dirty?
+	@Session 20: when BKEXTEN is live, ALL background CHR is owned by the
+	@vt_bk slot system (tiles 0-255/512-767/896-1023).  This legacy
+	@requested-vs-real group copy is the THIRD legacy BG writer (the s18
+	@gates only covered consume_bg_cache and display_whole_map): it calls
+	@im_lazy/render_tiles, which converts raw (scrambled, unbanked) OneBus
+	@bytes straight over the slot tiles -- the Lonely Island "dashes"
+	@stomper.  Skip it entirely when BKEXTEN owns the background.
+	ldr r0,=vt_bkexten_live
+	ldrb r0,[r0]
+	cmp r0,#0
+	bne bgmap_clean
 	adrl_ r9,agb_bg_map_requested
 	ldmia r9,{r0-r3}
 	adrl_ r9,agb_real_bg_map
@@ -1794,18 +1840,38 @@ check_canaries:
 	.endif
 
 	stmfd sp!,{lr}
-	ldr r1,=IWRAM_CANARY_1
+	@ SESSION 20: canary-1 used to read IWRAM_CANARY_1 -- a stale address from
+	@ before CHR_DECODE moved to EWRAM.  Nothing ever writes it, so the check
+	@ failed EVERY frame and canary1_fail ran build_chr_decode + spriteinit as
+	@ steady-state work.  That per-frame rebuild (a) wasted most of the vblank
+	@ budget -> persistent overrun livelock (inside_gba_vblank stuck at 2), and
+	@ (b) was the CHR_DECODE writer that nested vblanks used to tear the table
+	@ under display_bg (the Star Ally wild-PC crash).  The real canary is the
+	@ 0xDEADBEEF word build_chr_decode stores at CHR_DECODE+0x400; check THAT,
+	@ so the rebuild only runs on a genuine stomp.
+	ldr r1,=CHR_DECODE+0x400
 	ldr r2,=0xDEADBEEF
 	ldr r0,[r1]
 	cmp r0,r2
-	bne canary1_fail
-
+	beq 3f
+	bl_long build_chr_decode
+3:
+	@ canary 2 (IWRAM_CANARY_2, written by io.s) -- kept as before.
 	ldr r1,=IWRAM_CANARY_2
 	ldr r2,=0xDEAFBEEF
 	ldr r0,[r1]
 	cmp r0,r2
 	bne canary2_fail
-	
+
+	@ SESSION 20: spriteinit runs EVERY frame, unconditionally.  It used to be
+	@ reached only through the always-failing canary path; the display/sprite
+	@ setup (OBJ + BG enables via the scaling path) de facto depends on it
+	@ running per-frame, so fixing the canary without hoisting this starved the
+	@ display (dispcnt never reached 0x1540 -- the earlier regressed attempt).
+	ldr r0,=_scaling
+	ldrb r0,[r0]
+	and r0,r0,#3
+	bl_long spriteinit
 	ldmfd sp!,{pc}
 canary1_fail:
 	mov r11,r11
@@ -2820,8 +2886,6 @@ vblankinterrupt:@
 	strh r5,[r5,#REG_DM1CNT_H]		@DMA1 stop
 	strh r5,[r5,#REG_DM3CNT_H]		@DMA3 stop
 	
-	bl_long check_canaries
-	
 	ldrb_ r0,inside_gba_vblank
 	cmp r0,#2
 	bge exit_gba_vblank
@@ -2829,6 +2893,17 @@ vblankinterrupt:@
 	
 	mov r0,#2
 	strb_ r0,inside_gba_vblank
+
+	@ SESSION 20: check_canaries was here BEFORE the re-entrancy guard above.
+	@ It runs build_chr_decode + spriteinit every frame (canary-1 tripwire), and
+	@ when the handler overran a frame with IME enabled, the NESTED vblank ran
+	@ this heavy rebuild -- rewriting CHR_DECODE while the outer display_bg was
+	@ mid-read of it (torn read -> wild PC, Star Ally crash on Start).  Moving it
+	@ below the inside_gba_vblank>=2 bail means a nested vblank returns before
+	@ touching CHR_DECODE; only the top-level pass rebuilds, in-order with the
+	@ display that follows.  IME is still masked here (enabled just below), so
+	@ this pass itself cannot be nested.
+	bl_long check_canaries
 
 	@set Interrupt Master Enable so other interrupts can interrupt this long handler
 	mov	r0, #REG_BASE		@ REG_BASE
@@ -3724,6 +3799,14 @@ dm0:
 	tst r0,#0x20
 	bne dm4
 	@-------------------------- 8 x 8 ---------------------------
+#if VT_MODE
+	@ PIX16EN (s20b4): 16x8 OBJ -> shape=horizontal (attr0 bit14, word
+	@ bit14).  r6 bit14 doubles as the PIX16 marker for the index math.
+	ldr r1,=vt_pix16_active
+	ldrb r1,[r1]
+	cmp r1,#0
+	orrne r6,r6,#0x4000
+#endif
 
 @	mov r4,#PRIORITY
 @	tst r0,#0x08			@CHR base? (0000/1000)
@@ -3760,6 +3843,12 @@ dm11:
 	@ page*8 + EVA]; look there instead of at the raw bank number.
 	ldr r1,=vt_spr16_active
 	ldrb r1,[r1]
+	@ s21b3: the flag is a MODE -- 0 off, 1 redirect all, 2 redirect only
+	@ sprites whose EVA != 0 (the 2bpp SPEXTEN mode: eva==0 sprites stay on
+	@ the stock bankbuffer path).  Collapse mode 2 + eva==0 to "off" here.
+	cmp r1,#2
+	tsteq r3,#0x001C0000
+	moveq r1,#0
 	cmp r1,#0
 	andne r1,r3,#0x001C0000
 	movne r4,r4,lsl#3
@@ -3774,7 +3863,13 @@ dm11:
 	blne_long need_to_fetch_sprite_data
 	@get tile number
 	and r1,r3,#0x3F00
+#if VT_MODE
+	tst r6,#0x4000			@ PIX16 (set at the 8x8 entry)?
+	addeq r4,r4,r1,lsr#8
+	addne r4,r4,r1,lsr#7	@ doubled: 2 GBA tiles per VT tile [L,R]
+#else
 	add r4,r4,r1,lsr#8
+#endif
 	@end new code
 
 	ldrb r0,[r5,r0]			@y = scaled y
@@ -3816,7 +3911,19 @@ dm10:
 	b dm9
 
 dm4:	@----------------------- 8 x 16 -----------------------------
+#if VT_MODE
+	@ PIX16EN (s20b4): sprites are 16 pixels wide; with 8x16-tall mode the
+	@ OBJ becomes 16x16: shape=square (no 0x8000), size=1 (attr1 bit14 ->
+	@ word bit30).  r6 bit30 doubles as the per-frame PIX16 marker tested
+	@ by the tile-index math below -- no per-sprite memory load.
+	ldr r1,=vt_pix16_active
+	ldrb r1,[r1]
+	cmp r1,#0
+	orreq r6,r6,#0x8000		@ classic: shape=vertical, size=0 (8x16)
+	orrne r6,r6,#0x40000000	@ PIX16: shape=square, size=1 (16x16)
+#else
 	orr r6,r6,#0x8000		@8x16 flag
+#endif
 dm12:
 	ldr r3,[addy],#4
 	and r0,r3,#0xff
@@ -3837,6 +3944,12 @@ dm12:
 	@ page*8 + EVA]; look there instead of at the raw bank number.
 	ldr r1,=vt_spr16_active
 	ldrb r1,[r1]
+	@ s21b3: the flag is a MODE -- 0 off, 1 redirect all, 2 redirect only
+	@ sprites whose EVA != 0 (the 2bpp SPEXTEN mode: eva==0 sprites stay on
+	@ the stock bankbuffer path).  Collapse mode 2 + eva==0 to "off" here.
+	cmp r1,#2
+	tsteq r3,#0x001C0000
+	moveq r1,#0
 	cmp r1,#0
 	andne r1,r3,#0x001C0000
 	movne r4,r4,lsl#3
@@ -3849,7 +3962,13 @@ dm12:
 	blne_long need_to_fetch_sprite_data
 	@get tile number
 	and r1,r3,#0x3E00
+#if VT_MODE
+	tst r6,#0x40000000		@ PIX16 (set at dm4)?
+	addeq r4,r4,r1,lsr#8
+	addne r4,r4,r1,lsr#7	@ doubled: pair -> [TL,TR,BL,BR]
+#else
 	add r4,r4,r1,lsr#8
+#endif
 	@end new code
 
 
@@ -5165,6 +5284,7 @@ _oam_addr:	.byte 0 @oam_addr
 	.byte 1 @vramaddrinc (placeholder for savestates, self modify code is used instead)
 ppustat_savestate:	.byte 0 @was once ppustat (not used)
 	.byte 0 @toggle
+	.global _ppuctrl0
 _ppuctrl0:	.byte 0 @ppuctrl0
 _ppuctrl0frame:
 	.byte 0 @ppuctrl0frame	;state of $2000 at frame start

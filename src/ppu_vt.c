@@ -49,6 +49,21 @@
 //   bit 0 = PIX16EN : 16-pixel mode select
 EWRAM_BSS u8 vt_reg_2010 = 0;
 
+// BKEXTEN module (defined later in this file, session 18)
+extern u8 vt_bkexten_live;
+extern u8 vt_bk_pending_whole;
+extern u32 vt_bk_dbg[8];
+void vt_bk_banks_recheck(void);
+void vt_bk_frame_check(void);
+void vt_bk_invalidate(void);
+void vt_bk_whole(void);
+void vt_bk_scrub(void);
+// SESSION 20: throttled replacement for the 1920-cell vt_bk_whole() blast.
+// Processes a bounded chunk of the map per vblank and returns 1 when the full
+// map has been swept, so a BKEXTEN mode flip / cache-invalidate rebuild no
+// longer overruns the frame (see vt_chr4_rebuild_if_dirty for the crash note).
+static int vt_bk_whole_step(void);
+
 // ---------------------------------------------------------------------------
 // Globals
 // ---------------------------------------------------------------------------
@@ -83,7 +98,13 @@ EWRAM_BSS u8 vt_ppumode = 0;
 // runs BK16EN/SP16EN. 8 CHR pages * 64 tiles * 32 bytes = 16 KB. Filled by
 // vt_chr_sync_from_prg's 4bpp branch; consumed by the 4bpp render path
 // (Piece 2). Verified pixel-exact against Furbtendulator on the test ROMs.
-EWRAM_BSS u8 vt_chr4_buf[8 * 64 * 32];
+EWRAM_BSS u8 vt_chr4_buf[8 * 64 * 32] __attribute__((aligned(4)));
+// ^ MUST stay word-aligned: every copy/probe below reads this through a
+// (const u32*) cast. A u8 array gets byte alignment by default, and when the
+// EWRAM_BSS layout drifted it landed at ...9A (addr % 4 == 2). ARM7TDMI
+// rotates unaligned LDRs, so every u32 load became lo(row)|hi(prev_row) --
+// the session-20 "dashes everywhere" skew on Lonely Island's map. The
+// byte-store assembler was always correct; only the word readers broke.
 
 // Set when the 4bpp CHR banks change; the heavy full-4bpp assembly into
 // vt_chr4_buf is deferred to vt_chr4_rebuild_if_dirty() (called at most once
@@ -102,8 +123,10 @@ void ppu_vt_init(void)
     ppu_vt_reset();
 }
 
+void vt_bk_attr_shadow_reset(void);
 void ppu_vt_reset(void)
 {
+    vt_bk_attr_shadow_reset();
 #if VT_ENHANCED_PALETTE
     memset(vt_palette_ram,    0, sizeof(vt_palette_ram));
     memset(vt_palette_to_gba, 0, sizeof(vt_palette_to_gba));
@@ -705,38 +728,77 @@ __attribute__((target("arm")))
 static void vt_build_16color_palette(void)
 {
     // Only meaningful in 16-colour mode with COLCOMP=0.
-    if (!(vt_reg_2010 & 0x06)) return;   // not 16-colour
+    if (!(vt_reg_2010 & 0x06)) return;   // neither plane 16-colour
     if (vt_reg_2010 & 0x80)    return;   // COLCOMP=1 handled elsewhere
+    // SESSION 20b: gate each plane on ITS OWN mode bit.  Star Ally runs
+    // BK16EN=1 with SP16EN=0 (4bpp background, 2bpp sprites); writing the
+    // OBJ banks in that state stomps the legacy 2bpp sprite sub-palettes
+    // that run_palette maintains for the stock sprite path.
+    int do_bg  = (vt_reg_2010 & 0x02) != 0;   // BK16EN
+    // SP16EN gates the OBJ banks.  An earlier s20b revision additionally
+    // required PIX16EN=0 on the theory that 16-PIXEL sprites use the legacy
+    // palettes -- empirically FALSE: Star Ally's title ($2010=$1F) authors
+    // the menu cursor's yellow at $3F13, which only the extended sprite
+    // index (scatter | bit4) reaches; gating on PIX16EN made the cursor
+    // vanish.  PIX16EN halves still draw through the extended OBJ palette
+    // space, so write the banks whenever SP16EN is set.
+    // SESSION 21b5: SP16EN selects the sprite FETCH WIDTH, not which palette
+    // space sprites resolve through.  Leaving the OBJ banks to the stock
+    // run_palette path when SP16EN is clear was wrong: in VT mode that path
+    // reads the legacy NES palette array, which nothing maintains here, so
+    // every OBJ entry came out as NES colour $00 -- a flat grey (0x39CE).
+    // That is why Star Ally's ship, enemies and stage art rendered grey as
+    // soon as the 2bpp EVA sprites started drawing (s21b3).  With COLCOMP=0
+    // the VT palette RAM is the only truth for sprites too, and for a 2bpp
+    // sprite the scatter index degenerates to 0x10 + attr*4 + value (p2=p3=0)
+    // -- exactly the classic $3F10 sprite-palette layout -- so the same loop
+    // below produces the right colours for both widths.
+    int do_obj = 1;
 
     volatile u16 *gba_bg  = (volatile u16*)0x05000000; // BG palette
     volatile u16 *gba_obj = (volatile u16*)0x05000200; // OBJ palette
 
-    // The CRITICAL part (verified vs furb_cli OneBus.cpp + VT03 digest p.19):
-    // a 16-colour pixel's palette-RAM index is BIT-SCATTERED, not 0..15:
-    //   bits 0,1 = pattern low planes      (digest "color-address bits 1,2")
-    //   bits 2,3 = colour-set / attribute  (digest bits 3,4) = GBA sub-palette
-    //   bit  4   = 0 background / 1 sprite  (digest bit 5)
-    //   bits 5,6 = pattern high planes     (digest bits 6,7)
-    // Furb: GetPalIndex COLCOMP=0 returns Palette[index]; transparent rule:
-    //   if (index & 0x63) == 0 (all pattern bits 0) -> index 0 (backdrop).
-    //
-    // Our GBA 4bpp tile pixel is CONTIGUOUS v = p0|p1<<1|p2<<2|p3<<3, rendered
-    // through GBA sub-palette entry v. So GBA sub-palette[group][v] must hold
-    // the VT colour at the scattered index built from v's bits + group + bgspr.
+    // SESSION 20b FINAL (empirically validated, three scenes vs reference
+    // captures): the 4bpp palette-RAM index is the PLANE-SCATTERED layout --
+    //   bit 0   = pattern plane 0          bit 1  = pattern plane 1
+    //   bits2-3 = attribute (BUT: forced to ZERO while BKEXTEN is active,
+    //             per the NESdev "VT02+ Video Modes" Address Extension
+    //             clause: the attribute bits are consumed as EVA CHR-bank
+    //             bits and "are forced to zero when forming the final
+    //             palette index")
+    //   bit 4   = 0 background / 1 sprite
+    //   bits5-6 = pattern planes 2,3
+    // Validation: Star Ally title rendered under candidate mappings and
+    // scored against the user's reference capture -- plane-scatter with
+    // forced-zero attr: d=4.8; linear(attr<<5) rotation: 12.0; linear
+    // identity: 25.0; scatter WITHOUT forced-zero: 33.5.  Star Ally
+    // gameplay (stars/nebula/HUD groups) and Lonely Island (all-attr-0
+    // palette authored across ram[0x20/40/60] plane positions) agree.
+    // An earlier s20b change to a linear index was WRONG for BG and is
+    // reverted here; what it got right is retained: per-plane gating
+    // (do_bg/do_obj above) and the PIX16EN sprite-mode gate.
+    // Transparency: all pattern bits zero -> backdrop ((idx & 0x63) == 0).
+    int bg_attr_forced0 = (vt_reg_2010 & 0x10) != 0;   // BKEXTEN
     for (int group = 0; group < 4; group++) {
         for (int v = 0; v < 16; v++) {
             int p0 = (v >> 0) & 1, p1 = (v >> 1) & 1;
             int p2 = (v >> 2) & 1, p3 = (v >> 3) & 1;
-            // ----- background -----
-            int idx_bg = p0 | (p1 << 1) | (group << 2) | (0 << 4) | (p2 << 5) | (p3 << 6);
-            if (!(idx_bg & 0x63)) idx_bg = 0;                  // transparent -> backdrop
-            u8 ci_bg = vt_palette_ram[idx_bg & (VT_PALETTE_SIZE - 1)] & 0x3F;
-            gba_bg[group * 16 + v] = nes_index_to_bgr555(ci_bg);
-            // ----- sprite (bit 4 = 1) -----
-            int idx_sp = p0 | (p1 << 1) | (group << 2) | (1 << 4) | (p2 << 5) | (p3 << 6);
-            if (!(idx_sp & 0x63)) idx_sp = 0;
-            u8 ci_sp = vt_palette_ram[idx_sp & (VT_PALETTE_SIZE - 1)] & 0x3F;
-            gba_obj[group * 16 + v] = nes_index_to_bgr555(ci_sp);
+            if (do_bg) {
+                int a_eff = bg_attr_forced0 ? 0 : group;
+                int idx_bg = p0 | (p1 << 1) | (a_eff << 2) | (p2 << 5) | (p3 << 6);
+                if (!(idx_bg & 0x63)) idx_bg = 0;
+                u8 ci_bg = vt_palette_ram[idx_bg & (VT_PALETTE_SIZE - 1)] & 0x3F;
+                gba_bg[group * 16 + v] = nes_index_to_bgr555(ci_bg);
+            }
+            if (do_obj) {
+                // Sprite palette bits are never stolen for EVA (sprite EVA
+                // comes from OAM byte 2 bits 2-4), so the sprite attribute
+                // stays live at bits 2-3.
+                int idx_sp = p0 | (p1 << 1) | (group << 2) | (1 << 4) | (p2 << 5) | (p3 << 6);
+                if (!(idx_sp & 0x63)) idx_sp = 0;
+                u8 ci_sp = vt_palette_ram[idx_sp & (VT_PALETTE_SIZE - 1)] & 0x3F;
+                gba_obj[group * 16 + v] = nes_index_to_bgr555(ci_sp);
+            }
         }
     }
 }
@@ -835,6 +897,7 @@ static void vt_chr4_assemble(void)
 __attribute__((target("arm"), noinline))
 static void vt_chr4_copy_to_vram(void)
 {
+    if (vt_bkexten_live) return;   // BG char VRAM is slot-managed (session 18)
     for (int p = 0; p < 8; p++) {
         const u32 *s = (const u32*)(vt_chr4_buf + (u32)p * 2048u);
         // Tiles p*64 .. p*64+63; ppu.s puts tiles >= 256 an extra 0x2000 up.
@@ -866,6 +929,7 @@ static void vt_chr4_copy_to_vram(void)
 __attribute__((target("arm"), noinline))
 static void vt_chr4_copy_to_vram_all(void)
 {
+    if (vt_bkexten_live) return;   // BG char VRAM is slot-managed (session 18)
     const u32 *s = (const u32*)vt_chr4_buf;
     for (int tile = 0; tile < 512; tile++, s += 8) {
         u32 addr = 0x06000000u + (u32)tile * 32u;
@@ -895,6 +959,38 @@ void vt_chr4_do_rebuild(void)
 __attribute__((target("arm")))
 void vt_chr4_rebuild_if_dirty(void)
 {
+    if (vt_bkexten_live) {         // slots replace the page-linear pipeline;
+        // Session 19: run the whole BKEXTEN batch with IME masked.  The
+        // vblank handler re-enables IME early, so a slow pass here could be
+        // NESTED by the next vblank on the same user stack -- which sits
+        // directly above the timeout.s event-handler pointer table.  Star
+        // Ally's wild-PC crash (PC=0x049563DC, LR in palette RAM) has the
+        // signature of that table being trampled.  Masking costs at most a
+        // delayed hblank effect for one line; a corrupted handler table
+        // costs the machine.
+        volatile u16 *ime = (volatile u16*)0x04000208;
+        u16 saved = *ime; *ime = 0;
+        // SESSION 20: the s19 restructure returned from this branch BEFORE
+        // vt_chr_sync_flush() below, so vt_chr4_page_bank[] (populated ONLY
+        // inside the flush) stayed all-zero under BKEXTEN.  Every slot then
+        // assembled from bank (0<<3)|attr = PRG code/padding: Star Ally's
+        // "black screen with fragments" (slot0 matched a bank-0 assembly
+        // 512/512).  The flush is change-gated and <=1/frame; running it
+        // here, inside the IME mask and BEFORE banks_recheck, both feeds the
+        // snapshot and lets recheck reassemble any slot whose bank changed.
+        vt_chr_sync_flush();
+        if (vt_bk_pending_whole) { // deferred mode-flip rebuild, now spread
+            // across frames by vt_bk_whole_step() so the 1920-cell sweep can't
+            // overrun the vblank and re-enter the handler (see the note on the
+            // stepper).  Stays pending until the full map has been swept.
+            if (vt_bk_whole_step()) vt_bk_pending_whole = 0;
+        }
+        vt_bk_banks_recheck();     // catch page_bank changes made this frame
+        vt_bk_frame_check();       // repair any 2bpp-cache stomps
+        vt_bk_scrub();             // rotating map refresh (see below)
+        *ime = saved;
+        return;
+    }
     // Apply any pending CHR sync exactly once per frame -- must run in ALL
     // modes (plain 2bpp VT games need their NES_VRAM window refreshed too),
     // so it sits before the 16-colour-only gate below.
@@ -953,6 +1049,7 @@ EWRAM_BSS u8 vt_dbg_pad_or;
 // entries with OBJ cache slots 0..3, whose VRAM (0x06010000-0x06011FFF) the
 // stock sprite cache -- which lives at slots 8..15 -- never touches.
 EWRAM_BSS u8 vt_spr16_active;          // read by update_sprites in ppu.s
+EWRAM_BSS u8 vt_pix16_active;          // read by update_sprites in ppu.s (s20b4)
 
 #define VT_EVA_SLOTS 4
 EWRAM_BSS static u16 vt_eva_key[VT_EVA_SLOTS];   // (page<<3)|eva, +1;  0 = empty
@@ -962,12 +1059,30 @@ EWRAM_BSS static u32 vt_eva_clock;
 // Assemble one 1KB CHR page (64 tiles) straight into an OBJ VRAM slot as GBA
 // 4bpp tiles.  Same pixel math as vt_chr4_assemble, no intermediate buffer.
 __attribute__((target("arm"), noinline))
-static void vt_eva_assemble(int slot, u32 phys_bank)
+// Assemble one 64-tile page (2KB of GBA 4bpp data) from an EXTENDED
+// (1KB-unit) OneBus bank number to an arbitrary VRAM destination.  This is
+// the s14 SPEVA assembler, generalized so the BKEXTEN background path
+// (session 18) can reuse it for BG char slots.
+static void vt_assemble_page_to(u32 dest, u32 phys_bank)
 {
     if (!vt_spread_ready) vt_spread_init();
     u32 mask = rommask ? rommask : 0xFFFFFFFFu;
-    u32 src_base = (vt_chr_bank_byte_offset(phys_bank) >> 10) * 2048u;
-    u32 *d = (u32*)(0x06010000u + (u32)slot * 2048u);
+    // SESSION 21: assemblers are only reached from extension-active paths
+    // (BKEXTEN BG slots, SPEVA/PIX16 sprites), so compose per the wiki's
+    // extension-ACTIVE formula: EVA | ((inner&mask | middle&~mask) << 3)
+    // | (outer << 11), with NO intermediate ($2018.4-6) contribution.
+    // Routing the precomposed (inner<<3)|EVA through vt_chr_bank_byte_offset
+    // had two latent bugs: the inner mask truncated the composed number to
+    // 8 bits (breaks inner banks >= 32) and intermediate<<8 was added even
+    // though extension suppresses it.  Value-identical for SA/LI today
+    // ($201A=0, $2018.4-6=0, $4100=0).
+    u32 inner  = phys_bank >> 3, eva7 = phys_bank & 7u;
+    u32 imask  = vt_inner_bank_mask();
+    u32 middle = (u32)vt_chr_reg_201A & 0xF8u;
+    u32 outer  = (u32)vt_chr_outer_4100 & 0x0Fu;
+    u32 src_base = (eva7 | (((inner & imask) | (middle & ~imask)) << 3)
+                         | (outer << 11)) * 2048u;   // final bank: 2KB units in 4bpp
+    u32 *d = (u32*)dest;
     for (int t = 0; t < 64; t++, src_base += 32) {
         for (int r = 0; r < 8; r++) {
             u32 lo = src_base + r, hi = lo + 16;
@@ -979,19 +1094,507 @@ static void vt_eva_assemble(int slot, u32 phys_bank)
     }
 }
 
+static void vt_eva_assemble(int slot, u32 phys_bank)
+{
+    vt_assemble_page_to(0x06010000u + (u32)slot * 2048u, phys_bank);
+}
+
+// 2bpp SPEVA sprite assembler -- session 21b3 (the "2bpp-EVA gap", guide 8b).
+// SPEXTEN=1 with SP16EN=0 (Star Ally's $2010 = $1A gameplay/attract stages):
+// the sprite fetch is an ordinary 2bpp 16-byte tile, but it STILL goes through
+// extension addressing, so the low three bank bits come from OAM byte2 bits
+// 2-4.  Per the VT03 datasheet p.11 the extension address is
+//   ($4100&F)<<21 + VBANK<<13 + EVA<<10
+// with the extra one-bit LEFT shift applying only to 16-colour/4bpp fetches --
+// so here the composed bank counts 1KB units (a page = 64 tiles x 16 bytes),
+// where vt_assemble_page_to's 4bpp version counts 2KB units.  Output is plain
+// 2-bit values 0..3 in GBA 4bpp nibbles: with SP16EN clear, vt_build_16color_
+// palette deliberately leaves the OBJ banks as the legacy sub-palettes that
+// run_palette maintains, and the OBJ attribute's palette field (OAM byte2
+// bits 0-1) selects among them exactly as on the stock 2bpp path.
+__attribute__((target("arm"), noinline))
+static void vt_assemble_page_2bpp_to(u32 dest, u32 phys_bank)
+{
+    if (!vt_spread_ready) vt_spread_init();
+    u32 mask = rommask ? rommask : 0xFFFFFFFFu;
+    u32 inner  = phys_bank >> 3, eva7 = phys_bank & 7u;
+    u32 imask  = vt_inner_bank_mask();
+    u32 middle = (u32)vt_chr_reg_201A & 0xF8u;
+    u32 outer  = (u32)vt_chr_outer_4100 & 0x0Fu;
+    u32 src_base = (eva7 | (((inner & imask) | (middle & ~imask)) << 3)
+                         | (outer << 11)) * 1024u;   // 1KB units in 2bpp
+    u32 *d = (u32*)dest;
+    for (int t = 0; t < 64; t++, src_base += 16) {
+        for (int r = 0; r < 8; r++) {
+            u32 lo = src_base + r;
+            *d++ = vt_spread[rombase[lo & mask]]
+                 | (vt_spread[rombase[(lo + 8) & mask]] << 1);
+        }
+    }
+}
+
+// PIX16EN ($2010 bit 0) sprite assembler -- session 20b4.
+// With PIX16EN set a sprite fetch still reads a 4bpp (32-byte) tile, but the
+// four bits of each pixel split into TWO horizontally adjacent 2-bit pixels:
+// planes 0/1 are the LEFT eight pixels, planes 2/3 the RIGHT eight.  Emit
+// TWO GBA tiles per VT tile -- [L(t), R(t)] -- so a 16x16 OBJ's four tiles
+// sit consecutively for 1D mapping: pair (t even, t|1) occupies GBA tiles
+// 2t..2t+3 = [TL, TR, BL, BR].  Nibble values are chosen to index the
+// EXISTING scattered extended OBJ palette banks (see vt_build_16color_palette
+// and its s20b empirical note: PIX16EN halves draw through the extended
+// space, the menu cursor's yellow is authored at $3F13 = scatter p0|p1|bit4):
+//   left  half pixel -> nibble p0|(p1<<1)   right half -> nibble p2|(p3<<1)
+// BOTH halves are plain 2-bit pixels indexing entries 0..3 of the sprite's
+// palette bank -- verified against the 11.png title reference: the cursor's
+// RIGHT half is the same yellow/olive family as its left, i.e. both halves
+// resolve through $3F10+pal*4+value.  (A first attempt put the right half's
+// bits at nibble positions 2-3 -- the plane-scatter positions $3F30/50/70 --
+// and the reference shows those hold grey: wrong.)  Entries 1..3 of each
+// scattered bank coincide with the classic $3F11-13 colours, so the existing
+// palette fixup already supplies the correct values for both halves.
+// Nibble 0 = GBA-transparent, matching each half's own 2 bits == 0.
+// A page becomes 128 GBA tiles = 4KB, so PIX16 OBJ slots stride 4096 bytes
+// (tiles 0..511, still clear of the stock cache at tiles 512+).
+__attribute__((target("arm"), noinline))
+static void vt_assemble_page_pix16_to(u32 dest, u32 phys_bank)
+{
+    if (!vt_spread_ready) vt_spread_init();
+    u32 mask = rommask ? rommask : 0xFFFFFFFFu;
+    // SESSION 21: assemblers are only reached from extension-active paths
+    // (BKEXTEN BG slots, SPEVA/PIX16 sprites), so compose per the wiki's
+    // extension-ACTIVE formula: EVA | ((inner&mask | middle&~mask) << 3)
+    // | (outer << 11), with NO intermediate ($2018.4-6) contribution.
+    // Routing the precomposed (inner<<3)|EVA through vt_chr_bank_byte_offset
+    // had two latent bugs: the inner mask truncated the composed number to
+    // 8 bits (breaks inner banks >= 32) and intermediate<<8 was added even
+    // though extension suppresses it.  Value-identical for SA/LI today
+    // ($201A=0, $2018.4-6=0, $4100=0).
+    u32 inner  = phys_bank >> 3, eva7 = phys_bank & 7u;
+    u32 imask  = vt_inner_bank_mask();
+    u32 middle = (u32)vt_chr_reg_201A & 0xF8u;
+    u32 outer  = (u32)vt_chr_outer_4100 & 0x0Fu;
+    u32 src_base = (eva7 | (((inner & imask) | (middle & ~imask)) << 3)
+                         | (outer << 11)) * 2048u;   // final bank: 2KB units in 4bpp
+    u32 *d = (u32*)dest;
+    for (int t = 0; t < 64; t++, src_base += 32) {
+        for (int r = 0; r < 8; r++) {              // LEFT half: planes 0/1
+            u32 lo = src_base + r;
+            *d++ = vt_spread[rombase[lo & mask]]
+                 | (vt_spread[rombase[(lo + 8) & mask]] << 1);
+        }
+        for (int r = 0; r < 8; r++) {              // RIGHT half: planes 2/3
+            u32 hi = src_base + r + 16;
+            *d++ = vt_spread[rombase[hi & mask]]
+                 | (vt_spread[rombase[(hi + 8) & mask]] << 1);
+        }
+    }
+}
+
+// ===========================================================================
+// BKEXTEN -- Background Address Extension ($2010 bit 4), session 18.
+//
+// Per the NESdev "VT02+ Video Modes" page, the background's three Extended
+// Video Address bits are  P,A1,A0  where A1:A0 are the tile's attribute bits
+// and P = ($2011 bit0 EVA12S == 0 ? $2018 bit3 BKPAGE : $4106 bit0 HV).  The
+// effective CHR bank of a background fetch becomes (page_bank << 3) | EVA,
+// and because the attribute bits are consumed as tile-number bits, the
+// palette set of every background pixel is forced to ZERO.
+//
+// GBA mapping: the same nametable cell can now show a different tile for
+// each attribute value, so one GBA tile per NES name is not enough.  We
+// allocate 64-tile "slots" of BG character VRAM keyed by (page, attr).  The
+// free regions of BG VRAM (everything else is spoken for -- 0x2000-0x3FFF is
+// the UI layer, 0x6000-0x6FFF the tilemap, 0x8000-0xFFFF the guest PRG
+// window) give ten such slots:
+//     GBA tile indices   0..255   (0x0000-0x1FFF)  4 slots
+//     GBA tile indices 512..767   (0x4000-0x5FFF)  4 slots
+//     GBA tile indices 896..1023  (0x7000-0x7FFF)  2 slots (screenblocks
+//                       14-15, unused: VT mirroring is only ever 2-screen)
+// Star Ally needs three (page 0 x attrs 0-2).  Slots are (approximately)
+// LRU-evicted; if a scene ever needs more than ten live (page,attr) pairs,
+// evicted-but-still-displayed cells go stale until rewritten -- accepted
+// limitation, revisit if a game hits it.
+//
+// The map entry itself is written by vt_bk_write_cell(): GBA tile index =
+// slot base + (name & 63), palette nibble = 0.  The ppu.s BG-cache consumer
+// and whole-map redraw branch to vt_bk_consume()/vt_bk_whole() when
+// vt_bkexten_live is set (the legacy paths split a cell's low byte (name)
+// and high byte (attr) between two writers, which cannot express a
+// slot-packed index).
+// ===========================================================================
+EWRAM_BSS u8 vt_reg_2011;
+EWRAM_BSS u8 vt_bkexten_live;
+
+extern const u32 vt_bk_consts[4];   // ppu.s: BG_CACHE, NES_VRAM2, NES_VRAM4, AGB_BG
+extern u8 _bg_cache_full;           // ppu.s storage
+extern u8 _ppuctrl0;                // $2000 shadow (ppu.s storage)
+extern u8 vt_mirror_value;          // $4106 bit0 (vt_regs.c, session 15)
+
+#define VT_BK_SLOTS 10
+static const u16 vt_bk_slot_idx[VT_BK_SLOTS] =
+    { 0, 64, 128, 192, 512, 576, 640, 704, 896, 960 };
+EWRAM_BSS u8  vt_bk_slot_key[VT_BK_SLOTS];    // (page<<2)|attr; 0xFF = empty
+EWRAM_BSS u16 vt_bk_slot_bank[VT_BK_SLOTS];   // extended bank last assembled
+EWRAM_BSS u32 vt_bk_slot_sig[VT_BK_SLOTS];    // value at sig word (stomp check)
+EWRAM_BSS u16 vt_bk_slot_sigoff[VT_BK_SLOTS]; // index of first NONZERO word; 0xFFFF = page all-zero
+EWRAM_BSS u8  vt_bk_slot_age[VT_BK_SLOTS];
+EWRAM_BSS u8  vt_bk_clock;
+EWRAM_BSS u8  vt_bk_pending_whole;   // whole-map rebuild deferred to vblank
+EWRAM_BSS u16 vt_bk_lut[32];         // (page<<2|attr)&31 -> slot base tile, 0xFFFF=miss
+EWRAM_BSS u32 vt_bk_dbg[8];          // 0 flips 1 inval 2 wholes 3 allocs 4 cells 5 attrN0 6 lastab 7 lastattr
+
+__attribute__((section(".iwram.vtbk")))
+static u32 vt_bk_pbit(void)
+{
+    return (vt_reg_2011 & 1) ? (u32)(vt_mirror_value & 1)
+                             : (u32)((vt_chr_reg_2018 >> 3) & 1);
+}
+
+// Slot keys are stored BIASED (+1): 1..17 = live (page<<2|attr)+1, while
+// BOTH 0x00 and 0xFF mean "empty".  Something in the inherited engine zeroes
+// a few bytes of this table (observed: bytes 0-2 reset to 0x00 after
+// allocation -- stomper not yet identified); with the biased encoding a
+// zero-stomp degrades to "slot forgotten" instead of "slot claims
+// (page0,attr0)", and the per-vblank scrub rewrites any map entries that
+// pointed at a forgotten slot within four frames.  Self-healing beats
+// silently-wrong.
+void vt_bk_invalidate(void)
+{
+    vt_bk_dbg[1]++;
+    for (int s = 0; s < VT_BK_SLOTS; s++) vt_bk_slot_key[s] = 0;
+    for (int i = 0; i < 32; i++) vt_bk_lut[i] = 0xFFFF;
+}
+
+void vt_bk_lut_refresh(void);
+
+static void vt_bk_slot_fill(int s, u32 bank)
+{
+    u32 dest = 0x06000000u + (u32)vt_bk_slot_idx[s] * 32u;
+    vt_bk_slot_bank[s] = (u16)bank;
+    vt_assemble_page_to(dest, bank);
+    // SESSION 20: signature = first NONZERO word.  Word 0 alone is blind to
+    // zero-stomps whenever tile0 row0 is legitimately blank (Star Ally's
+    // attr-0 slot: first art at word 13) -- the 2bpp cache zeroed the slot
+    // and frame_check compared 0==0 forever.  Mirrors vt_chr4_sigoff.
+    const volatile u32 *d = (const volatile u32*)dest;
+    u16 off = 0xFFFF;
+    for (int w = 0; w < 512; w++) { if (d[w]) { off = (u16)w; break; } }
+    vt_bk_slot_sigoff[s] = off;
+    vt_bk_slot_sig[s]    = (off == 0xFFFF) ? 0u : d[off];
+}
+
+static inline u32 vt_bk_eva(u32 attr)
+{
+    // EVA = {P, attr1, attr0} exactly as the VT03 datasheet Table A5 and the
+    // NESdev wiki state (P = BKPAGE or the $4106 HV bit per $2011 EVA12S).
+    // SESSION 21b2: the s21b1 "BKPAGE suppresses attr" model is REVERTED --
+    // it was fitted to a symptom whose real cause was the nametable
+    // arrangement (header mirror bit clobbering the $4106 default in
+    // cart.s), and it blanked legitimate attr-selected banks (menu earth,
+    // HUD glyphs).  Do not re-add without datasheet evidence.
+    return (vt_bk_pbit() << 2) | (attr & 3u);
+}
+
+static int vt_bk_slot_get(u32 page, u32 attr)
+{
+    u32 key  = ((page << 2) | attr) + 1u;          // biased; see note above
+    // Bank composition per the VT03 datasheet extension formula (2 KB / 4bpp
+    // units): bank = VBANK*8 + EVA, EVA = {P, attr1, attr0}.  The session-21
+    // note that stood here argued BKPAGE suppresses attr; that was a
+    // misdiagnosis (see vt_bk_eva) -- the orange band's real cause was the
+    // stacked-vs-side-by-side nametable arrangement, fixed in cart.s.
+    u32 bank = ((u32)vt_chr4_page_bank[page] << 3) | vt_bk_eva(attr);
+    int freeslot = -1, oldest = 0;
+    for (int s = 0; s < VT_BK_SLOTS; s++) {
+        if (vt_bk_slot_key[s] == key) {
+            if (vt_bk_slot_bank[s] != (u16)bank) vt_bk_slot_fill(s, bank);
+            vt_bk_slot_age[s] = ++vt_bk_clock;
+            return s;
+        }
+        u8 k = vt_bk_slot_key[s];
+        if ((k == 0 || k == 0xFF) && freeslot < 0) freeslot = s;
+    }
+    // approximate LRU: pick the slot with the largest (clock - age) distance
+    if (freeslot < 0) {
+        u8 bestd = 0;
+        for (int s = 0; s < VT_BK_SLOTS; s++) {
+            u8 d = (u8)(vt_bk_clock - vt_bk_slot_age[s]);
+            if (d >= bestd) { bestd = d; oldest = s; }
+        }
+        freeslot = oldest;
+    }
+    vt_bk_dbg[3]++;
+    vt_bk_slot_key[freeslot] = (u8)key;
+    vt_bk_slot_age[freeslot] = ++vt_bk_clock;
+    vt_bk_slot_fill(freeslot, bank);
+    return freeslot;
+}
+
+// Re-check every live slot's effective bank (page_bank / BKPAGE / HV / EVA12S
+// changed) and reassemble in place; map entries stay valid.
+void vt_bk_banks_recheck(void)
+{
+    if (!vt_bkexten_live) return;
+    for (int s = 0; s < VT_BK_SLOTS; s++) {
+        u8 k = vt_bk_slot_key[s];
+        if (k == 0 || k == 0xFF) continue;
+        u32 kk = k - 1u;
+        u32 page = kk >> 2, attr = kk & 3;
+        u32 bank = ((u32)vt_chr4_page_bank[page] << 3) | vt_bk_eva(attr);
+        if (vt_bk_slot_bank[s] != (u16)bank) vt_bk_slot_fill(s, bank);
+    }
+}
+
+// The inherited 2bpp tile cache can still write over BG char VRAM (the s13
+// lesson).  Once per vblank, verify each live slot's first word and
+// reassemble any slot that was stomped.
+void vt_bk_frame_check(void)
+{
+    for (int s = 0; s < VT_BK_SLOTS; s++) {
+        u8 k = vt_bk_slot_key[s];
+        if (k == 0 || k == 0xFF) continue;
+        u16 off = vt_bk_slot_sigoff[s];
+        if (off == 0xFFFF) continue;   // page genuinely all-zero: nothing to protect
+        u32 dest = 0x06000000u + (u32)vt_bk_slot_idx[s] * 32u;
+        if (((const volatile u32*)dest)[off] != vt_bk_slot_sig[s])
+            vt_assemble_page_to(dest, vt_bk_slot_bank[s]);
+    }
+}
+
+// Fast path for bulk passes (scrub / whole): a (page<<2|attr) -> slot-base
+// lookup table, refreshed from the slot table once per pass.  The general
+// vt_bk_slot_get is only consulted on a LUT miss (0xFFFF), which allocates
+// the slot and repairs the LUT entry.  Bulk passes also skip the VRAM write
+// when the entry is already correct -- with a static screen that turns the
+// whole sweep into reads.  (First version scanned the slot table per cell
+// and wrote unconditionally: Star Ally fell from 40.6 to 12.2 fps.  Session
+// 18 lesson: 480 x anything is a hot loop.)
+void vt_bk_lut_refresh(void)
+{
+    for (int i = 0; i < 32; i++) vt_bk_lut[i] = 0xFFFF;
+    for (int s = 0; s < VT_BK_SLOTS; s++) {
+        u8 k = vt_bk_slot_key[s];
+        if (k == 0 || k == 0xFF) continue;
+        vt_bk_lut[(k - 1u) & 31] = vt_bk_slot_idx[s];
+    }
+}
+
+// SESSION 20b PERF: hottest non-core function (~290 calls/frame pre-diet,
+// ~90-insn Thumb body) -- executing from 16-bit waitstated cart ROM cost
+// ~18% of host time.  IWRAM fetches are 32-bit zero-wait: ~2x per call.
+__attribute__((section(".iwram.vtbk")))
+static void vt_bk_write_cell(u32 o)          // o = resolved NT offset 0..0x7FF
+{
+    u32 t = o & 0x3FF;
+    if (t >= 0x3C0) return;                  // attribute area itself
+    const u8 *nes = (const u8*)vt_bk_consts[1];
+    u32 scr  = o & 0x400;
+    u32 n    = nes[o];
+    u32 col  = t & 31, row = t >> 5;
+    u32 ab   = nes[scr + 0x3C0 + ((row >> 2) << 3) + (col >> 2)];
+    u32 sh   = ((row & 2) << 1) | (col & 2);
+    u32 attr = (ab >> sh) & 3;
+    u32 page = (n >> 6) + ((_ppuctrl0 & 0x10) ? 4u : 0u);
+    u32 key  = (page << 2) | attr;
+    u32 base = vt_bk_lut[key & 31];
+    if (base == 0xFFFF) {
+        int s = vt_bk_slot_get(page, attr);
+        base = vt_bk_slot_idx[s];
+        vt_bk_lut[key & 31] = (u16)base;
+    }
+    volatile u16 *e = &((volatile u16*)vt_bk_consts[3])[o];
+    // SESSION 20b: the attribute selects the GBA sub-palette (entry bits
+    // 12-13), matching the corrected LINEAR palette layout in
+    // vt_build_16color_palette (attr = palette-index bits 5-6 = GBA bank).
+    // History: this was attempted earlier against the old SCATTERED layout
+    // and reverted because banks 1-3 then held garbage (the scatter left
+    // ram[0x20+] zeros there) and everything attr!=0 went dark.  With the
+    // linear layout those banks hold the game's real $3F20+/$3F40+/$3F60+
+    // colours, so the attribute bank bits are required for correctness
+    // (Star Ally's title uses attr 1-3 tiles for the planet shading).
+    u16 want = (u16)((base + (n & 63)) | (attr << 12));
+    if (*e != want) *e = want;
+}
+
+// Replacement for the ppu.s BG-cache consumer loop.  cur/lim are byte
+// cursors into the 512-byte BG_CACHE ring of halfword NT offsets.
+// SESSION 20: MUST be ARM mode.  consume_bg_cache's BKEXTEN branch calls
+// this via bl_long (mov lr,pc; ldr pc,=vt_bk_consume) from IWRAM asm, and
+// on ARM7TDMI an ldr-to-pc does NOT interwork -- it jumps to the address in
+// ARM state with the Thumb bit ignored.  Compiled as Thumb, the very first
+// real invocation (mid-frame PPU writes from Star Ally's timer ISR finally
+// putting entries in the ring) executed Thumb code as ARM instructions and
+// careened into the appended NES ROM (the wild-PC soft-hang at first timer
+// IRQ: pc=0x0804D4BC, lr=0x03006930).  Dormant until then because the ring
+// was empty at every earlier consume.  Same constraint and fix as
+// vt_chr4_rebuild_if_dirty above; audited all 79 bl_long/b_long targets --
+// this was the only Thumb one.
+EWRAM_BSS static u16 vt_bk_attr_shadow[128];   // last consumed attr byte per screen (0x100 = never)
+
+void vt_bk_attr_shadow_reset(void)
+{
+    for (int i = 0; i < 128; i++) vt_bk_attr_shadow[i] = 0x100;
+}
+
+__attribute__((target("arm")))
+void vt_bk_consume(u32 cur, u32 lim)
+{
+    volatile u16 *ime = (volatile u16*)0x04000208;   // see session-19 note
+    u16 saved = *ime; *ime = 0;
+    vt_bk_dbg[2] += 0x10000;   // high half: consume-entry count
+    vt_bk_lut_refresh();
+    const u16 *ring = (const u16*)vt_bk_consts[0];
+    while (cur != lim) {
+        u32 e = ring[cur >> 1];
+        cur = (cur + 2) & (512u - 1u);
+        if (e & 0x800) continue;             // 4-screen: never on VT boards
+        u32 t = e & 0x3FF;
+        if (t >= 0x3C0) {                    // attribute byte: 4x4 cell area
+            u32 scr = e & 0x400;
+            u32 a = t - 0x3C0;
+            // SESSION 20b PERF: Star Ally's timer ISR rewrites attribute
+            // bytes every frame with UNCHANGED values; each ring entry then
+            // recomputed 16 cells (profiled: write_cell body ~18% of all
+            // host time, dominated by this amplification).  Shadow the last
+            // value consumed per attr byte and skip redundant rewrites --
+            // a genuine change still recomputes all 16 cells.  u16 shadow
+            // entries start at 0x100 (impossible byte) so the first
+            // consume of each byte always processes; the whole-map sweep
+            // keeps cells honest regardless.
+            u32 sidx = (scr ? 64u : 0u) + a;
+            u8 curv = ((const u8*)vt_bk_consts[1])[scr + t];
+            if (vt_bk_attr_shadow[sidx] == (u16)curv) continue;
+            vt_bk_attr_shadow[sidx] = (u16)curv;
+            u32 ax = (a & 7) << 2, ay = (a >> 3) << 2;
+            for (u32 ry = 0; ry < 4 && ay + ry < 30; ry++)
+                for (u32 rx = 0; rx < 4; rx++)
+                    vt_bk_write_cell(scr + (ay + ry) * 32 + ax + rx);
+        } else {
+            u32 o = e & ~1u;
+            vt_bk_write_cell(o);
+            vt_bk_write_cell(o + 1);
+        }
+    }
+    *ime = saved;
+}
+
+// Rotating whole-map refresh: one quarter of both nametables per vblank.
+//
+// Why this exists: PocketNES's incremental BG cache is not a reliable feed
+// for VT games.  The producer (writeBG in ppu.s) SELF-MODIFIES into "bx lr"
+// when the 256-entry ring fills -- which a VT title's boot-time video-DMA
+// screen blast does instantly -- and the re-enable
+// (set_bg_cache_available) only happens on a whole-map redraw that is
+// itself gated behind bg_cache_updateok.  Star Ally never got a single
+// cache entry through in 420 frames.  Rather than re-plumb that machinery,
+// BKEXTEN mode sweeps the map continuously: 480 cells/frame means any
+// nametable change is on screen within 4 frames, no matter which upload
+// path (per-$2007, video DMA, stack blast) the game used.  Cost is ~1ms of
+// the 4.9ms vblank; vt_bk_write_cell is idempotent so sweeping clean cells
+// is harmless.
+EWRAM_BSS u8 vt_bk_scrub_phase;
+void vt_bk_scrub(void)
+{
+    // SESSION 20b PERF: 60 cells/frame (one sixteenth of ONE screen,
+    // screens alternating; full coverage every 32 frames).  The sweep is a
+    // SAFETY NET -- the ring (vt_bk_consume, measured live at ~1 call/frame
+    // in Star Ally gameplay) delivers real nametable changes immediately.
+    // The previous 240 cells/frame put vt_bk_write_cell at ~290 calls/frame
+    // = the largest single non-CPU-core cost in the profile (~18% of host
+    // time; the body executes from waitstated cart ROM).
+    u32 q = vt_bk_scrub_phase & 31;
+    vt_bk_scrub_phase++;
+    vt_bk_lut_refresh();
+    u32 scr = (q & 1) ? 0x400u : 0u;
+    u32 lo  = (q >> 1) * 60u, hi = lo + 60u;    // 960/16 cells
+    for (u32 t = lo; t < hi; t++)
+        vt_bk_write_cell(scr + t);
+}
+
+void vt_bk_whole(void)
+{
+    vt_bk_dbg[2]++;
+    vt_bk_lut_refresh();
+    for (u32 scr = 0; scr < 0x800; scr += 0x400)
+        for (u32 t = 0; t < 0x3C0; t++)
+            vt_bk_write_cell(scr + t);
+}
+
+// SESSION 20: chunked whole-map rebuild.  vt_bk_whole() above sweeps all
+// 2*960 map cells in one call; at a BKEXTEN mode flip almost every cell misses
+// the 10-slot cache, so it fires a burst of vt_assemble_page_to() ROM
+// assembles that runs far past the ~4.9ms vblank.  Even with IME masked, the
+// overrun means the frame is missed and the vblank handler re-enters
+// (inside_gba_vblank 0->1->2), trampling the user stack and the timeout.s
+// event-handler pointer table -> the Star Ally wild-PC crash on Start.  This
+// stepper walks the same 1920 cells but only VT_BK_WHOLE_CHUNK per vblank,
+// tracked by vt_bk_whole_cur, so no single frame overruns; the caller keeps
+// vt_bk_pending_whole set until this returns 1.  The unique-slot assembles are
+// naturally spread across chunks as the sweep reaches new (page,attr) regions.
+#define VT_BK_WHOLE_TOTAL 1920u          // 2 screens * 0x3C0 drawable cells
+#define VT_BK_WHOLE_CHUNK  128u          // cells per vblank -> ~15 frames total
+EWRAM_BSS u16 vt_bk_whole_cur;
+static int vt_bk_whole_step(void)
+{
+    vt_bk_lut_refresh();
+    u32 i   = vt_bk_whole_cur;
+    u32 end = i + VT_BK_WHOLE_CHUNK;
+    if (end > VT_BK_WHOLE_TOTAL) end = VT_BK_WHOLE_TOTAL;
+    for (; i < end; i++) {
+        u32 scr = (i >= 960u) ? 0x400u : 0u;
+        u32 t   = (i >= 960u) ? (i - 960u) : i;
+        vt_bk_write_cell(scr + t);
+    }
+    if (i >= VT_BK_WHOLE_TOTAL) { vt_bk_whole_cur = 0; vt_bk_dbg[2]++; return 1; }
+    vt_bk_whole_cur = (u16)i;
+    return 0;
+}
+
 __attribute__((target("arm"), noinline))
 static void vt_spr_eva_update(void)
 {
     // Need 4bpp sprites (SP16EN, bit 2) AND address extension (SPEXTEN, bit 3),
     // with the compatibility palette (COLCOMP=0).  Otherwise leave the stock
     // sprite path completely alone.
-    if (!vt_active || (vt_reg_2010 & 0x0C) != 0x0C || (vt_reg_2010 & 0x80)) {
+    // Need 4bpp sprites (SP16EN, bit 2) AND address extension (SPEXTEN, bit 3),
+    // with the compatibility palette (COLCOMP=0).  Otherwise leave the stock
+    // sprite path completely alone.
+    // SESSION 21b3 -- the 2bpp-EVA gap (guide 8b) is now CLOSED.  SPEXTEN
+    // (bit 3) alone puts sprites on extension addressing; SP16EN (bit 2)
+    // selects the FETCH WIDTH, not whether EVA applies:
+    //   SPEXTEN=1 SP16EN=1 -> 4bpp EVA pages   (SA menu, $2010=$1F; PIX16EN
+    //                                           additionally splits halves)
+    //   SPEXTEN=1 SP16EN=0 -> 2bpp EVA pages   (SA gameplay/attract, $1A)
+    // In the 2bpp mode ONLY eva!=0 sprites are redirected: eva==0 sprites are
+    // left on the stock bankbuffer path, which is a different bank source and
+    // renders them correctly today, so redirecting them would be an unverified
+    // change to already-good output (this is what sank the s20b4 prototype).
+    // vt_spr16_active therefore carries a MODE, not a boolean: 0 = off,
+    // 1 = redirect every sprite, 2 = redirect only sprites with EVA != 0.
+    if (!vt_active || !(vt_reg_2010 & 0x08) || (vt_reg_2010 & 0x80)) {
         vt_spr16_active = 0;
+        vt_pix16_active = 0;
         return;
     }
+    int sp16 = (vt_reg_2010 & 0x04) != 0;
 
     const u8 *oam = (const u8 *)_dmanesoambuff;
-    if (!oam) { vt_spr16_active = 0; return; }
+    if (!oam) { vt_spr16_active = 0; vt_pix16_active = 0; return; }
+
+    // PIX16EN ($2010 bit 0): 16-pixel-wide 2bpp halves.  Slots switch to the
+    // 4KB pair-format; invalidate all assembled slots on any format flip so
+    // stale 2KB-format data is never displayed through the doubled index.
+    int pix16 = sp16 && (vt_reg_2010 & 0x01);
+    {
+        // Slot contents differ per format (2bpp / 4bpp / pix16 pair-format),
+        // so invalidate every slot on ANY format flip, not just a pix16 flip.
+        u8 fmt = (u8)(pix16 ? 2 : (sp16 ? 1 : 0));
+        static u8 last_fmt = 0xFF;
+        if (fmt != last_fmt) {
+            for (int s = 0; s < VT_EVA_SLOTS; s++) vt_eva_key[s] = 0;
+            last_fmt = fmt;
+        }
+    }
 
     int assembled = 0;                       // at most one new page per vblank
     for (int i = 0; i < 256; i += 4) {
@@ -999,6 +1602,15 @@ static void vt_spr_eva_update(void)
         if (y >= 0xEF) continue;             // hidden
         u8 tile = oam[i + 1];
         u8 eva  = (oam[i + 2] >> 2) & 7;
+        // SESSION 21b6: eva==0 sprites are redirected too.  s21b3 left them on
+        // the stock bankbuffer path because guide 8b assumed that path already
+        // fetched them correctly -- it does not.  Extension addressing applies
+        // to EVERY sprite once SPEXTEN is set, so even EVA=0 resolves to
+        // VBANK<<13, while the stock path uses the normal-mode VBANK<<10: a
+        // different ROM offset entirely, and in Star Ally's gameplay stages it
+        // lands on blank data.  Measured at f700: 10 of 24 visible sprites had
+        // EVA=0 and ALL TEN drew blank tiles -- the "invisible enemies you
+        // crash into".  Redirecting them costs nothing (same slot cache).
         // 8x16 sprites: pattern table from tile bit 0, page from tile bits 6-7.
         // This mirrors update_sprites' own index arithmetic exactly.
         u32 page = (u32)((tile & 1) << 2) | ((tile >> 6) & 3);
@@ -1012,16 +1624,26 @@ static void vt_spr_eva_update(void)
         if (slot < 0) {
             if (assembled) continue;         // spread the work across frames
             slot = victim;
-            vt_eva_assemble(slot, (vt_chr4_page_bank[page] << 3) | eva);
+            u32 bank = (vt_chr4_page_bank[page] << 3) | eva;
+            if (pix16)
+                vt_assemble_page_pix16_to(0x06010000u + (u32)slot * 4096u, bank);
+            else if (sp16)
+                vt_eva_assemble(slot, bank);
+            else
+                vt_assemble_page_2bpp_to(0x06010000u + (u32)slot * 2048u, bank);
             vt_eva_key[slot] = key;
             assembled = 1;
         }
         vt_eva_age[slot] = ++vt_eva_clock;
         // Publish the slot where ppu.s will look for it.  Must stay
         // non-negative or need_to_fetch_sprite_data would try to recache it.
-        spr_cache_map[64u + (page << 3) + eva] = (u8)slot;
+        // In PIX16 mode publish slot*2: update_sprites' existing slot<<6
+        // tile math then lands on tiles slot*128 = the 4KB pair slots, with
+        // no change to the asm base arithmetic.
+        spr_cache_map[64u + (page << 3) + eva] = (u8)(pix16 ? slot * 2 : slot);
     }
-    vt_spr16_active = 1;
+    vt_spr16_active = 1;                    // redirect every sprite (see above)
+    vt_pix16_active = (u8)pix16;
 }
 
 __attribute__((target("arm")))
@@ -1245,6 +1867,31 @@ void vt_ppu_reg_write(u8 page, u8 offset, u8 val)
                     }
                     vt_reg_2010 = val;
 
+                    // BKEXTEN transition (session 18): live when bit4 set
+                    // together with 4bpp backgrounds (BK16EN).
+                    {
+                        u8 want = ((val & 0x12) == 0x12);
+                        if (want != vt_bkexten_live) {
+                            vt_bkexten_live = want;
+                            vt_bk_dbg[0]++;
+                            vt_bk_invalidate();
+                            if (want) {
+                                // Rebuild the whole tilemap in the packed
+                                // slot encoding.  DEFERRED to the vblank
+                                // handler: the slot allocator is not
+                                // reentrant, and running it here (CPU write
+                                // context) races the vblank-side consumer --
+                                // observed as three slots all claiming the
+                                // same (page,attr) key.
+                                vt_bk_pending_whole = 1;
+                            } else {
+                                // Back to the legacy encoding: force the
+                                // asm whole-map redraw.
+                                _bg_cache_full = 1;
+                            }
+                        }
+                    }
+
                     // Re-sync CHR if the 4bpp-mode selection changed.  The
                     // CHR copy path differs between 2bpp (raw memcpy) and
                     // 4bpp (deinterleaved 2KB -> 1KB), so any of COLCOMP,
@@ -1258,9 +1905,15 @@ void vt_ppu_reg_write(u8 page, u8 offset, u8 val)
                 break;
 
             case 0x11:
-                // $2011: Extended Graphics Control 2 -- mostly LCD-side
-                // controls.  Shadow only for now; the emulator doesn't
-                // expose them to anything observable.
+                // $2011: Extended Graphics Control 2.  Bit 0 (EVA12S)
+                // selects the source of the background EVA bit 2 under
+                // BKEXTEN (session 18); the rest are LCD-side controls.
+                if ((vt_reg_2011 ^ val) & 0x01) {
+                    vt_reg_2011 = val;
+                    vt_bk_banks_recheck();
+                } else {
+                    vt_reg_2011 = val;
+                }
                 break;
 
             case 0x18:
@@ -1269,8 +1922,10 @@ void vt_ppu_reg_write(u8 page, u8 offset, u8 val)
                 //   bit  3    BKPAGE address is EVA12 when EVA12S=0
                 //   bits 6:4  Video Bank 1 Register (intermediate CHR)
                 if (vt_chr_reg_2018 != val) {
+                    u8 pchanged = (vt_chr_reg_2018 ^ val) & 0x08;
                     vt_chr_reg_2018 = val;
                     vt_chr_sync_from_prg();
+                    if (pchanged) vt_bk_banks_recheck();
                 }
                 // Keep the low nibble of vt_ppumode in sync for backward
                 // compatibility with code that watched vt_ppumode.

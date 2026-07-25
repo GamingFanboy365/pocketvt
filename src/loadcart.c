@@ -586,6 +586,33 @@ void init_cache(u8* nes_header, int called_from)
 		}
 	}
 	
+	// Session 18: the per-scanline effect tables come in double-buffered
+	// pairs that flip every vblank (ppu.s), but only ONE side of two of the
+	// pairs was ever pointed at real memory.  _dmadispcntbuff came from the
+	// stale DISPCNTBUFF2 equate and _bg0cntbuff/_dmabg0cntbuff were never
+	// initialized at all, so after the first flip the $2001/mirroring
+	// mid-frame writers (ctrl1finish in ppu.s, ubg2 in cart.s) memset16'd
+	// through garbage pointers -- observed as a continuous zero-spray over
+	// the tilemap at 0x06006000 the moment a game does raster splits (Star
+	// Ally's HUD).  Lonely Island never writes those registers mid-frame,
+	// which is why it survived.  Give the orphaned sides real EWRAM storage;
+	// DMA can read EWRAM, and the writers just need somewhere harmless and
+	// coherent to land.
+	{
+		static EWRAM_BSS u16 vt_dispcntbuff2[240];
+		static EWRAM_BSS u16 vt_bg0cntbuff_pair[2][240];
+		_dmadispcntbuff = vt_dispcntbuff2;
+		_bg0cntbuff     = vt_bg0cntbuff_pair[0];
+		_dmabg0cntbuff  = vt_bg0cntbuff_pair[1];
+		// Session 19: reset_buffers() already ran above -- against the OLD
+		// pointers -- so these arrays still held BSS zeros.  A zeroed
+		// per-scanline DISPCNT table shows the UI text layer (0x0440's BG2)
+		// on alternate frames: the "dashes everywhere" regression on Lonely
+		// Island's map.  Re-run it so the replacement sides get the proper
+		// idle fill (0x0440 per line for DISPCNT, 0 for BG0CNT).
+		reset_buffers();
+	}
+
 	if (vrompages==0)
 	{
 		assign_chr_pages(NES_VRAM,0,8);

@@ -450,7 +450,18 @@ bool game_specific_hack(const u8 *initpc, const u8 *lastbank, int hacknum)
 void speedhack_manager(const u8* initpc, const u8* lastbank, int hacknum)
 {
 	int hack_to_install;
-	
+
+	// Session-20b3: the automatic finder MUST stay enabled for VT carts.
+	// A blanket `if (vt_active) return;` gate was tried (to keep the finder
+	// from re-classifying Star Ally's encrypted loop byte) and it silently
+	// broke Lonely Island: LI's playable speed comes from the finder
+	// installing a hack on its LDA/CMP $26 vblank wait, not from its own
+	// hand-seeded entry (which uses divider=1, a no-op).  Gating the finder
+	// dropped LI 100% -> ~22%.  The finder is encryption-aware -- it re-homes
+	// the default BNE hack to op_table[0xB0] and installs the semantically
+	// correct _D0y for SA -- so it is SAFE for SA (boots, stable f2400 soak,
+	// 67%).  SA no longer hand-seeds any hack (see vt_regs.c); it relies on
+	// this finder entirely.
 	speedhack_T *sh=&speedhacks[hacknum];
 
 	hack_to_install=0;

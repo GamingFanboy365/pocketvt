@@ -4,6 +4,7 @@ EWRAM_BSS int roms;//total number of roms
 EWRAM_BSS volatile int selectedrom=0;
 EWRAM_BSS volatile int selected_rom_options = 0;
 EWRAM_BSS volatile int rommenu_state = 0;
+EWRAM_BSS static u32 menu_joycfg_save;
 
 typedef enum
 {
@@ -30,7 +31,15 @@ void rommenu(void) {
 		//this now has its own delete menu built into the function
 	#endif
 	#if LINK
-	resetSIO((joycfg&~0xff000000) + 0x20000000);//back to 1P
+	// Back to 1P -- but KEEP joycfg bit30.  PocketVT sets it (session 10)
+	// because VT famiclones wire their single controller as NES player 2, so
+	// the games read $4017.  The stock line below rebuilt byte 3 as a bare
+	// 0x20, silently dropping bit30, and every game in a multicart build lost
+	// its controller the moment the ROM menu had been on screen once.
+	// resetSIO's player count comes from (joycfg >> 29), and 0x6 -> 4 players
+	// / 0x5 -> 3 players; 0x3 (bits 29+30) falls through to its 2-player
+	// default, which is what we want.
+	resetSIO((joycfg&~0xff000000) + 0x20000000 + (joycfg & 0x40000000));//back to 1P
 	#endif
 
 	if(pogoshell || roms <= 1)
@@ -42,6 +51,17 @@ void rommenu(void) {
 	}
 	else
 	{
+		// While the ROM menu is on screen, stop feeding the emulated pads.
+		// timeout.s re-stores NESjoypad from the raw GBA keys at the top of
+		// every frame, so the menu's own "EMUinput = 0" is overwritten before
+		// the running game reads the pad.  Stock PocketNES never noticed,
+		// because joy1state was never stored -- but VT famiclones wire their
+		// controller as NES player 2, so joycfg bit30 is set (session 10) and
+		// every D-pad press meant to scroll this menu also reached the game.
+		// Clearing bits 29/30 makes refreshNESjoypads store neither pad.
+		menu_joycfg_save = joycfg & 0x60000000u;
+		joycfg &= ~0x60000000u;
+
 		ui_x = 256;
 		rommenu_state = DISABLED;
 		move_ui();
@@ -70,6 +90,7 @@ void rommenu(void) {
 	move_ui();
 	setdarknessgs(0);
 	rommenu_state = DISABLED;
+	joycfg |= menu_joycfg_save;   // hand the pads back to the game
 //#if SAVE
 //	if(autostate&1)quickload();
 //#endif

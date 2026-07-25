@@ -640,6 +640,21 @@ vt_timer_install_now:
 	mul r2,r1,r2
 	ldr_ r1,timestamp
 	add r1,r1,r2
+	@ SESSION 21b6: $4101 D7 (TSYNEN) = 0 selects AD12-transition counting,
+	@ not HSYNC.  AD12 only toggles while the PPU is fetching, so the real
+	@ counter STALLS through vblank; counting plain 341-dot scanlines made
+	@ every expiry land ~22 lines early.  In Star Ally that put the raster
+	@ split above the HUD text, so the HUD page kept painting to line 240 --
+	@ the orange/yellow band along the bottom of the screen.  If the target
+	@ lands after rendering ends, push it on by one vblank's worth of dots
+	@ (frame length minus the rendered span; works for NTSC and PAL).
+	ldr_ r2,render_end_time
+	cmp r1,r2
+	ldrhi_ r0,line_zero_start_time
+	subhi r2,r2,r0
+	ldrhi_ r0,cyclesperframe
+	subhi r2,r0,r2
+	addhi r1,r1,r2
 	adrl_ r12,vt_timer_timeout
 	ldr r0,=vt_timer_handler
 	bl_long replace_timeout_2
@@ -655,6 +670,21 @@ vt_timer_handler:
 	mul r2,r1,r2
 	ldr_ r1,vt_timer_timestamp	@ our node[4] = timestamp of this expiry
 	add r1,r1,r2
+	@ SESSION 21b6: $4101 D7 (TSYNEN) = 0 selects AD12-transition counting,
+	@ not HSYNC.  AD12 only toggles while the PPU is fetching, so the real
+	@ counter STALLS through vblank; counting plain 341-dot scanlines made
+	@ every expiry land ~22 lines early.  In Star Ally that put the raster
+	@ split above the HUD text, so the HUD page kept painting to line 240 --
+	@ the orange/yellow band along the bottom of the screen.  If the target
+	@ lands after rendering ends, push it on by one vblank's worth of dots
+	@ (frame length minus the rendered span; works for NTSC and PAL).
+	ldr_ r2,render_end_time
+	cmp r1,r2
+	ldrhi_ r0,line_zero_start_time
+	subhi r2,r2,r0
+	ldrhi_ r0,cyclesperframe
+	subhi r2,r0,r2
+	addhi r1,r1,r2
 	adrl_ r12,vt_timer_timeout
 	ldr r0,=vt_timer_handler
 	bl_long install_timeout_2

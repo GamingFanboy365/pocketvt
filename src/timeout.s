@@ -1225,6 +1225,17 @@ _frame_sqeuencer_timeout: .word 0
 _frame_sequencer_timestamp: .word 0
 _frame_sequencer_next: .word 0
 
+@ SESSION 21b4: these three words were listed in equates.h (the _m_ offset
+@ table) when the VT timer was added, but never given storage here.  Every
+@ global after this point was therefore 12 bytes out of step with its offset:
+@ code using the macro form (str_ r0,screen_off_hook1) and code using the
+@ label form (ldr r4,=_screen_off_hook1) were touching DIFFERENT words, and
+@ sound.s's VT timer node was writing over the screen on/off hooks.  Keep
+@ this block and equates.h in lockstep -- see MAINTAINERS_GUIDE section 14.
+_vt_timer_timeout: .word 0
+_vt_timer_timestamp: .word 0
+_vt_timer_next: .word 0
+
 _TIMEOUT_END:
 
 _screen_off_hook1: .word 0
