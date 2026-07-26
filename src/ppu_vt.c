@@ -294,8 +294,8 @@ void vt_palette_rebuild_gba(void)
 {
     // ========================================================================
     // CRITICAL CORRECTNESS GATES -- if either of these is wrong, every game
-    // boots to a black screen.  History (see commit message and PPU_S_PATCH_
-    // INSTRUCTIONS.md):  the 0.4 cut of this function unconditionally
+    // boots to a black screen.  History (the old PPU_S_PATCH_INSTRUCTIONS.md
+    // was folded into MAINTAINERS_GUIDE.md):  the 0.4 cut of this function
     // splattered vt03_palette_lut[lo&0x3F] across all 4 BG and 4 OBJ
     // sub-palettes.  The LUT's first 64 entries are all 0x0000 (because
     // they map to the COLCOMP=1 colourspace's "saturation=0, luminance=0"

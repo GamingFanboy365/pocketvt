@@ -639,22 +639,34 @@ vt_timer_install_now:
 	ldr r1,=341
 	mul r2,r1,r2
 	ldr_ r1,timestamp
+	@ SESSION 21b9: $4101 D7 (TSYNEN) = 0 counts AD12 transitions, which only
+	@ occur while the PPU is fetching, so the hardware counter STALLS through
+	@ vblank.  Skip vblank instead of compensating for it, with the two cases
+	@ kept EXCLUSIVE.  r1 = base timestamp, r2 = period * 341.
+	@ NOTE: render_end_time (82181 NTSC) and line_zero_start_time (292) are
+	@ OFFSETS WITHIN A FRAME, not absolute timestamps -- the absolute base is
+	@ frame_timestamp.  Comparing a live timestamp against the raw offsets
+	@ (s21b9 first attempt) schedules the expiry into the past/far future and
+	@ the game hangs with $2010 = 00.  History: s21b6 added a FIXED vblank
+	@ whenever the target passed render end -- right position, but a re-arm
+	@ from inside the guest's NMI (i.e. inside vblank) was then wrong by how
+	@ deep in it was, and the split's phase shook.  ldr_ has no cond. forms.
+	ldr_ r0,frame_timestamp
+	ldr_ r12,render_end_time
+	add r0,r0,r12		@ r0 = absolute end of rendering, this frame
+	cmp r1,r0
+	bhs 1f			@ already in vblank -> resume at next frame's line 0
 	add r1,r1,r2
-	@ SESSION 21b6: $4101 D7 (TSYNEN) = 0 selects AD12-transition counting,
-	@ not HSYNC.  AD12 only toggles while the PPU is fetching, so the real
-	@ counter STALLS through vblank; counting plain 341-dot scanlines made
-	@ every expiry land ~22 lines early.  In Star Ally that put the raster
-	@ split above the HUD text, so the HUD page kept painting to line 240 --
-	@ the orange/yellow band along the bottom of the screen.  If the target
-	@ lands after rendering ends, push it on by one vblank's worth of dots
-	@ (frame length minus the rendered span; works for NTSC and PAL).
-	ldr_ r2,render_end_time
-	cmp r1,r2
-	ldrhi_ r0,line_zero_start_time
-	subhi r2,r2,r0
-	ldrhi_ r0,cyclesperframe
-	subhi r2,r0,r2
-	addhi r1,r1,r2
+	cmp r1,r0
+	bls 2f			@ expiry lands inside the rendered area -> done
+	sub r2,r1,r0		@ carry ONLY the leftover count
+1:	ldr_ r0,frame_timestamp
+	ldr_ r12,cyclesperframe
+	add r0,r0,r12
+	ldr_ r12,line_zero_start_time
+	add r0,r0,r12		@ r0 = line 0 of the NEXT frame, absolute
+	add r1,r0,r2
+2:
 	adrl_ r12,vt_timer_timeout
 	ldr r0,=vt_timer_handler
 	bl_long replace_timeout_2
@@ -669,22 +681,34 @@ vt_timer_handler:
 	ldr r1,=341			@ dots per scanline (timestamp timebase)
 	mul r2,r1,r2
 	ldr_ r1,vt_timer_timestamp	@ our node[4] = timestamp of this expiry
+	@ SESSION 21b9: $4101 D7 (TSYNEN) = 0 counts AD12 transitions, which only
+	@ occur while the PPU is fetching, so the hardware counter STALLS through
+	@ vblank.  Skip vblank instead of compensating for it, with the two cases
+	@ kept EXCLUSIVE.  r1 = base timestamp, r2 = period * 341.
+	@ NOTE: render_end_time (82181 NTSC) and line_zero_start_time (292) are
+	@ OFFSETS WITHIN A FRAME, not absolute timestamps -- the absolute base is
+	@ frame_timestamp.  Comparing a live timestamp against the raw offsets
+	@ (s21b9 first attempt) schedules the expiry into the past/far future and
+	@ the game hangs with $2010 = 00.  History: s21b6 added a FIXED vblank
+	@ whenever the target passed render end -- right position, but a re-arm
+	@ from inside the guest's NMI (i.e. inside vblank) was then wrong by how
+	@ deep in it was, and the split's phase shook.  ldr_ has no cond. forms.
+	ldr_ r0,frame_timestamp
+	ldr_ r12,render_end_time
+	add r0,r0,r12		@ r0 = absolute end of rendering, this frame
+	cmp r1,r0
+	bhs 1f			@ already in vblank -> resume at next frame's line 0
 	add r1,r1,r2
-	@ SESSION 21b6: $4101 D7 (TSYNEN) = 0 selects AD12-transition counting,
-	@ not HSYNC.  AD12 only toggles while the PPU is fetching, so the real
-	@ counter STALLS through vblank; counting plain 341-dot scanlines made
-	@ every expiry land ~22 lines early.  In Star Ally that put the raster
-	@ split above the HUD text, so the HUD page kept painting to line 240 --
-	@ the orange/yellow band along the bottom of the screen.  If the target
-	@ lands after rendering ends, push it on by one vblank's worth of dots
-	@ (frame length minus the rendered span; works for NTSC and PAL).
-	ldr_ r2,render_end_time
-	cmp r1,r2
-	ldrhi_ r0,line_zero_start_time
-	subhi r2,r2,r0
-	ldrhi_ r0,cyclesperframe
-	subhi r2,r0,r2
-	addhi r1,r1,r2
+	cmp r1,r0
+	bls 2f			@ expiry lands inside the rendered area -> done
+	sub r2,r1,r0		@ carry ONLY the leftover count
+1:	ldr_ r0,frame_timestamp
+	ldr_ r12,cyclesperframe
+	add r0,r0,r12
+	ldr_ r12,line_zero_start_time
+	add r0,r0,r12		@ r0 = line 0 of the NEXT frame, absolute
+	add r1,r0,r2
+2:
 	adrl_ r12,vt_timer_timeout
 	ldr r0,=vt_timer_handler
 	bl_long install_timeout_2

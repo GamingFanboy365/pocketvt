@@ -599,3 +599,125 @@ Audit command (run after adding any new asm->C call):
     done
 Related: the linker only inserts interworking veneers for BL relocations,
 never for literal-pool `ldr pc` data references.
+
+## 15. Session history in one page (the status files were deleted; this replaces them)
+
+Sessions 3-5: the 4bpp render path was built and Lonely Island first rendered.
+Sessions 18-19: two s18 regressions fixed; LI became the standing control.
+Session 20: PIX16EN (16-pixel-wide sprites) implemented and verified against
+the reference capture; a speed hack that was making Star Ally SLOWER removed,
+and a regression that had knocked LI to ~22% fixed. SA has sat at ~67% of
+native (~40fps) since -- that is the interpreter ceiling, not a bug (s20b3
+profile: flat, 90% IWRAM, wait loop only 8%). Two standing rules from that
+work: never hand-seed an SA speedhack, and never blanket-gate the speedhack
+finder off for VT (it broke LI 100 -> 22%).
+Session 21, in order: b1 shipped a WRONG EVA model and was reverted; b2 found
+the real orange-band cause (loadcart re-applying the iNES header mirror bit
+over the $4106 default); b3 closed the 2bpp-EVA sprite gap; b4 root-caused the
+multicart hang as globals-layout drift (section 14); b5 fixed grey sprites;
+b6 fixed invisible EVA=0 sprites and the bottom band (section 13b); b6b fixed
+a symbol collision b4 had introduced (section 14).
+
+Claims from earlier sessions that were later DISPROVED -- do not rebuild on
+them: the multicart hang is not a TM0/cascade problem; BKPAGE does not
+suppress the attribute bits when forming the BG EVA; the per-scanline scroll
+buffer was never "garbage" (the old probe read pointers as data); $2016 is a
+CHR bank register, not a relocated controller port (that came from a
+disassembler that descrambled operand bytes as well as opcodes); and the
+strip along the bottom of Star Ally's screen was never "the HUD rendering
+correctly".
+
+## 16. Display mapping: 256x240 -> 240x160 (measured, s21b7)
+
+Vertical: every third NES scanline is DROPPED. The per-line scroll table
+advances the displayed NES line by +1 on two of every three GBA lines and by
++2 on the third. The 2/3 ratio is right; 80 lines of detail are gone.
+
+Horizontal: there is NO scaling at all. DISPCNT is mode 0 with BG0 and BG2 as
+TEXT backgrounds, which cannot scale, so 16 of the 256 NES columns are simply
+off-screen at whatever scroll the game has set. This is the "256x240 -> 240x160
+scaling check" that has been pending since the 4bpp sessions.
+
+Doing horizontal properly needs an affine background, and that is why it keeps
+getting parked: GBA affine maps use ONE-BYTE tile indices (256 tiles maximum)
+while the BG cache addresses 512+ tiles (slots at 0, 64, ... 960). Any affine
+plan has to solve that first -- e.g. a smaller per-frame working set, or
+splitting the screen across two affine layers. The stock unscaled/pannable
+mode (L/R plus Up/Down) is the other lever and costs nothing.
+
+## 17. VT timer: vblank must be SKIPPED, not compensated (fixed s21b9)
+
+$4101 D7 (TSYNEN) = 0 selects AD12-transition counting. AD12 only toggles
+while the PPU is fetching, so the hardware counter STALLS through vblank.
+Scheduling plain 341-dot scanlines fires every expiry ~22 lines early; in Star
+Ally that put the raster split above its HUD text and painted the HUD page
+across the bottom of the screen -- the orange/yellow band.
+
+The working implementation (sound.s, both scheduling sites -- install_now and
+the handler), with r1 = base timestamp and r2 = period * 341:
+
+    ldr_ r0,frame_timestamp
+    ldr_ r12,render_end_time
+    add  r0,r0,r12          @ absolute end of rendering, this frame
+    cmp  r1,r0
+    bhs  1f                 @ already in vblank -> resume at next line 0
+    add  r1,r1,r2
+    cmp  r1,r0
+    bls  2f                 @ lands inside the rendered area -> done
+    sub  r2,r1,r0           @ carry ONLY the leftover count
+1:  ldr_ r0,frame_timestamp
+    ldr_ r12,cyclesperframe
+    add  r0,r0,r12
+    ldr_ r12,line_zero_start_time
+    add  r0,r0,r12          @ line 0 of the NEXT frame, absolute
+    add  r1,r0,r2
+2:
+
+Three traps, each of which cost a build:
+
+1. render_end_time (82181 NTSC) and line_zero_start_time (292) are OFFSETS
+   WITHIN A FRAME, not absolute timestamps. The absolute base is
+   frame_timestamp -- that is how timeout.s itself uses them
+   (`ldr_ r0,frame_timestamp / ldr_ r2,render_end_time / add r1,r0,r2`).
+   Comparing a live timestamp against the raw offsets schedules the expiry
+   into the past or the far future and the game hangs with $2010 = 00.
+2. The two cases must be EXCLUSIVE. Moving the base into the next frame AND
+   then wrapping the overshoot pushes the expiry a whole extra frame out --
+   same hang.
+3. ldr_/str_ have no conditional forms; write `ldrhs r1,[globalptr,#label]`.
+
+An earlier version (s21b6) added a FIXED vblank whenever the target passed
+render end. That got the position right but wrecked the phase, because the
+guest re-arms from inside its NMI handler -- i.e. from inside vblank -- where
+the correction should be the distance actually spent in vblank. It shook
+visibly and was reverted before this version replaced it.
+
+VERIFY BOTH PROPERTIES, always: a raster change is only good if the split is
+in the right PLACE and STABLE. Run ~400 gameplay frames, record the line where
+the per-line VOFS jumps, and histogram it. Reference numbers for Star Ally:
+s21b6 = lines 138-145 with 116 changes (broken); revert = line 122 with 15
+changes (stable but wrong place, band present); s21b9 = line 138 on all 401
+frames with 0 changes, band gone, and NES line ~207 matches where 2.png puts
+the score.
+
+## 18. Real hardware vs emulators (GBARunner2 on DS does not boot)
+
+Reported: PocketVT runs under mGBA on 3DS but will not boot under GBARunner2
+on DS. Not reproducible in this sandbox -- mGBA is not GBARunner2 -- but the
+build uses two techniques GBARunner2 is known to struggle with, and they are
+the first things to test:
+
+1. CODE EXECUTING FROM VRAM. The .vram1 section (4KB at 0x06003000, copied
+   from LMA at startup by main()) holds the speedhack helpers. GBARunner2 maps
+   GBA VRAM onto DS VRAM banks; instruction fetch from there is the single
+   most likely blocker. Test by relinking .vram1 into EWRAM (it is not on the
+   hottest path) and seeing whether the DS boots.
+2. HBLANK DMA. ppu.s programs DMA0 from dma0buff into REG_BG0HOFS every
+   scanline for the per-line scroll. HDMA timing is a known weak spot there.
+3. Startup register pokes: REG_WAITCNT (0x4000204) and the EWRAM wait-state
+   register REG_WRWAITCTL (0x4000800). The latter is GBA-specific; on DS it is
+   not the same register, and writing it early can be fatal.
+
+Change ONE of these at a time and note which one moves the needle -- and keep
+the change behind a build flag so GBA-native performance is not paid for a DS
+workaround.

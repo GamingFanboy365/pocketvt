@@ -188,7 +188,7 @@ END GROUP
  *(.plt)
                 0x08000218                        . = ALIGN (0x4)
 
-.text           0x08000218    0x103b8
+.text           0x08000218    0x103f0
  *(EXCLUDE_FILE(*.iwram*) .text)
  .text          0x08000218      0x25c cache.o
                 0x08000218                memcpy_if_okay
@@ -487,420 +487,420 @@ END GROUP
                 0x0800a2d4                dma_W
                 0x0800a404                set_bg_cache_available
                 0x0800a420                set_bg_cache_produce_limit_consume_begin
- .text          0x0800a488      0xebc sound.o
+ .text          0x0800a488      0xef4 sound.o
                 0x0800a488                frame_sequencer_handler
                 0x0800a7d0                want_to_do_frame_irq
                 0x0800a7e8                frame_irq_handler
                 0x0800a830                vt_timer_install_now
-                0x0800a948                _4000w
-                0x0800a9d0                _4001w
-                0x0800a9e0                _4002w
-                0x0800a9e8                update_sq1_period
-                0x0800aa38                _4003w
-                0x0800aa94                _4004w
-                0x0800ab1c                _4005w
-                0x0800ab2c                _4006w
-                0x0800ab34                update_sq2_period
-                0x0800ab84                _4007w
-                0x0800abc0                _4008w
-                0x0800abc8                _400Aw
-                0x0800abd0                update_tri_period
-                0x0800ac04                _400Bw
-                0x0800ac44                _400Cw
-                0x0800ac8c                _400Ew
-                0x0800acc4                _400Fw
-                0x0800acec                _4010w
-                0x0800ad70                _4011w
-                0x0800ad84                _4012w
-                0x0800ad9c                _4013w
-                0x0800ae94                _4015w
-                0x0800afc8                _4017w
-                0x0800b038                _4015r
-                0x0800b1c4                dmc_handler
-                0x0800b1d0                Sound_hardware_reset
-                0x0800b294                sound_reset
-                0x0800b2c0                reset_sound_after_loadstate
- .text          0x0800b344       0xc4 speedhack_asm.o
-                0x0800b38c                cpuhack_reset
- .text          0x0800b408      0x914 timeout.o
-                0x0800b408                run
-                0x0800b884                nmi_handler
-                0x0800b924                ntsc_pal_reset
-                0x0800b9fc                timeout_reset
-                0x0800ba6c                encode_timeouts
-                0x0800badc                decode_timeouts
-                0x0800bbf0                HandlersTable
- .text          0x0800bd1c      0x1bc visoly.o
-                0x0800bd1c                VISOLY_START
-                0x0800bed8                VISOLY_END
- .text          0x0800bed8        0x0 konami.o
- .text          0x0800bed8       0x78 map023771.o
-                0x0800bed8                mapper0init
-                0x0800beec                mapper2init
-                0x0800bf00                mapper3init
-                0x0800bf14                mapper7init
-                0x0800bf28                mapper71init
-                0x0800bf3c                mapper180init
- .text          0x0800bf50      0x164 map105.o
-                0x0800bf50                mapper105init
- .text          0x0800c0b4       0x90 map113.o
-                0x0800c0b4                mapper113init
- .text          0x0800c144       0x74 map1166.o
-                0x0800c144                mapper11init
-                0x0800c158                mapper66init
- .text          0x0800c1b8       0x60 map11.o
- .text          0x0800c218       0x64 map151.o
-                0x0800c218                mapper151init
- .text          0x0800c27c      0x180 map15.o
-                0x0800c27c                mapper15init
- .text          0x0800c3fc      0x1f4 map163.o
-                0x0800c3fc                mapper163init
-                0x0800c53c                Mapper163HalfScreenHandler
- .text          0x0800c5f0      0x1b8 map16.o
-                0x0800c5f0                mapper16init
-                0x0800c618                map16_handler
- .text          0x0800c7a8      0x100 map17.o
-                0x0800c7a8                mapper17init
-                0x0800c86c                mapper_17_hook
- .text          0x0800c8a8       0x3c map184.o
-                0x0800c8a8                mapper184init
- .text          0x0800c8e4      0x270 map18.o
-                0x0800c8e4                mapper18init
-                0x0800c900                map18_handler
- .text          0x0800cb54      0x240 map19.o
-                0x0800cb54                mapper210init
-                0x0800cb68                mapper19init
-                0x0800cb8c                map19_irq_handler
-                0x0800cbac                map19_handler
- .text          0x0800cd94       0x44 map1.o
-                0x0800cd94                mapper1init
- .text          0x0800cdd8      0x10c map2125.o
-                0x0800cdd8                mapper25init
-                0x0800cdd8                mapper21init
- .text          0x0800cee4      0x128 map225.o
-                0x0800cee4                mapper225init
- .text          0x0800d00c       0xac map228.o
-                0x0800d00c                mapper228init
- .text          0x0800d0b8       0x84 map22.o
-                0x0800d0b8                mapper22init
- .text          0x0800d13c       0x64 map232.o
-                0x0800d13c                mapper232init
- .text          0x0800d1a0       0xd0 map23.o
-                0x0800d1a0                mapper23init
- .text          0x0800d270       0xb4 map2426.o
-                0x0800d270                mapper24init
-                0x0800d284                mapper26init
- .text          0x0800d324       0xcc map28.o
-                0x0800d324                mapper28init
- .text          0x0800d3f0       0x5c map30.o
-                0x0800d3f0                mapper30init
- .text          0x0800d44c       0x60 map32.o
-                0x0800d44c                mapper32init
- .text          0x0800d4ac       0xa0 map33.o
-                0x0800d4ac                mapper33init
- .text          0x0800d54c       0x5c map34.o
-                0x0800d54c                mapper34init
- .text          0x0800d5a8       0x68 map38.o
-                0x0800d5a8                mapper38init
- .text          0x0800d610       0x70 map40.o
-                0x0800d610                mapper40init
- .text          0x0800d680       0xc8 map41.o
-                0x0800d680                mapper41init
- .text          0x0800d748       0x8c map42.o
-                0x0800d748                mapper42init
- .text          0x0800d7d4      0x3a4 map4.o
-                0x0800d7d4                mapper74init
-                0x0800d7d4                mapper118init
-                0x0800d7d4                mapper249init
-                0x0800d7d4                mapper245init
-                0x0800d7d4                mapper119init
-                0x0800d7d4                mapper4init
-                0x0800d850                mapper206init
-                0x0800d9e8                mmc3_ntsc_pal_reset
- .text          0x0800db78      0x54c map5.o
-                0x0800db78                mapper5init
-                0x0800df78                mmc5_handler_2
-                0x0800df8c                mmc5_handler
- .text          0x0800e0c4      0x310 map64.o
-                0x0800e10c                mapper64init
- .text          0x0800e3d4      0x1d4 map65.o
-                0x0800e3d4                mapper65init
-                0x0800e3e8                map65_handler
- .text          0x0800e5a8      0x1a8 map67.o
-                0x0800e5a8                mapper67init
-                0x0800e5bc                map67_handler
- .text          0x0800e750       0x64 map68.o
-                0x0800e750                mapper68init
- .text          0x0800e7b4      0x200 map69.o
-                0x0800e7b4                mapper69init
-                0x0800e7c8                map69_handler
- .text          0x0800e9b4       0x48 map70152.o
-                0x0800e9b4                mapper152init
-                0x0800e9b4                mapper70init
- .text          0x0800e9fc       0x7c map71.o
- .text          0x0800ea78       0x3c map72.o
-                0x0800ea78                mapper72init
- .text          0x0800eab4       0x94 map73.o
-                0x0800eab4                mapper73init
- .text          0x0800eb48       0xc0 map75.o
-                0x0800eb48                mapper75init
- .text          0x0800ec08       0x68 map76.o
-                0x0800ec08                mapper76init
- .text          0x0800ec70       0x50 map77.o
-                0x0800ec70                mapper77init
- .text          0x0800ecc0       0x54 map78.o
-                0x0800ecc0                mapper78init
- .text          0x0800ed14       0x58 map79.o
-                0x0800ed14                mapper79init
- .text          0x0800ed6c      0x104 map80.o
-                0x0800ed6c                mapper80init
- .text          0x0800ee70       0x70 map82.o
-                0x0800ee70                mapper82init
- .text          0x0800eee0       0x74 map85.o
-                0x0800eee0                mapper85init
- .text          0x0800ef54       0x54 map86.o
-                0x0800ef54                mapper86init
- .text          0x0800efa8       0x20 map87.o
-                0x0800efa8                mapper87init
- .text          0x0800efc8       0x84 map88.o
-                0x0800efc8                mapper88init
- .text          0x0800f04c       0x90 map89.o
-                0x0800f04c                mapper89init
- .text          0x0800f0dc       0x5c map92.o
-                0x0800f0dc                mapper92init
- .text          0x0800f138       0x38 map93.o
-                0x0800f138                mapper93init
- .text          0x0800f170       0x20 map94.o
-                0x0800f170                mapper94init
- .text          0x0800f190       0x3c map97.o
-                0x0800f190                mapper97init
- .text          0x0800f1cc       0x54 map99.o
-                0x0800f1cc                mapper99init
- .text          0x0800f220       0xbc map9.o
-                0x0800f220                mapper9init
-                0x0800f244                mapper10init
-                0x0800f2a4                mapper9BGcheck
- .text          0x0800f2dc      0x28c mapVT.o
-                0x0800f2dc                mapVTinit
-                0x0800f338                vt_apply_prg_banks
-                0x0800f380                read_vt4xxx
-                0x0800f394                write_vt4xxx
-                0x0800f4ec                write_vt_rom
- .text          0x0800f568        0x0 gba_crt0_my.o
- .text          0x0800f568       0x24 /opt/devkitpro/libgba/lib/libgba.a(Compression.o)
-                0x0800f568                BitUnPack
-                0x0800f56c                LZ77UnCompWram
-                0x0800f570                LZ77UnCompVram
-                0x0800f574                HuffUnComp
-                0x0800f578                RLUnCompWram
-                0x0800f57c                RLUnCompVram
-                0x0800f580                Diff8bitUnFilterWram
-                0x0800f584                Diff8bitUnFilterVram
-                0x0800f588                Diff16bitUnFilter
- .text          0x0800f58c      0x3c4 /opt/devkitpro/libgba/lib/libgba.a(interrupt.o)
- .text          0x0800f950       0x14 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_thumb1_case_sqi.o)
-                0x0800f950                __gnu_thumb1_case_sqi
- .text          0x0800f964       0x14 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_thumb1_case_uqi.o)
-                0x0800f964                __gnu_thumb1_case_uqi
- .text          0x0800f978       0x14 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_thumb1_case_shi.o)
-                0x0800f978                __gnu_thumb1_case_shi
- .text          0x0800f98c      0x11c /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_udivsi3.o)
-                0x0800f98c                __udivsi3
-                0x0800f98c                __aeabi_uidiv
-                0x0800fa88                __aeabi_uidivmod
- .text          0x0800faa8      0x150 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_divsi3.o)
-                0x0800faa8                __aeabi_idiv
-                0x0800faa8                __divsi3
-                0x0800fbd8                __aeabi_idivmod
- .text          0x0800fbf8        0x4 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_dvmd_tls.o)
-                0x0800fbf8                __aeabi_ldiv0
-                0x0800fbf8                __aeabi_idiv0
- .text          0x0800fbfc       0x3c /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_aeabi_uldivmod.o)
-                0x0800fbfc                __aeabi_uldivmod
- .text          0x0800fc38        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_udivmoddi4.o)
- .text          0x0800fc38       0x28 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_clzdi2.o)
-                0x0800fc38                __clzdi2
- .text          0x0800fc60       0x48 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_clzsi2.o)
-                0x0800fc60                __clzsi2
- .text          0x0800fca8        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-strcat.o)
- .text          0x0800fca8        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memcpy-stub.o)
- .text          0x0800fca8        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-strlen.o)
- .text          0x0800fca8        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memcmp.o)
- .text          0x0800fca8        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-strcpy.o)
- .text          0x0800fca8        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memset.o)
- .text          0x0800fca8        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-init.o)
- .text          0x0800fca8        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memchr-stub.o)
- .text          0x0800fca8        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memmove.o)
+                0x0800a980                _4000w
+                0x0800aa08                _4001w
+                0x0800aa18                _4002w
+                0x0800aa20                update_sq1_period
+                0x0800aa70                _4003w
+                0x0800aacc                _4004w
+                0x0800ab54                _4005w
+                0x0800ab64                _4006w
+                0x0800ab6c                update_sq2_period
+                0x0800abbc                _4007w
+                0x0800abf8                _4008w
+                0x0800ac00                _400Aw
+                0x0800ac08                update_tri_period
+                0x0800ac3c                _400Bw
+                0x0800ac7c                _400Cw
+                0x0800acc4                _400Ew
+                0x0800acfc                _400Fw
+                0x0800ad24                _4010w
+                0x0800ada8                _4011w
+                0x0800adbc                _4012w
+                0x0800add4                _4013w
+                0x0800aecc                _4015w
+                0x0800b000                _4017w
+                0x0800b070                _4015r
+                0x0800b1fc                dmc_handler
+                0x0800b208                Sound_hardware_reset
+                0x0800b2cc                sound_reset
+                0x0800b2f8                reset_sound_after_loadstate
+ .text          0x0800b37c       0xc4 speedhack_asm.o
+                0x0800b3c4                cpuhack_reset
+ .text          0x0800b440      0x914 timeout.o
+                0x0800b440                run
+                0x0800b8bc                nmi_handler
+                0x0800b95c                ntsc_pal_reset
+                0x0800ba34                timeout_reset
+                0x0800baa4                encode_timeouts
+                0x0800bb14                decode_timeouts
+                0x0800bc28                HandlersTable
+ .text          0x0800bd54      0x1bc visoly.o
+                0x0800bd54                VISOLY_START
+                0x0800bf10                VISOLY_END
+ .text          0x0800bf10        0x0 konami.o
+ .text          0x0800bf10       0x78 map023771.o
+                0x0800bf10                mapper0init
+                0x0800bf24                mapper2init
+                0x0800bf38                mapper3init
+                0x0800bf4c                mapper7init
+                0x0800bf60                mapper71init
+                0x0800bf74                mapper180init
+ .text          0x0800bf88      0x164 map105.o
+                0x0800bf88                mapper105init
+ .text          0x0800c0ec       0x90 map113.o
+                0x0800c0ec                mapper113init
+ .text          0x0800c17c       0x74 map1166.o
+                0x0800c17c                mapper11init
+                0x0800c190                mapper66init
+ .text          0x0800c1f0       0x60 map11.o
+ .text          0x0800c250       0x64 map151.o
+                0x0800c250                mapper151init
+ .text          0x0800c2b4      0x180 map15.o
+                0x0800c2b4                mapper15init
+ .text          0x0800c434      0x1f4 map163.o
+                0x0800c434                mapper163init
+                0x0800c574                Mapper163HalfScreenHandler
+ .text          0x0800c628      0x1b8 map16.o
+                0x0800c628                mapper16init
+                0x0800c650                map16_handler
+ .text          0x0800c7e0      0x100 map17.o
+                0x0800c7e0                mapper17init
+                0x0800c8a4                mapper_17_hook
+ .text          0x0800c8e0       0x3c map184.o
+                0x0800c8e0                mapper184init
+ .text          0x0800c91c      0x270 map18.o
+                0x0800c91c                mapper18init
+                0x0800c938                map18_handler
+ .text          0x0800cb8c      0x240 map19.o
+                0x0800cb8c                mapper210init
+                0x0800cba0                mapper19init
+                0x0800cbc4                map19_irq_handler
+                0x0800cbe4                map19_handler
+ .text          0x0800cdcc       0x44 map1.o
+                0x0800cdcc                mapper1init
+ .text          0x0800ce10      0x10c map2125.o
+                0x0800ce10                mapper25init
+                0x0800ce10                mapper21init
+ .text          0x0800cf1c      0x128 map225.o
+                0x0800cf1c                mapper225init
+ .text          0x0800d044       0xac map228.o
+                0x0800d044                mapper228init
+ .text          0x0800d0f0       0x84 map22.o
+                0x0800d0f0                mapper22init
+ .text          0x0800d174       0x64 map232.o
+                0x0800d174                mapper232init
+ .text          0x0800d1d8       0xd0 map23.o
+                0x0800d1d8                mapper23init
+ .text          0x0800d2a8       0xb4 map2426.o
+                0x0800d2a8                mapper24init
+                0x0800d2bc                mapper26init
+ .text          0x0800d35c       0xcc map28.o
+                0x0800d35c                mapper28init
+ .text          0x0800d428       0x5c map30.o
+                0x0800d428                mapper30init
+ .text          0x0800d484       0x60 map32.o
+                0x0800d484                mapper32init
+ .text          0x0800d4e4       0xa0 map33.o
+                0x0800d4e4                mapper33init
+ .text          0x0800d584       0x5c map34.o
+                0x0800d584                mapper34init
+ .text          0x0800d5e0       0x68 map38.o
+                0x0800d5e0                mapper38init
+ .text          0x0800d648       0x70 map40.o
+                0x0800d648                mapper40init
+ .text          0x0800d6b8       0xc8 map41.o
+                0x0800d6b8                mapper41init
+ .text          0x0800d780       0x8c map42.o
+                0x0800d780                mapper42init
+ .text          0x0800d80c      0x3a4 map4.o
+                0x0800d80c                mapper74init
+                0x0800d80c                mapper118init
+                0x0800d80c                mapper249init
+                0x0800d80c                mapper245init
+                0x0800d80c                mapper119init
+                0x0800d80c                mapper4init
+                0x0800d888                mapper206init
+                0x0800da20                mmc3_ntsc_pal_reset
+ .text          0x0800dbb0      0x54c map5.o
+                0x0800dbb0                mapper5init
+                0x0800dfb0                mmc5_handler_2
+                0x0800dfc4                mmc5_handler
+ .text          0x0800e0fc      0x310 map64.o
+                0x0800e144                mapper64init
+ .text          0x0800e40c      0x1d4 map65.o
+                0x0800e40c                mapper65init
+                0x0800e420                map65_handler
+ .text          0x0800e5e0      0x1a8 map67.o
+                0x0800e5e0                mapper67init
+                0x0800e5f4                map67_handler
+ .text          0x0800e788       0x64 map68.o
+                0x0800e788                mapper68init
+ .text          0x0800e7ec      0x200 map69.o
+                0x0800e7ec                mapper69init
+                0x0800e800                map69_handler
+ .text          0x0800e9ec       0x48 map70152.o
+                0x0800e9ec                mapper152init
+                0x0800e9ec                mapper70init
+ .text          0x0800ea34       0x7c map71.o
+ .text          0x0800eab0       0x3c map72.o
+                0x0800eab0                mapper72init
+ .text          0x0800eaec       0x94 map73.o
+                0x0800eaec                mapper73init
+ .text          0x0800eb80       0xc0 map75.o
+                0x0800eb80                mapper75init
+ .text          0x0800ec40       0x68 map76.o
+                0x0800ec40                mapper76init
+ .text          0x0800eca8       0x50 map77.o
+                0x0800eca8                mapper77init
+ .text          0x0800ecf8       0x54 map78.o
+                0x0800ecf8                mapper78init
+ .text          0x0800ed4c       0x58 map79.o
+                0x0800ed4c                mapper79init
+ .text          0x0800eda4      0x104 map80.o
+                0x0800eda4                mapper80init
+ .text          0x0800eea8       0x70 map82.o
+                0x0800eea8                mapper82init
+ .text          0x0800ef18       0x74 map85.o
+                0x0800ef18                mapper85init
+ .text          0x0800ef8c       0x54 map86.o
+                0x0800ef8c                mapper86init
+ .text          0x0800efe0       0x20 map87.o
+                0x0800efe0                mapper87init
+ .text          0x0800f000       0x84 map88.o
+                0x0800f000                mapper88init
+ .text          0x0800f084       0x90 map89.o
+                0x0800f084                mapper89init
+ .text          0x0800f114       0x5c map92.o
+                0x0800f114                mapper92init
+ .text          0x0800f170       0x38 map93.o
+                0x0800f170                mapper93init
+ .text          0x0800f1a8       0x20 map94.o
+                0x0800f1a8                mapper94init
+ .text          0x0800f1c8       0x3c map97.o
+                0x0800f1c8                mapper97init
+ .text          0x0800f204       0x54 map99.o
+                0x0800f204                mapper99init
+ .text          0x0800f258       0xbc map9.o
+                0x0800f258                mapper9init
+                0x0800f27c                mapper10init
+                0x0800f2dc                mapper9BGcheck
+ .text          0x0800f314      0x28c mapVT.o
+                0x0800f314                mapVTinit
+                0x0800f370                vt_apply_prg_banks
+                0x0800f3b8                read_vt4xxx
+                0x0800f3cc                write_vt4xxx
+                0x0800f524                write_vt_rom
+ .text          0x0800f5a0        0x0 gba_crt0_my.o
+ .text          0x0800f5a0       0x24 /opt/devkitpro/libgba/lib/libgba.a(Compression.o)
+                0x0800f5a0                BitUnPack
+                0x0800f5a4                LZ77UnCompWram
+                0x0800f5a8                LZ77UnCompVram
+                0x0800f5ac                HuffUnComp
+                0x0800f5b0                RLUnCompWram
+                0x0800f5b4                RLUnCompVram
+                0x0800f5b8                Diff8bitUnFilterWram
+                0x0800f5bc                Diff8bitUnFilterVram
+                0x0800f5c0                Diff16bitUnFilter
+ .text          0x0800f5c4      0x3c4 /opt/devkitpro/libgba/lib/libgba.a(interrupt.o)
+ .text          0x0800f988       0x14 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_thumb1_case_sqi.o)
+                0x0800f988                __gnu_thumb1_case_sqi
+ .text          0x0800f99c       0x14 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_thumb1_case_uqi.o)
+                0x0800f99c                __gnu_thumb1_case_uqi
+ .text          0x0800f9b0       0x14 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_thumb1_case_shi.o)
+                0x0800f9b0                __gnu_thumb1_case_shi
+ .text          0x0800f9c4      0x11c /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_udivsi3.o)
+                0x0800f9c4                __udivsi3
+                0x0800f9c4                __aeabi_uidiv
+                0x0800fac0                __aeabi_uidivmod
+ .text          0x0800fae0      0x150 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_divsi3.o)
+                0x0800fae0                __aeabi_idiv
+                0x0800fae0                __divsi3
+                0x0800fc10                __aeabi_idivmod
+ .text          0x0800fc30        0x4 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_dvmd_tls.o)
+                0x0800fc30                __aeabi_ldiv0
+                0x0800fc30                __aeabi_idiv0
+ .text          0x0800fc34       0x3c /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_aeabi_uldivmod.o)
+                0x0800fc34                __aeabi_uldivmod
+ .text          0x0800fc70        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_udivmoddi4.o)
+ .text          0x0800fc70       0x28 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_clzdi2.o)
+                0x0800fc70                __clzdi2
+ .text          0x0800fc98       0x48 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_clzsi2.o)
+                0x0800fc98                __clzsi2
+ .text          0x0800fce0        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-strcat.o)
+ .text          0x0800fce0        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memcpy-stub.o)
+ .text          0x0800fce0        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-strlen.o)
+ .text          0x0800fce0        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memcmp.o)
+ .text          0x0800fce0        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-strcpy.o)
+ .text          0x0800fce0        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memset.o)
+ .text          0x0800fce0        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-init.o)
+ .text          0x0800fce0        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memchr-stub.o)
+ .text          0x0800fce0        0x0 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memmove.o)
  *(.text .stub SORT_BY_NAME(.text.*) .gnu.linkonce.t.*)
  .text.__libc_init_array
-                0x0800fca8       0x54 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-init.o)
-                0x0800fca8                __libc_init_array
+                0x0800fce0       0x54 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-init.o)
+                0x0800fce0                __libc_init_array
  .text.__udivmoddi4
-                0x0800fcfc      0x194 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_udivmoddi4.o)
-                0x0800fcfc                __udivmoddi4
- .text.memchr   0x0800fe90       0x74 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memchr-stub.o)
-                0x0800fe90                memchr
- .text.memcmp   0x0800ff04       0x48 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memcmp.o)
-                0x0800ff04                memcmp
- .text.memcpy   0x0800ff4c       0xac /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memcpy-stub.o)
-                0x0800ff4c                memcpy
- .text.memmove  0x0800fff8      0x108 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memmove.o)
-                0x0800fff8                memmove
- .text.memset   0x08010100       0x8c /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memset.o)
-                0x08010100                memset
- .text.startup  0x0801018c       0x44 main.o
-                0x0801018c                main
- .text.strcat   0x080101d0       0x70 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-strcat.o)
-                0x080101d0                strcat
- .text.strcpy   0x08010240       0x10 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-strcpy.o)
-                0x08010240                strcpy
- .text.strlen   0x08010250       0x60 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-strlen.o)
-                0x08010250                strlen
+                0x0800fd34      0x194 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/thumb/libgcc.a(_udivmoddi4.o)
+                0x0800fd34                __udivmoddi4
+ .text.memchr   0x0800fec8       0x74 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memchr-stub.o)
+                0x0800fec8                memchr
+ .text.memcmp   0x0800ff3c       0x48 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memcmp.o)
+                0x0800ff3c                memcmp
+ .text.memcpy   0x0800ff84       0xac /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memcpy-stub.o)
+                0x0800ff84                memcpy
+ .text.memmove  0x08010030      0x108 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memmove.o)
+                0x08010030                memmove
+ .text.memset   0x08010138       0x8c /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-memset.o)
+                0x08010138                memset
+ .text.startup  0x080101c4       0x44 main.o
+                0x080101c4                main
+ .text.strcat   0x08010208       0x70 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-strcat.o)
+                0x08010208                strcat
+ .text.strcpy   0x08010278       0x10 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-strcpy.o)
+                0x08010278                strcpy
+ .text.strlen   0x08010288       0x60 /opt/devkitpro/devkitARM/lib/gcc/arm-none-eabi/15.2.0/../../../../arm-none-eabi/lib/thumb/libg.a(libc_a-strlen.o)
+                0x08010288                strlen
  .text.strlen.__stub
-                0x080102b0      0x2c4 linker stubs
+                0x080102e8      0x2c4 linker stubs
  *(.text.*personality*)
  *(.gnu.warning)
  *(.glue_7t)
- .glue_7t       0x08010574        0x0 linker stubs
+ .glue_7t       0x080105ac        0x0 linker stubs
  *(.glue_7)
- .glue_7        0x08010574        0x0 linker stubs
+ .glue_7        0x080105ac        0x0 linker stubs
  *(.vfp11_veneer)
- .vfp11_veneer  0x08010574        0x0 linker stubs
-                0x08010574                        . = ALIGN (0x4)
-                0x080105d0                        __text_end = .
+ .vfp11_veneer  0x080105ac        0x0 linker stubs
+                0x080105ac                        . = ALIGN (0x4)
+                0x08010608                        __text_end = .
 
-.v4_bx          0x080105d0        0x0
- .v4_bx         0x080105d0        0x0 linker stubs
+.v4_bx          0x08010608        0x0
+ .v4_bx         0x08010608        0x0 linker stubs
 
-.iplt           0x080105d0        0x0
- .iplt          0x080105d0        0x0 cache.o
+.iplt           0x08010608        0x0
+ .iplt          0x08010608        0x0 cache.o
 
-.append         0x080105d0      0x6fc
- .append        0x080105d0      0x6fc bindata.o
-                0x080105d0                font
-                0x08010c8c                fontpal
+.append         0x08010608      0x6fc
+ .append        0x08010608      0x6fc bindata.o
+                0x08010608                font
+                0x08010cc4                fontpal
 
-.fini           0x08010ccc        0x0
+.fini           0x08010d04        0x0
  *(.fini)
-                0x08010ccc                        . = ALIGN (0x4)
+                0x08010d04                        . = ALIGN (0x4)
 
-.rodata         0x08010ccc     0x2c68
+.rodata         0x08010d04     0x2c68
  *(.rodata)
- .rodata        0x08010ccc       0x74 crash.o
-                0x08010ccc                regtxt3
-                0x08010ce4                reg3offsets
-                0x08010cec                regtxt
-                0x08010d18                regtxt2
- .rodata        0x08010d40        0x4 main.o
-                0x08010d40                ne
- .rodata        0x08010d44        0x5 minilzo.o
-                0x08010d44                __lzo_copyright
- *fill*         0x08010d49        0x3 ff
- .rodata        0x08010d4c      0x18d new_speed_hack.o
-                0x08010d4c                konami_speedhack_sizes
-                0x08010d58                konami_speedhacks
-                0x08010d7c                capcom_speedhack
-                0x08010d8f                konami_speedhack_cycles
-                0x08010d98                quickhackfinder_ins_table
-                0x08010e98                konami_speedhack_8
-                0x08010e9e                konami_speedhack_7
-                0x08010ea4                konami_speedhack_6
-                0x08010eac                konami_speedhack_5
-                0x08010eb4                konami_speedhack_4
-                0x08010ebb                konami_speedhack_3
-                0x08010ec2                konami_speedhack_2
-                0x08010ec9                konami_speedhack_1
-                0x08010ed0                konami_speedhack_0
- .rodata        0x08010ed9        0xb pocketnes_text.o
- .rodata        0x08010ee4     0x209c ppu_vt.o
- .rodata        0x08012f80       0xf3 savestate2.o
-                0x08012f80                sizes
-                0x08012fc0                addresses
-                0x08013000                load_functions
-                0x08013020                save_function_numbers
-                0x08013030                save_functions
-                0x08013050                saveversion
- *fill*         0x08013073        0x1 ff
- .rodata        0x08013074       0x30 sram.o
-                0x08013074                configtemplate
- .rodata        0x080130a4      0x18c ui.o
-                0x080130a4                vsynctxt
-                0x080130b0                autotxt
-                0x080130bc                sleeptxt
-                0x080130cc                cntrtxt
-                0x080130dc                hostname
-                0x080130f0                ctrltxt
-                0x08013108                disptxt
-                0x08013118                flicktxt
-                0x08013120                brightxt
-                0x08013134                followtxt
-                0x0801313c                followtxt2
-                0x08013144                MENUXITEMS
-                0x0801314c                fnlistX
-                0x08013164                drawuiX
-                0x0801317c                fnlist5
-                0x080131a8                fnlistdummy
-                0x080131ac                fnlist3
-                0x080131c0                fnlist2
-                0x080131dc                fnlist1
-                0x0801320c                multifnlist
- .rodata        0x08013230       0xc8 vt_regs.o
+ .rodata        0x08010d04       0x74 crash.o
+                0x08010d04                regtxt3
+                0x08010d1c                reg3offsets
+                0x08010d24                regtxt
+                0x08010d50                regtxt2
+ .rodata        0x08010d78        0x4 main.o
+                0x08010d78                ne
+ .rodata        0x08010d7c        0x5 minilzo.o
+                0x08010d7c                __lzo_copyright
+ *fill*         0x08010d81        0x3 ff
+ .rodata        0x08010d84      0x18d new_speed_hack.o
+                0x08010d84                konami_speedhack_sizes
+                0x08010d90                konami_speedhacks
+                0x08010db4                capcom_speedhack
+                0x08010dc7                konami_speedhack_cycles
+                0x08010dd0                quickhackfinder_ins_table
+                0x08010ed0                konami_speedhack_8
+                0x08010ed6                konami_speedhack_7
+                0x08010edc                konami_speedhack_6
+                0x08010ee4                konami_speedhack_5
+                0x08010eec                konami_speedhack_4
+                0x08010ef3                konami_speedhack_3
+                0x08010efa                konami_speedhack_2
+                0x08010f01                konami_speedhack_1
+                0x08010f08                konami_speedhack_0
+ .rodata        0x08010f11        0xb pocketnes_text.o
+ .rodata        0x08010f1c     0x209c ppu_vt.o
+ .rodata        0x08012fb8       0xf3 savestate2.o
+                0x08012fb8                sizes
+                0x08012ff8                addresses
+                0x08013038                load_functions
+                0x08013058                save_function_numbers
+                0x08013068                save_functions
+                0x08013088                saveversion
+ *fill*         0x080130ab        0x1 ff
+ .rodata        0x080130ac       0x30 sram.o
+                0x080130ac                configtemplate
+ .rodata        0x080130dc      0x18c ui.o
+                0x080130dc                vsynctxt
+                0x080130e8                autotxt
+                0x080130f4                sleeptxt
+                0x08013104                cntrtxt
+                0x08013114                hostname
+                0x08013128                ctrltxt
+                0x08013140                disptxt
+                0x08013150                flicktxt
+                0x08013158                brightxt
+                0x0801316c                followtxt
+                0x08013174                followtxt2
+                0x0801317c                MENUXITEMS
+                0x08013184                fnlistX
+                0x0801319c                drawuiX
+                0x080131b4                fnlist5
+                0x080131e0                fnlistdummy
+                0x080131e4                fnlist3
+                0x080131f8                fnlist2
+                0x08013214                fnlist1
+                0x08013244                multifnlist
+ .rodata        0x08013268       0xc8 vt_regs.o
  *all.rodata*(*)
  *(.roda)
  *(.rodata.*)
  .rodata.str1.1
-                0x080132f8      0x63b cheat.o
+                0x08013330      0x63b cheat.o
                                 0x134 (size before relaxing)
  .rodata.str1.1
-                0x08013933        0x0 crash.o
+                0x0801396b        0x0 crash.o
                                 0x103 (size before relaxing)
  .rodata.str1.1
-                0x08013933        0x0 main.o
+                0x0801396b        0x0 main.o
                                  0x7f (size before relaxing)
  .rodata.str1.1
-                0x08013933        0x0 minilzo.o
+                0x0801396b        0x0 minilzo.o
                                  0x11 (size before relaxing)
  .rodata.str1.1
-                0x08013933        0x0 sram.o
+                0x0801396b        0x0 sram.o
                                  0xfb (size before relaxing)
  .rodata.str1.1
-                0x08013933        0x0 ui.o
+                0x0801396b        0x0 ui.o
                                 0x2aa (size before relaxing)
  *(.gnu.linkonce.r*)
-                0x08013934                        . = ALIGN (0x4)
- *fill*         0x08013933        0x1 ff
+                0x0801396c                        . = ALIGN (0x4)
+ *fill*         0x0801396b        0x1 ff
 
 .ARM.extab
  *(.ARM.extab* .gnu.linkonce.armextab.*)
-                0x08013934                        __exidx_start = .
+                0x0801396c                        __exidx_start = .
 
 .ARM.exidx
  *(.ARM.exidx* .gnu.linkonce.armexidx.*)
-                0x08013934                        __exidx_end = .
+                0x0801396c                        __exidx_end = .
 
-.ctors          0x08013934        0x0
+.ctors          0x0801396c        0x0
  *crtbegin.o(.ctors)
  *(EXCLUDE_FILE(*crtend.o) .ctors)
  *(SORT_BY_NAME(.ctors.*))
  *(.ctors)
-                0x08013934                        . = ALIGN (0x4)
+                0x0801396c                        . = ALIGN (0x4)
 
-.dtors          0x08013934        0x0
+.dtors          0x0801396c        0x0
  *crtbegin.o(.dtors)
  *(EXCLUDE_FILE(*crtend.o) .dtors)
  *(SORT_BY_NAME(.dtors.*))
  *(.dtors)
-                0x08013934                        . = ALIGN (0x4)
+                0x0801396c                        . = ALIGN (0x4)
 
-.eh_frame       0x08013934        0x0
+.eh_frame       0x0801396c        0x0
  *(.eh_frame)
-                0x08013934                        . = ALIGN (0x4)
+                0x0801396c                        . = ALIGN (0x4)
 
 .gcc_except_table
-                0x08013934        0x0
+                0x0801396c        0x0
  *(.gcc_except_table)
-                0x08013934                        . = ALIGN (0x4)
-                0x08013934                        __iwram_lma = .
+                0x0801396c                        . = ALIGN (0x4)
+                0x0801396c                        __iwram_lma = .
 
 .bss_prefix     0x03000000     0x2800
                 0x03000000                        __bss_prefix_start__ = ABSOLUTE (.)
@@ -913,7 +913,7 @@ END GROUP
                 0x03002800                        . = ALIGN (0x4)
                 0x03002800                        __bss_prefix_end__ = ABSOLUTE (.)
 
-.iwram          0x03002800     0x49f8 load address 0x08013934
+.iwram          0x03002800     0x49f8 load address 0x0801396c
                 0x03002800                        __iwram_start__ = ABSOLUTE (.)
  *(.iwram)
  .iwram         0x03002800     0x1d30 6502.o
@@ -1086,9 +1086,9 @@ END GROUP
                 0x030071d8       0x1c linker stubs
                 0x030071f4                        . = ALIGN (0x4)
                 0x030071f8                        __iwram_end__ = ABSOLUTE (.)
-                0x0801832c                        __data_lma = (__iwram_lma + SIZEOF (.iwram))
+                0x08018364                        __data_lma = (__iwram_lma + SIZEOF (.iwram))
 
-.data           0x030071f8      0x8cc load address 0x0801832c
+.data           0x030071f8      0x8cc load address 0x08018364
                 0x030071f8                        __data_start__ = ABSOLUTE (.)
  *(.data)
  .data          0x030071f8        0x0 cache.o
@@ -1332,30 +1332,30 @@ END GROUP
                 0x03007ac0                _deadbeef
  *(.gnu.linkonce.d*)
                 0x03007ac4                        . = ALIGN (0x4)
-                0x08018bf8                        __preinit_lma = (__data_lma + SIZEOF (.data))
+                0x08018c30                        __preinit_lma = (__data_lma + SIZEOF (.data))
 
-.igot.plt       0x03007ac4        0x0 load address 0x08018bf8
+.igot.plt       0x03007ac4        0x0 load address 0x08018c30
  .igot.plt      0x03007ac4        0x0 cache.o
 
-.preinit_array  0x03007ac4        0x0 load address 0x08018bf8
+.preinit_array  0x03007ac4        0x0 load address 0x08018c30
                 0x03007ac4                        __preinit_array_start = ABSOLUTE (.)
  *(.preinit_array)
                 0x03007ac4                        __preinit_array_end = ABSOLUTE (.)
-                0x08018bf8                        __init_lma = (__preinit_lma + SIZEOF (.preinit_array))
+                0x08018c30                        __init_lma = (__preinit_lma + SIZEOF (.preinit_array))
 
-.init_array     0x03007ac4        0x0 load address 0x08018bf8
+.init_array     0x03007ac4        0x0 load address 0x08018c30
                 0x03007ac4                        __init_array_start = ABSOLUTE (.)
  *(SORT_BY_NAME(.init_array.*))
  *(.init_array)
                 0x03007ac4                        __init_array_end = ABSOLUTE (.)
-                0x08018bf8                        __fini_lma = (__init_lma + SIZEOF (.init_array))
+                0x08018c30                        __fini_lma = (__init_lma + SIZEOF (.init_array))
 
-.fini_array     0x03007ac4        0x0 load address 0x08018bf8
+.fini_array     0x03007ac4        0x0 load address 0x08018c30
                 0x03007ac4                        __fini_array_start = ABSOLUTE (.)
  *(SORT_BY_NAME(.fini_array.*))
  *(.fini_array)
                 0x03007ac4                        __fini_array_end = ABSOLUTE (.)
-                0x08018bf8                        __jcr_lma = (__fini_lma + SIZEOF (.fini_array))
+                0x08018c30                        __jcr_lma = (__fini_lma + SIZEOF (.fini_array))
 
 .jcr
  *(.jcr)
@@ -1506,14 +1506,14 @@ END GROUP
  *(.bss*)
                 0x03007b90                        . = ALIGN (0x4)
                 0x03007b90                        __bss_end__ = ABSOLUTE (.)
-                0x08018bf8                        __iwram_overlay_lma = (__jcr_lma + SIZEOF (.jcr))
+                0x08018c30                        __iwram_overlay_lma = (__jcr_lma + SIZEOF (.jcr))
                 0x03007b90                        __iwram_overlay_start = .
 
-.iwram0         0x03007b90        0x0 load address 0x08018bf8
+.iwram0         0x03007b90        0x0 load address 0x08018c30
  *(.iwram0)
                 0x03007b90                        . = ALIGN (0x4)
-                0x08018bf8                        PROVIDE (__load_start_iwram0 = LOADADDR (.iwram0))
-                0x08018bf8                        PROVIDE (__load_stop_iwram0 = (LOADADDR (.iwram0) + SIZEOF (.iwram0)))
+                0x08018c30                        PROVIDE (__load_start_iwram0 = LOADADDR (.iwram0))
+                0x08018c30                        PROVIDE (__load_stop_iwram0 = (LOADADDR (.iwram0) + SIZEOF (.iwram0)))
 
 .iwram1         0x03007b90        0x0
  *(.iwram1)
@@ -1569,11 +1569,11 @@ END GROUP
                 [!provide]                        PROVIDE (__load_start_iwram9 = LOADADDR (.iwram9))
                 [!provide]                        PROVIDE (__load_stop_iwram9 = (LOADADDR (.iwram9) + SIZEOF (.iwram9)))
                 0x03007b90                        __iwram_overlay_end = .
-                0x08018bf8                        __ewram_lma = (__iwram_overlay_lma + (__iwram_overlay_end - __iwram_overlay_start))
+                0x08018c30                        __ewram_lma = (__iwram_overlay_lma + (__iwram_overlay_end - __iwram_overlay_start))
                 0x03007b90                        __iheap_start = .
                 0x02000000                        __ewram_start = ORIGIN (ewram)
 
-.ewram          0x02000000        0x8 load address 0x08018bf8
+.ewram          0x02000000        0x8 load address 0x08018c30
  *(.ewram)
  *(.ewram_data)
  .ewram_data    0x02000000        0x8 sram.o
@@ -1686,10 +1686,10 @@ END GROUP
                 0x02005d08                        __sbss_end__ = ABSOLUTE (.)
                 0x02005d08                        __end__ = ABSOLUTE (.)
                 0x02005d08                        __eheap_start = ABSOLUTE (.)
-                0x08018c00                        __vram1_lma = (__ewram_lma + SIZEOF (.ewram))
+                0x08018c38                        __vram1_lma = (__ewram_lma + SIZEOF (.ewram))
                 0x06003000                        __vram1_start = ORIGIN (vram1)
 
-.vram1          0x06003000      0xffc load address 0x08018c00
+.vram1          0x06003000      0xffc load address 0x08018c38
  *(.vram1)
  .vram1         0x06003000      0x140 io.o
                 0x06003020                refreshNESjoypads
@@ -1720,15 +1720,15 @@ END GROUP
                 0x06003ffc                        . = ALIGN (0x4)
                 0x06003ffc                        __vram1_end = ABSOLUTE (.)
                 0x06003ffc                        __vram1_end__ = ABSOLUTE (.)
-                0x08019bfc                        __pad_lma = (__vram1_lma + SIZEOF (.vram1))
+                0x08019c34                        __pad_lma = (__vram1_lma + SIZEOF (.vram1))
 
-.pad            0x06003ffc        0x8 load address 0x08019bfc
+.pad            0x06003ffc        0x8 load address 0x08019c34
                 0x06003ffc        0x4 LONG 0x52416b64
                 0x06004000        0x4 LONG 0x4d
                 0x06004004                        . = ALIGN (0x4)
-                0x08019c04                        __rom_end__ = (__pad_lma + SIZEOF (.pad))
+                0x08019c3c                        __rom_end__ = (__pad_lma + SIZEOF (.pad))
 
-.rel.dyn        0x06004004        0x0 load address 0x08019c04
+.rel.dyn        0x06004004        0x0 load address 0x08019c3c
  .rel.iplt      0x06004004        0x0 cache.o
 
 .stab
