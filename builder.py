@@ -39,7 +39,8 @@ def main():
         sys.exit(1)
 
     if not os.path.isfile(EMU_FILE):
-        print(f"CRITICAL ERROR: {EMU_FILE} not found.  Run 'make' first.",
+        print(f"CRITICAL ERROR: {EMU_FILE} not found.  Build the core first "
+              f"(build_pvt.sh or make) and run this script in that directory.",
               file=sys.stderr)
         sys.exit(1)
 
@@ -92,6 +93,14 @@ def main():
             success_count += 1
 
     print(f"\nSuccessfully compiled {success_count} game(s) into {OUT_FILE}!")
+
+    # build_pvt.sh rm -rf's its build dir, so a missing .nes here is the
+    # usual cause of a ROM-less, core-only play_me.gba.  Fail loudly.
+    if success_count == 0:
+        print("CRITICAL ERROR: no ROMs were injected; play_me.gba is just the "
+              "bare core.  (Did build_pvt.sh wipe the .nes files?  Run "
+              "tools/restage.sh.)", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

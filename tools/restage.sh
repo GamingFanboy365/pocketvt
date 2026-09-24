@@ -1,12 +1,29 @@
 #!/bin/bash
-# restage.sh -- build_pvt.sh rm -rf's pvt_build, wiping builder.py and every
+# restage.sh -- build_pvt.sh rm -rf's the build dir, wiping builder.py and every
 # .nes.  Run this after EVERY build or the harness silently packages a
 # ROM-less core ("Successfully compiled 0 game(s)").
-cd /home/claude/pvt_build || exit 1
-cp /home/claude/pocketvt/builder.py .
-cp /mnt/user-data/uploads/*.nes . 2>/dev/null
-cp /home/claude/pocketvt/testroms/*.nes . 2>/dev/null
-cp /mnt/user-data/outputs/Lucky_Lawn_Mower_VT09_calibrated.nes /mnt/user-data/outputs/vgpocket_vt09.nes . 2>/dev/null
-cp /tmp/vg/b/pc.c /tmp/vg/b/seq.c /tmp/shots.c . 2>/dev/null
-for f in pc seq shots; do gcc -O2 $f.c -o $f -lmgba 2>/dev/null; done
-echo "restaged: $(ls *.nes | wc -l) ROMs"
+#
+#   tools/restage.sh [builddir]
+#
+# Copies into the build dir (default: same default as build_pvt.sh):
+#   * builder.py from this tree
+#   * testroms/*.nes from this tree (local only -- gitignored)
+#   * every .nes in $PVT_ROMS, if set (controls that are not in testroms/:
+#     Star Ally, Lonely Island, Lucky Lawn Mower, VG Pocket, ...)
+#   * every harness .c in $PVT_HARNESS, if set, compiled against libmgba
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUILD="${1:-${BUILD:-$(dirname "$HERE")/pvt_build}}"
+cd "$BUILD" || { echo "restage: no build dir $BUILD" >&2; exit 1; }
+
+cp "$HERE/builder.py" .
+cp "$HERE"/testroms/*.nes . 2>/dev/null
+[ -n "$PVT_ROMS" ] && cp "$PVT_ROMS"/*.nes . 2>/dev/null
+if [ -n "$PVT_HARNESS" ]; then
+  for c in "$PVT_HARNESS"/*.c; do
+    [ -e "$c" ] || continue
+    cp "$c" . && gcc -O2 "$(basename "$c")" -o "$(basename "${c%.c}")" -lmgba 2>/dev/null
+  done
+fi
+n=$(ls *.nes 2>/dev/null | wc -l)
+echo "restaged $BUILD: $n ROMs"
+[ "$n" -gt 0 ] || { echo "restage: WARNING no .nes staged" >&2; exit 1; }

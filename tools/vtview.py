@@ -9,16 +9,20 @@ p2<<5|p3<<6, transparency (idx&0x63)==0), colours via the session-11
 vt_compat mapping fitted from the NESdev chart.  Sprites: 8x16 4bpp
 metasprites from the OAM shadow page, enough to see actors.
 """
-import importlib.util, sys
+import importlib.util, os, sys
 from PIL import Image
 
-spec = importlib.util.spec_from_file_location("vtref", "/home/claude/vtref.py")
+spec = importlib.util.spec_from_file_location(
+    "vtref", os.path.join(os.path.dirname(os.path.abspath(__file__)), "vtref.py"))
 m = importlib.util.module_from_spec(spec)
 _saved = sys.argv; sys.argv = ['vtref.py', 'none']
 spec.loader.exec_module(m); sys.argv = _saved
 
-exec(open('/tmp/vtchart.py').read())   # LUT[0xSLH] = (r,g,b)
-exec(open('/tmp/vtcompat.py').read())  # M[LL] = (S,L)
+# vtchart.py / vtcompat.py are session scratch files (not in the tree) that
+# define the chart LUT and compat mapping; point VTVIEW_AUX at their dir.
+_aux = os.environ.get('VTVIEW_AUX', '/tmp')
+exec(open(os.path.join(_aux, 'vtchart.py')).read())   # LUT[0xSLH] = (r,g,b)
+exec(open(os.path.join(_aux, 'vtcompat.py')).read())  # M[LL] = (S,L)
 def compat_rgb(idx):
     idx &= 0x3F
     H = idx & 0xF

@@ -2,10 +2,17 @@
 # score.sh <build_dir> -- builds LLM play ROM in that dir, captures opening
 # (f400, no input) and gameplay (f800, tapping), scores both vs the
 # references in 5-BIT space (guide section 60).  Prints two percentages.
+#   LLM_ROM   path to Lucky_Lawn_Mower_VT09_calibrated.nes (default: $PVT_ROMS/,
+#             or already staged in the build dir)
+#   PVT_REFS  directory holding gg.png and lawn.png (default: /tmp)
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REFS="${PVT_REFS:-/tmp}"
+LLM_ROM="${LLM_ROM:-${PVT_ROMS:-.}/Lucky_Lawn_Mower_VT09_calibrated.nes}"
 B=$1
 cd $B || exit 1
-cp /home/claude/pocketvt/builder.py . 2>/dev/null
-cp /mnt/user-data/outputs/Lucky_Lawn_Mower_VT09_calibrated.nes . 2>/dev/null
+cp "$HERE/builder.py" . 2>/dev/null
+cp "$LLM_ROM" . 2>/dev/null
+[ -f Lucky_Lawn_Mower_VT09_calibrated.nes ] || { echo "score_5bit: LLM ROM not found (set LLM_ROM)" >&2; exit 1; }
 D0=$(arm-none-eabi-nm pocketvt.elf | grep " D _dma0buff$" | cut -d' ' -f1)
 cat > sc.c <<CEOF
 #include <mgba/core/core.h>
@@ -30,7 +37,8 @@ gcc -O2 sc.c -o sc -lmgba 2>/dev/null
 rm -f *.sav; python3 builder.py Lucky_Lawn_Mower_VT09_calibrated.nes >/dev/null 2>&1
 ./sc play_me.gba 400 0 op.raw op.geom >/dev/null 2>&1
 ./sc play_me.gba 800 1 gp.raw gp.geom >/dev/null 2>&1
-python3 - <<'PY'
+REFS="$REFS" python3 - <<'PY'
+import os
 import struct
 from PIL import Image
 def score(raw,geom,ref):
@@ -48,5 +56,5 @@ def score(raw,geom,ref):
             p=px[y*240+x]; tot+=1
             ok+= q((p&255,(p>>8)&255,(p>>16)&255))==q(R[nx,nr])
     return 100*ok/tot
-print("  opening %5.1f%%   gameplay %5.1f%%"%(score('op.raw','op.geom','/tmp/gg.png'),score('gp.raw','gp.geom','/tmp/lawn.png')))
+print("  opening %5.1f%%   gameplay %5.1f%%"%(score('op.raw','op.geom',os.environ['REFS']+'/gg.png'),score('gp.raw','gp.geom',os.environ['REFS']+'/lawn.png')))
 PY

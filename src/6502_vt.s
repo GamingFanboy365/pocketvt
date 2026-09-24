@@ -93,7 +93,7 @@ vt_patch_optable:
     @ (Furbtendulator CPU_VT369_Sound, gated on reg4100[0x62]==0x0D),
     @ which PocketVT does not emulate -- on the GBA the sample streaming
     @ these perform is done by vt_adpcm_mix_gba reading PRG directly.
-    @ See FINDINGS_vt_opcodes.md.  Do not enable these on the main CPU.
+    @ See DATASHEET_DIGEST.md appendix A.  Do not enable these on the main CPU.
 
 #if VT09_ENCRYPTION
     @ Replace JMP abs and JMP ind with encryption-commit wrappers
@@ -207,7 +207,7 @@ op_vt_ADX:
 @ Byte offsets into VTState for the bool encryption fields.
 @ Must match the GCC layout of VTState in vt_regs.h.
 @ Verify with: arm-none-eabi-nm pocketvt_VT09.elf | grep vt_encryption
-@ and check IMPLEMENTATION_NOTES.md for the static_assert recipe.
+@ The _Static_asserts at the top of vt_regs.c fail the build on drift.
 vt_state_enc_active  = 0x20
 vt_state_enc_pending = 0x21
 vt_state_enc_next    = 0x22

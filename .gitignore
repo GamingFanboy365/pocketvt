@@ -1,0 +1,33 @@
+# --- Local reference material: never commit ---
+# ROMs (test carts, controls, packaged play ROMs)
+*.nes
+*.unf
+*.unif
+testroms/
+# NESdev wiki XML exports and NintendulatorNRS / Furbtendulator source snippets
+reference/
+NESdev_Wiki-*.xml
+# Reference screenshots / captures
+*.png
+!src/**/*.png
+
+# --- Build output ---
+build/
+pvt_build/
+*_build/
+*.o
+*.d
+*.elf
+*.map
+*.gba
+*.sav
+play_me.gba
+
+# --- Editor / merge leftovers ---
+*.mine_bak
+*.orig
+*.rej
+*~
+*.swp
+.DS_Store
+__pycache__/
