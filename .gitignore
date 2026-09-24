@@ -22,6 +22,10 @@ pvt_build/
 *.gba
 *.sav
 play_me.gba
+# ...except the committed core at the repo root, rebuilt by CI on every PR
+# (.github/workflows/build.yml)
+!/pocketvt.elf
+!/pocketvt.gba
 
 # --- Editor / merge leftovers ---
 *.mine_bak

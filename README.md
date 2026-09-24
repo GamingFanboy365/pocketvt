@@ -39,7 +39,11 @@ With Docker (no local toolchain needed), from the repository root:
 sudo docker run --rm -v "$PWD":/src -w /src devkitpro/devkitarm make
 ```
 
-This produces `pocketvt.gba` (the core, no games) in the repository root.
+This produces `pocketvt.gba` (the core, no games) and `pocketvt.elf` in the
+repository root. Both are committed. On every pull request, the "Build core"
+GitHub Action (`.github/workflows/build.yml`) rebuilds them with this same
+image and commits them back to the PR branch if they changed, so the
+committed binaries always match the source.
 
 Without devkitPro, `build_pvt.sh` builds with plain `gcc-arm-none-eabi`
 plus the libgba headers (clone https://github.com/devkitPro/libgba):

@@ -20,7 +20,9 @@ sudo docker run --rm -v "$PWD":/src -w /src devkitpro/devkitarm make  # devkitAR
 ```
 Toolchain: gcc-arm-none-eabi, libnewlib-arm-none-eabi, libgba headers
 (git clone https://github.com/devkitPro/libgba). Harnesses use libmgba (`libmgba-dev`).
-The Docker build uses a different GCC than build_pvt.sh: its core is NOT
+The repo-root pocketvt.elf / pocketvt.gba are committed and come from the Docker
+build; CI (.github/workflows/build.yml) rebuilds and commits them on every PR, so
+after pushing, pull before committing again. The Docker build uses a different GCC than build_pvt.sh: its core is NOT
 byte-comparable with a build_pvt.sh core. Compare within one path only.
 `EXTRA_CFLAGS` reaches the assembler too (`.s` files use `#if`).
 

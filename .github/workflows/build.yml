@@ -1,0 +1,61 @@
+# Rebuilds the core on every pull request and commits pocketvt.elf and
+# pocketvt.gba back to the PR branch when they changed, so the binaries in
+# the tree always match the source.  Same image as the README's build
+# command (devkitpro/devkitarm + make).
+#
+# Commits pushed with GITHUB_TOKEN do not trigger another run, so this
+# cannot loop.  For PRs from forks the token is read-only: the job then
+# only fails if the committed binaries are stale.
+name: Build core
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # the PR branch itself (not the merge commit), so we can push to it
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - name: Build with devkitARM
+        run: |
+          rm -rf build pocketvt.elf pocketvt.gba
+          docker run --rm -v "$PWD":/src -w /src devkitpro/devkitarm make
+          sudo chown -R "$(id -u):$(id -g)" .
+          ls -l pocketvt.elf pocketvt.gba
+
+      - name: Commit updated binaries
+        run: |
+          git add -f pocketvt.elf pocketvt.gba
+          if git diff --cached --quiet; then
+            echo "pocketvt.elf / pocketvt.gba already up to date."
+            exit 0
+          fi
+          if [ "${{ github.event.pull_request.head.repo.full_name || github.repository }}" != "${{ github.repository }}" ]; then
+            echo "::error::pocketvt.elf / pocketvt.gba are stale and this fork PR cannot be pushed to. Rebuild with the README's docker command and commit them."
+            exit 1
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898783+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Rebuild pocketvt.elf and pocketvt.gba"
+          git push
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pocketvt-core
+          path: |
+            pocketvt.elf
+            pocketvt.gba
