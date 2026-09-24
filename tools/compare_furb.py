@@ -44,6 +44,7 @@ ap.add_argument('--port', type=int, default=1, help='NES port furb_cli feeds (Po
 ap.add_argument('--window', type=int, default=8, help='reference frames searched either side')
 ap.add_argument('--search', type=int, default=4, help='pixel shift searched either way')
 ap.add_argument('--set', action='append', default=[], help='furb_cli setting, e.g. VT03Palette=1')
+ap.add_argument('--furb-arg', action='append', default=[], help='extra furb_cli argument (repeatable), e.g. --furb-arg=--header --furb-arg=13=8')
 ap.add_argument('--furb', default=os.path.join(FB, 'build', 'furb_cli'))
 ap.add_argument('--out', default='furbcmp')
 ap.add_argument('--keep', action='store_true', help='keep raw captures/dumps in OUT/raw')
@@ -115,6 +116,14 @@ if script:
     cmd += ['--input', script]
 for s in a.set:
     cmd += ['--set', s]
+# NES 2.0 extended console type is byte 13's LOW nibble; Furbtendulator reads
+# the whole byte (NES.cpp), so a dump with junk in the high nibble (VG Pocket
+# 50-in-1: 0x28) gets console 40 and crashes its PPU.  Mask it on the copy.
+hdr = open(a.rom, 'rb').read(16)
+if hdr[:4] == b'NES\x1a' and hdr[7] & 0x0C == 0x08 and hdr[7] & 3 == 3 and hdr[13] > 0x0F:
+    print('compare_furb: header byte 13 = 0x%02X; giving furb_cli 0x%X (extended console type)' % (hdr[13], hdr[13] & 15))
+    cmd += ['--header', '13=%d' % (hdr[13] & 15)]
+cmd += a.furb_arg
 r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 if r.returncode:
     sys.exit('compare_furb: furb_cli failed:\n' + r.stderr[-2000:])

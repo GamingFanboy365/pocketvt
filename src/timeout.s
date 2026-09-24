@@ -430,8 +430,34 @@ vblank_handler_0:
 	mov r0,#0
 	bl call_quickhackfinder
 	
+#if VT_SPLIT_SLOTS
+	@ guide s.77: the VT frame-end work (bands, split slots) on the EWRAM stack
+	mov r1,sp
+	ldr r2,=vt_prg_evicted	@ only split carts nest this deep
+	ldrb r2,[r2]
+	cmp r2,#1	@ C set only once evicted
+	cmphs r1,#0x03000000
+	ldrhs sp,=vt_ewram_stack_top
+	str r1,[sp,#-4]!
 	bl_long newframe_nes_vblank
+	ldr sp,[sp]
+#else
+	bl_long newframe_nes_vblank
+#endif
 	ldmfd sp!,{r0-r12}
+#if VT_SPLIT_SLOTS
+	@ guide s.77: vt_prg_evict (ppu_vt.c) just moved the VRAM-hosted PRG
+	@ banks to EWRAM.  Rebuild the memmap; map*_ end in flush, which
+	@ re-encodes the 6502 PC before it executes another instruction.
+	ldr r0,=vt_prg_evict_pending
+	ldrb r1,[r0]
+	cmp r1,#0
+	beq 1f
+	mov r1,#0
+	strb r1,[r0]
+	bl_long vt_apply_prg_banks
+1:
+#endif
 	
 	ldr r0,=stat_R_clearvbl
 	ldr r2,=PPU_read_tbl+8

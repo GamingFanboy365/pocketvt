@@ -241,6 +241,30 @@ vt_apply_prg_banks:
     
     ldmfd   sp!, {pc}
 
+#if VT_SPLIT_SLOTS
+@ ============================================================================
+@ vt_chr4_rebuild_stacked -- ppu.s vblankinterrupt's call of
+@ vt_chr4_rebuild_if_dirty, on the EWRAM stack once a cart uses split slots.
+@ The vblank IRQ runs this in System mode on whatever stack it interrupted;
+@ IWRAM leaves ~470 bytes of user stack, and nested on top of the split-slot
+@ frame-end chain it overran into .bss (vt_prg_banks) -- guide s.77.  Kept in
+@ ROM: vblankinterrupt is IWRAM code, and IWRAM code eats that same stack.
+@ ============================================================================
+    .global vt_chr4_rebuild_stacked
+vt_chr4_rebuild_stacked:
+    mov     r1, sp
+    ldr     r2, =vt_prg_evicted
+    ldrb    r2, [r2]
+    cmp     r2, #1                  @ C set only once evicted
+    cmphs   r1, #0x03000000         @ ...and still on the IWRAM stack
+    ldrhs   sp, =vt_ewram_stack_top
+    stmfd   sp!, {r1, lr}
+    bl      vt_chr4_rebuild_if_dirty
+    ldmfd   sp!, {r1, lr}
+    mov     sp, r1
+    bx      lr
+#endif
+
 @ ============================================================================
 @ write_vt4xxx  (writemem_4 hook)
 @

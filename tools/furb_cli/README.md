@@ -62,6 +62,11 @@ its own NTSC palette while PocketVT uses calibrated console DACs.
 `--set VT03Palette=N` (and other settings, see `furb_cli` with no arguments)
 changes the reference side.
 
+`--furb-arg` passes any extra argument to furb_cli (repeat it per word).
+NES 2.0 headers whose byte 13 has junk in the high nibble are masked
+automatically (the VG Pocket 50-in-1 dump has 0x28; Furbtendulator reads the
+whole byte as the console type and crashes).
+
 The two emulators can diverge in game state over long runs (a ship that
 dies in one and not the other). The side-by-side image makes that obvious;
 compare early frames or re-script the input rather than trusting a late

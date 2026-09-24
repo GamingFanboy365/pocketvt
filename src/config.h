@@ -27,6 +27,14 @@
 // VT support is always present in PocketVT.
 #define VT_MODE 1
 
+// Raster-split background CHR (MAINTAINERS_GUIDE s.73, s.77): bands of a frame
+// that use other $2012-$2017 banks get their own BG char blocks (2/3), with
+// the per-line BG0CNT switching to them.  Build with -DVT_SPLIT_SLOTS=0 to
+// fall back to one bank set per frame.
+#ifndef VT_SPLIT_SLOTS
+#define VT_SPLIT_SLOTS 1
+#endif
+
 // VT09 alias kept for backward compatibility; the build is identical.
 #if defined(VT09) && !defined(VT03)
   #define VT03 1

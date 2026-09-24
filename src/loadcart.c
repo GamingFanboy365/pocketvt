@@ -699,6 +699,15 @@ void init_cache(u8* nes_header, int called_from)
 		assign_chr_pages(NES_VRAM,0,8);
 	}
 	
+#if VT_SPLIT_SLOTS
+	{
+		/* a new cart: its PRG copy is back in VRAM blocks 2/3 */
+		extern u8 *vt_prg_shadow;
+		extern void vt_split_reset(void);
+		vt_prg_shadow = NULL;
+		vt_split_reset();
+	}
+#endif
 	//assign pages!
 	{
 		u8 *_rombase, *_vrombase;
@@ -941,6 +950,27 @@ void init_cache(u8* nes_header, int called_from)
 					
 					memcpy_if_okay(novrom_bank,_rombase+firstpage*16384,pages_to_copy*16384);
 					assign_prg_pages2(novrom_bank,firstpage*PRG_16,pages_to_copy*PRG_16);
+#if VT_SPLIT_SLOTS
+					/* guide s.77: the VT raster-split slots need BG char
+					 * blocks 2/3, which this VRAM copy occupies.  Keep an
+					 * identical EWRAM twin; the first time a slot is needed,
+					 * ppu_vt.c vt_prg_evict moves the 6502 onto it. */
+					if (mapper == 253)
+					{
+						extern u8 *vt_prg_shadow;
+						if (do_not_decompress)
+							vt_prg_shadow = NULL;
+						else if (_rombase < (u8*)0x08000000)	/* decompressed into EWRAM */
+							vt_prg_shadow = _rombase + firstpage*16384;
+						else if (rompages <= 8)		/* whole PRG copied above */
+							vt_prg_shadow = cachebase + firstpage*16384;
+						else
+						{
+							memcpy32(cachebase, _rombase + firstpage*16384, pages_to_copy*16384);
+							vt_prg_shadow = cachebase;
+						}
+					}
+#endif
 					//sprite_vram_in_use=1;
 					if (page_size!=32)
 					{

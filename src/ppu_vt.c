@@ -2313,7 +2313,11 @@ EWRAM_BSS u8  vt_frame_reg[6];        /* its primary (last-band) registers */
 EWRAM_BSS u32 vt_split_key[2][4];     /* 1K banks held by slots 2 and 3 */
 EWRAM_BSS u32 vt_split_mode[2];       /* bus width / mode they were built in */
 EWRAM_BSS u16 vt_split_sig[2][4];     /* per-page stomp-check word offsets */
+#if VT_SPLIT_SLOTS
+EWRAM_BSS volatile u8 vt_split_valid[2];   /* volatile: read by the vblank IRQ (vt_split_repair) mid-build */
+#else
 EWRAM_BSS u8  vt_split_valid[2];
+#endif
 EWRAM_BSS u8  vt_split_lru;
 EWRAM_BSS u32 vt_split_assemblies;    /* diagnostic: cache misses */
 
@@ -2388,6 +2392,13 @@ static u32 vt_split_mode_word(void)
 static void vt_split_build(int s, const u32 k[4])
 {
     volatile u32 *base = (volatile u32 *)(0x06000000u + (u32)(2 + s) * 0x4000u);
+    /* Invalid while half-written: the vblank IRQ's vt_split_repair can land
+     * mid-build, take the unfinished page for a stomp and rebuild it with the
+     * OLD key; this build then resumes and leaves a mixed page (Aero title,
+     * guide s.77). */
+#if VT_SPLIT_SLOTS
+    vt_split_valid[s] = 0;
+#endif
     for (int p = 0; p < 4; p++) {
         vt_split_sig[s][p] = vt_chr4_assemble_page_vram(base + p * 512, k[p]);
         vt_split_key[s][p] = k[p];
@@ -2396,6 +2407,58 @@ static void vt_split_build(int s, const u32 k[4])
     vt_split_valid[s] = 1;
     vt_split_assemblies++;
 }
+
+#if VT_SPLIT_SLOTS
+/* Guide s.77.  Char blocks 2/3 (0x06008000-0x0600FFFF) are not free on VT
+ * carts: loadcart.c's USE_ACCELERATION puts the last 32K of PRG there and
+ * the 6502 executes from it, so writing slot tiles over it crashed Add 'em
+ * Up.  Keeping PRG elsewhere for good costs ~10% speed on every VT cart,
+ * so the move happens only when a cart first needs a slot: repoint the
+ * banks to their identical EWRAM twin (vt_prg_shadow, set by loadcart.c)
+ * and flag timeout.s, which after newframe_nes_vblank returns re-runs
+ * vt_apply_prg_banks -- its map*_ -> flush re-encodes the 6502 PC through
+ * the new memmap before another instruction executes.  The CPU is paused
+ * while this runs, so the slot tiles can be written straight away. */
+EWRAM_BSS u8 *vt_prg_shadow;
+/* 3K EWRAM stack for the heavy VT C work (ppu.s vblankinterrupt, timeout.s
+ * vblank_handler_0): IWRAM leaves ~470 bytes of user stack. */
+EWRAM_BSS u32 vt_ewram_stack[768] __attribute__((aligned(8)));
+asm(".global vt_ewram_stack_top\n.set vt_ewram_stack_top, vt_ewram_stack + 3072");
+EWRAM_BSS u8 vt_prg_evict_pending;
+EWRAM_BSS u8 vt_prg_evicted;
+extern const u8 *_speedhack_pc, *_speedhack_pc2;
+
+static const u8 *vt_prg_reloc(const u8 *p)
+{
+    const u32 a = (u32)p;
+    if (a >= 0x06008000u && a < 0x06010000u) return vt_prg_shadow + (a - 0x06008000u);
+    return p;
+}
+
+static int vt_prg_evict(void)
+{
+    if (vt_prg_evicted) return 1;
+    if (!vt_prg_shadow) return 0;              /* no twin: slots stay off */
+    const int n = rompages * PRG_16;
+    for (int b = 0; b < n; b++)
+        instant_prg_banks[b] = (u8 *)vt_prg_reloc(instant_prg_banks[b]);
+    for (int i = 0; i < 4; i++)
+        speedhacks[i].hack_pc = vt_prg_reloc(speedhacks[i].hack_pc);
+    _speedhack_pc  = vt_prg_reloc(_speedhack_pc);
+    _speedhack_pc2 = vt_prg_reloc(_speedhack_pc2);
+    vt_prg_evicted = 1;
+    vt_prg_evict_pending = 1;
+    return 1;
+}
+
+void vt_split_reset(void)
+{
+    vt_split_valid[0] = vt_split_valid[1] = 0;
+    vt_split_lru = 0;
+    vt_prg_evicted = 0;
+    vt_prg_evict_pending = 0;
+}
+#endif
 
 static int vt_split_slot_get(const u32 k[4])
 {
@@ -2435,6 +2498,19 @@ static void vt_split_repair(void)
 extern u8 _ppuctrl0;
 void vt_bands_frame_end(void)
 {
+#if VT_SPLIT_SLOTS
+    /* bg0cntbuff persists across frames (double-buffered), so a line that was
+     * a split band's line some frames ago would keep pointing at a slot that
+     * has since been rebuilt for another bank set (Aero's title top strip,
+     * guide s.77).  Band lines carry their original char base in BGCNT bits
+     * 4-5 (unused by the hardware); put every such line back first. */
+    if (vt_prg_evicted) {
+        u16 *b = (u16 *)_bg0cntbuff;
+        for (int l = 0; l < 240; l++)
+            if (b[l] & 0x0008u)
+                b[l] = (u16)((b[l] & ~0x003Cu) | ((b[l] >> 2) & 0x000Cu));
+    }
+#endif
     const int n = vt_nband;
     const int ok = vt_active && (vt_reg_2010 & 0x02) && !vt_bkexten_live;   /* 4bpp BG, non-extension */
     if (ok && n > 1) {
@@ -2444,17 +2520,27 @@ void vt_bands_frame_end(void)
         const int half = (_ppuctrl0 & 0x10) ? 1 : 0;
         u32 pk[4]; vt_band_key(preg, half, pk);
         u16 *buf = (u16 *)_bg0cntbuff;
+#if VT_SPLIT_SLOTS
+        int iwram_stack = !vt_prg_evicted;     /* this call entered on IWRAM */
+#endif
         for (int i = 0; i < n - 1; i++) {
             u32 k[4]; vt_band_key(vt_band[i].reg, half, k);
             if (k[0] == pk[0] && k[1] == pk[1] && k[2] == pk[2] && k[3] == pk[3]) continue;
-#ifndef VT_SPLIT_SLOTS   /* s21b62 WIP: off by default -- slot writes hang Add em Up (guide s.73) */
+#if !VT_SPLIT_SLOTS
             continue;
+#else
+            /* Blocks 2/3 still hold PRG (s.77): move it now, build from the
+             * next frame on -- this call entered on the IWRAM stack, and only
+             * once vt_prg_evicted is set do ppu.s/timeout.s give the frame-end
+             * and vblank work the EWRAM stack. */
+            if (!vt_prg_evicted) { vt_prg_evict(); iwram_stack = 1; }
+            if (iwram_stack) continue;         /* no slot builds this frame */
 #endif
             const int slot = vt_split_slot_get(k);
             int l0 = vt_band[i].line, l1 = vt_band[i + 1].line;
             if (l1 > 240) l1 = 240;
-            for (int l = l0; l < l1; l++)
-                buf[l] = (u16)((buf[l] & ~0x000Cu) | ((u32)slot << 2));
+            for (int l = l0; l < l1; l++)      /* slot char base; original kept in bits 4-5 */
+                buf[l] = (u16)((buf[l] & ~0x003Cu) | ((buf[l] & 0x000Cu) << 2) | ((u32)slot << 2));
         }
     } else {
         vt_split_frame = 0;

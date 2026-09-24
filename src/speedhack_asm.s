@@ -645,6 +645,7 @@ konamihack8:  @gradius2
 
  .section .data.107, "w", %progbits
 
+	.global _speedhack_pc, _speedhack_pc2	@ ppu_vt.c vt_prg_evict relocates them (guide s.77)
 _speedhack_pc: .word 0
 _speedhack_pc2: .word 0
 	@ s21b6b: the storage label MUST follow the block's _name convention.

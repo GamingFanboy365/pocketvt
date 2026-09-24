@@ -2924,7 +2924,11 @@ nopal60:
 	@ Piece 2/3: assemble 4bpp tiles + 16-colour palette once per frame. Runs
 	@ in the vblank IRQ (the reliable per-frame point). The IRQ stack was
 	@ enlarged (gba_cart_my.ld __sp_irq) so this heavy work no longer overflows.
+#if VT_SPLIT_SLOTS
+	bl_long vt_chr4_rebuild_stacked	@ EWRAM stack for split carts (mapVT.s, guide s.77)
+#else
 	bl_long vt_chr4_rebuild_if_dirty
+#endif
 	bl_long vt_timer_tick_frame	@ maintains the VT timer boot-safety latch
 	
 	ldrb_ r0,okay_to_run_hdma

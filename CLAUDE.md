@@ -83,36 +83,36 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   screen cell uses independently of palette (s.68).
 - `-DFORCE_BK_REPAIR`: if a BKEXTEN screen looks scrambled, a clean result
   here means a cache stomp, not a decode fault (s.69).
+- tools/probes/: one-question mGBA harnesses (speed, frame hashes, VRAM/RAM
+  dumps, live PC/lastbank, single-step watchpoints, stack depth). README there.
 - Diagnostic hooks used this project: DMA_LOG (mapVT.s video DMA), TLOG /
   NMIDBG style counters. Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (s21b62)
-See MAINTAINERS_GUIDE.md s.73 for detail.
+## Current state (after s.77)
+See MAINTAINERS_GUIDE.md s.77 (raster-split slots) and s.73 for detail.
 - Working: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower VT09, VG Pocket
-  (all 50), Push the Ball, Time Pilot, Add 'em Up (full speed), Aero Gyrodine
-  and Hex City X (gameplay).
-- Speed (NMIs/60): Add 'em Up 60, Aero title 39, Hex title 35, LLM 55, SA 51,
-  LI/Scramble/VG 60.
+  (all 50), Push the Ball, Time Pilot, Add 'em Up (title 98%, puzzle 99.9% vs
+  furb), Aero Gyrodine and Hex City X (titles now 100% vs furb, gameplay too).
+- Raster-split BG CHR is ON by default (`VT_SPLIT_SLOTS`, config.h;
+  `-DVT_SPLIT_SLOTS=0` = the old core, byte-identical).
+- Speed (NES frames per GBA second): Add 'em Up 60, Aero title 32, Hex title 32,
+  LLM VT369 38, Table Soccer VT369 35, SA 51, LLM VT09 55, LI/Scramble/VG 60.
+- The IWRAM user stack is ~470 bytes (s.77b). Before adding depth to anything
+  that runs from the vblank IRQ or the frame-end chain, measure with
+  tools/probes/spmin against `__bss_end__`.
 
 ## Open work, in priority order
-1. **Raster-split background CHR (s.73, WIP behind `-DVT_SPLIT_SLOTS`).**
-   Aero Gyrodine's title (3 bands), Hex City X's title and Add 'em Up's top
-   strip change $2016/$2017 mid-frame. Band recording (vt_band_mark) and
-   frame-end processing (vt_bands_frame_end) are in ppu_vt.c and ON; with
-   VT_SPLIT_SLOTS the extra bands are decoded into BG char blocks 2/3 and
-   bg0cntbuff gets their char base per scanline. That made Aero's title
-   run at 59/60 -- **but hangs Add 'em Up** (no NMIs, blank screen after
-   ~f200), so blocks 2/3 are not free on that cart (it has a separate CHR ROM).
-   Next step: find what occupies 0x06008000-0x0600DFFF on Add 'em Up
-   (VRAM inventory harness in s.72; also check PocketNES's 1K bank cache /
-   bank_search path), then either relocate or reserve.
-2. Aero/Hex titles still don't reach 60/60 without the split slots.
-3. Scramble's shot (s.70c): one-pixel sprite on texture row 7; the sprite
+1. Aero/Hex title speed (32/60; now correct but slow). Profile with
+   tools/arm_profile.c; the titles run PRG from EWRAM after the slot handoff.
+2. VG Pocket 50-in-1: several games have wrong palettes (user report). Compare
+   per game with compare_furb (it now masks the header's console-type byte).
+3. VT369 platform port (s.47): Lucky Lawn Mower VT369 (77% vs furb) and Table
+   Soccer VT369 (16%).
+4. Table Soccer VT03 (40% vs furb; mapper 419? reference/nrs/mapper419.cpp).
+5. Scramble's shot (s.70c): one-pixel sprite on texture row 7; the sprite
    affine matrix (pd=336, 8x16 double-size) never samples rows 3/7/12. Rotate
    dropped rows per frame like the BG's scale75.
-4. VT369 platform port (s.47); Table Soccer (mapper 419, reference in
-   reference/nrs/mapper419.cpp).
 
 ## Reference material
 LOCAL ONLY, gitignored, never commit (the user supplies them as test.zip):
@@ -121,8 +121,10 @@ LOCAL ONLY, gitignored, never commit (the user supplies them as test.zip):
 - reference/NESdev_Wiki-*.xml: NESdev wiki exports (VT02+ pages, MMC3).
 - reference/Furbtendulator-main/: the full Furbtendulator source (from
   Furbtendulator-main.zip); tools/furb_cli builds it headless.
-- testroms/: Add 'em Up, Push the Ball, Scramble, Table Soccer, Time Pilot.
-  The controls (Star Ally, Lonely Island, LLM, VG Pocket) are NOT in it; ask.
+- testroms/: Add 'em Up, Push the Ball, Scramble, Table Soccer (VT03), Time
+  Pilot; supplied later: Aero Gyrodine, Hex City X, VG Pocket VT09, Lucky Lawn
+  Mower VT369, Table Soccer VT369. Star Ally, Lonely Island and LLM VT09 are
+  NOT on disk; ask.
 
 In git:
 - DATASHEET_DIGEST*.md: VT02/VT03 datasheet notes. Bit numbering there is

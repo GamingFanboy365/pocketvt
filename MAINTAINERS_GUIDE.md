@@ -3508,3 +3508,111 @@ Unverified: real FDS disks (dummy BIOS only), the keyboards, mice, Arkanoid,
 tablet and data recorder (plumbing exercised, no test ROM reads them), and
 the VT369 hi-res dump path -- Lucky Lawn Mower VT369 (supplied this session,
 in the gitignored testroms/) runs as console VT369 but never sets $201C bit 2.
+
+## 77. Raster-split slots FIXED and on by default: four bugs, not one (after s21b62)
+
+Open item 1 of s.73. `VT_SPLIT_SLOTS` is now defined in config.h and is on
+by default; `-DVT_SPLIT_SLOTS=0` builds a core byte-identical to the one
+before this section. Every number below is from `compare_furb.py` (s.75),
+built with build_pvt.sh.
+
+| cart (Start at NES 320) | before t200/t400/t700 | after |
+|---|---|---|
+| Add 'em Up | 60.65 / 60.36 / 81.83 % | 98.46 / 98.17 / 99.88 % |
+| Aero Gyrodine | 64.42 / 100 / 100 % | 99.99 / 100 / 100 % |
+| Hex City X | 68.69 / 99.53 / 99.53 % | 100 / 99.98 / 99.98 % |
+
+Scramble, Time Pilot, Push the Ball, Table Soccer (VT03 and VT369), Lucky Lawn
+Mower VT369 and VG Pocket have identical scores. Without input, Aero's title
+scores 100.00% from t100 to t900 and Hex's 100.00%. Speed (NES frames per GBA
+second) is unchanged on every cart that does not split. Aero's and Hex's titles
+run at 32-33, down from 39 and 35 when they showed the wrong tiles. They still
+need speed work (open item 2).
+
+### 77a. Blocks 2/3 were never free: the 32K PRG copy lives there
+
+s.73 assumed BG char blocks 2/3 were free on VT carts. They are not, on ANY VT
+cart. loadcart.c's `USE_ACCELERATION` copies the last 32K of PRG to
+`novrom_bank` = 0x06008000-0x0600FFFF (the first 16K to 0x06010000), and the
+6502 executes from there. `vram_dump` confirmed it on Add 'em Up, Aero, Hex and
+Scramble: each 8K there is byte-identical to a PRG bank. Aero survived the old
+WIP only because its bank at 0x06008000 is mostly empty.
+
+Moving PRG out of VRAM for good works but costs about 10% on every VT cart
+(Aero 39->34, LLM VT369 38->34, Table Soccer VT369 35->31, Scramble 46->42).
+Leaving one bank in the 8K gap between the slots does not work either. PocketNES
+executes a branch as host-pointer arithmetic, so Add 'em Up's `$E011: BPL $DF98`,
+run from a copy at 0x0600E000, lands in slot tiles. (PocketNES's old answer, the
+256-byte prefix copy of the Arkista's Ring fix, has no room here.)
+
+The fix moves PRG only when a cart first needs a slot, `vt_prg_evict`
+(ppu_vt.c). loadcart.c records an identical EWRAM twin of the VRAM copy
+(`vt_prg_shadow`: the whole-PRG EWRAM copy when PRG <= 128K, the decompressed
+image, or a fresh 32K copy at the cache start). On first use every
+`instant_prg_banks` entry and every speed-hack PC pointing into
+0x06008000-0x0600FFFF is repointed to the twin. timeout.s `vblank_handler_0`
+then calls `vt_apply_prg_banks` right after `newframe_nes_vblank` returns.
+`map*_` end in `flush`, which re-encodes the 6502 PC through the new memmap
+before another instruction runs. Every JMP/JSR/RTS/RTI/vector goes through
+`encodePC` too, so nothing can re-enter the VRAM copy. Carts that never split
+keep the fast layout.
+
+### 77b. The IWRAM user stack is only ~470 bytes, and split slots overflowed it
+
+The user stack runs from `__sp_usr` (0x03007D60) down to `__bss_end__`
+(~0x03007B84). The vblank IRQ runs `vt_chr4_rebuild_if_dirty` in System mode on
+whatever stack it interrupted. On the base core the deepest point is 0x03007C0C,
+136 bytes of headroom. With slots, an IRQ landing during the frame-end chain
+(`vblank_handler_0` saves 13 registers, then `newframe_nes_vblank` ->
+`vt_palette_rebuild_gba` -> `vt_bands_frame_end` -> `vt_split_build` -> decoder)
+went down to 0x03007B50 and overwrote `vt_prg_banks` and the IWRAM canaries.
+Add 'em Up then mapped PRG bank 0 at $E000 and jumped into NES RAM. That is
+the "hang after two slot assemblies" of s.73.
+
+Found with the probes: `lbwatch` caught the jump into RAM, `memwatch` on
+`_memmap_E` caught `mapEF_` loading bank 0 from `vt_apply_prg_banks`, and `spmin`
+showed the System-mode SP below `__bss_end__`. Once a cart has taken slots, both
+entry points now run on a 3K EWRAM stack (`vt_ewram_stack`): the frame-end call
+in timeout.s, and the vblank call through `vt_chr4_rebuild_stacked` in mapVT.s.
+The latter is kept in ROM because IWRAM code comes out of the same 470 bytes; an
+inline version cost 40 bytes of `.iwram`. The first frame that needs a slot only
+moves the PRG and builds nothing, because that call entered on the IWRAM stack.
+Building even one slot in that frame, as a first version did, corrupted Aero's
+game state (90% after Start). Deepest IWRAM point now: 0x03007C50, 204 bytes of
+headroom, more than before.
+
+### 77c. Stale slot lines, and an IRQ race inside vt_split_build
+
+The two remaining faults were on Aero's title. `bg0cntbuff` persists across
+frames (double-buffered), so a line that stopped being a split line kept its
+slot char base. Band lines now store their original char base in BGCNT bits
+4-5 (unused by the hardware), and each frame end restores every tagged line
+before applying the new bands.
+
+`vt_split_repair` runs from the vblank IRQ and could land in the middle of a
+`vt_split_build`. It took the half-written page for a stomp and rebuilt it with
+the OLD key; the outer build then resumed, leaving slot 3's page 0 with 49
+tiles from the other bank set (the GYRODINE logo tiles over the top star strip).
+`vram_dump` of both slots before and after the LRU swap located it: seven pages
+exact, one mixed. The build now clears `vt_split_valid[s]` (volatile) for its
+whole duration.
+
+### 77d. Regression, and what is not verified
+
+Frame 700 (framebuffer + palette RAM) is byte-identical to the previous core on
+Scramble, Time Pilot, Push the Ball, both Table Soccers, LLM VT369 and VG Pocket.
+The frame-SET test is not a strict subset: Time Pilot renders 3 frames and Push
+the Ball 6 that the old core did not, and Scramble and LLM VT369 1 each. All are
+in the first 110 GBA frames (boot fade and first scroll steps), and after frame
+120 every frame matches. It is a phase shift from the few instructions added per
+vblank, not a rendering change.
+
+NOT verified: Star Ally, Lonely Island and Lucky Lawn Mower VT09 (not on disk
+this session). They do not split, so they should behave like VG Pocket and
+Scramble, but nobody has run them. `score_5bit.sh` (LLM VT09) was not run for
+the same reason.
+
+compare_furb.py now masks NES 2.0 header byte 13 to its low nibble for
+furb_cli. Furbtendulator reads the whole byte as the extended console type,
+and the VG Pocket 50-in-1 dump has 0x28 there, which crashed its PPU.
+`--furb-arg` passes anything else through.
