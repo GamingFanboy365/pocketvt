@@ -1,4 +1,5 @@
-/* spmin PLAY.gba FROMFRAME NSTEPS ADDR -- lowest sp per CPU mode (0x1F = System, the user stack) over NSTEPS steps, and every change of the u32 at ADDR */
+/* spmin PLAY.gba FROMFRAME NSTEPS ADDR -- lowest sp per CPU mode (0x1F = System, the user stack) over NSTEPS steps,
+ * separately for IWRAM and EWRAM stacks (vt_ewram_stack), and every change of the u32 at ADDR */
 #include <mgba/core/core.h>
 #include <mgba/gba/core.h>
 #include <mgba/core/log.h>
@@ -18,15 +19,17 @@ int main(int argc, char **argv) {
 	int gf = atoi(argv[2]); long ns = atol(argv[3]); unsigned A = strtoul(argv[4],0,16);
 	struct ARMCore *cpu = c->cpu;
 	for (int i = 1; i < gf; i++) { c->setKeys(c, 0); c->runFrame(c); }
-	unsigned mnm[32]; unsigned mnpcm[32]; for (int m=0;m<32;m++){mnm[m]=0xFFFFFFFF;mnpcm[m]=0;}
+	unsigned ewmin = 0xFFFFFFFF, ewpc = 0; unsigned mnm[32]; unsigned mnpcm[32]; for (int m=0;m<32;m++){mnm[m]=0xFFFFFFFF;mnpcm[m]=0;}
 	unsigned pv = c->busRead32(c, A);
 	for (long k = 0; k < ns; k++) {
 		c->step(c);
 		unsigned sp = cpu->gprs[13];
-		{ int m = cpu->cpsr.priv & 31; if ((sp>>24)==3 && sp < mnm[m]) { mnm[m] = sp; mnpcm[m] = cpu->gprs[15]; } }
+		{ int m = cpu->cpsr.priv & 31; if ((sp>>24)==3 && sp < mnm[m]) { mnm[m] = sp; mnpcm[m] = cpu->gprs[15]; }
+		  if ((sp>>24)==2 && sp < ewmin) { ewmin = sp; ewpc = cpu->gprs[15]; } }
 		unsigned v = c->busRead32(c, A);
 		if (v != pv) { printf("step %ld: [%08X] %08X -> %08X  pc=%08X sp=%08X\n", k, A, pv, v, cpu->gprs[15], sp); pv = v; }
 	}
 	for (int m=0;m<32;m++) if (mnm[m]!=0xFFFFFFFF) printf("mode %02X: min sp %08X at pc %08X\n", m, mnm[m], mnpcm[m]);
+	if (ewmin != 0xFFFFFFFF) printf("EWRAM stack: min sp %08X at pc %08X\n", ewmin, ewpc);
 	return 0;
 }

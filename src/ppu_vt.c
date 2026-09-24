@@ -74,7 +74,7 @@ static int vt_bk_whole_step(void);
 //   [0x80 .. 0x9F]  high 6-bit half written via PPU $3F80-$3F9F  (VT03+)
 // Other indices [0x20..0x7F] and [0xA0..0x1FF] are unused but the buffer
 // stays sized for the spec'd 512-entry future extension (VT09 enhanced).
-EWRAM_BSS u8  vt_palette_ram[VT_PALETTE_SIZE];
+EWRAM_BSS u8  vt_palette_ram[VT_PALETTE_SIZE] __attribute__((aligned(4)));  /* word loops in vt_pal_same */
 #ifdef PAL_WRITE_LOG
 EWRAM_BSS u32 pal_log[256];
 EWRAM_BSS u32 pal_log_idx;
@@ -870,6 +870,16 @@ __attribute__((always_inline)) static inline u16 nes_index_to_bgr555(u8 idx)
 }
 
 __attribute__((target("arm")))
+EWRAM_BSS static u32 vt_pal_built[VT_PALETTE_SIZE / 4];  /* inputs of the last build */
+EWRAM_BSS static u16 vt_pal_built_2010;                    /* $2010 | 0x100 once built */
+EWRAM_BSS u8 vt_vbl_outer;   /* ppu.s vblankinterrupt: inside_gba_vblank at entry */
+static int vt_pal_same(void)
+{
+    if (vt_pal_built_2010 != (vt_reg_2010 | 0x100)) return 0;
+    const u32 *src = (const u32 *)vt_palette_ram;
+    for (int i = 0; i < VT_PALETTE_SIZE / 4; i++) if (vt_pal_built[i] != src[i]) return 0;
+    return 1;
+}
 static void vt_build_16color_palette(void)
 {
     // Only meaningful in 16-colour mode with COLCOMP=0.
@@ -1012,6 +1022,12 @@ static void vt_build_16color_palette(void)
             gba_obj[i] = dac[vt_palette_ram[idx_sp_tab[i]] & 0x3F];
     }
 #endif
+    /* what this build was made from, for vt_chr4_rebuild_if_dirty's skip */
+    {   /* word loop: no library call (8-register push) on the vblank IRQ stack */
+        const u32 *src = (const u32 *)vt_palette_ram;
+        for (int i = 0; i < VT_PALETTE_SIZE / 4; i++) vt_pal_built[i] = src[i];
+    }
+    vt_pal_built_2010 = vt_reg_2010 | 0x100;
 }
 
 // Deferred heavy 4bpp assembly.  Call AT MOST ONCE PER FRAME (e.g. from the
@@ -1242,7 +1258,14 @@ void vt_chr4_rebuild_if_dirty(void)
         vt_chr4_copy_to_vram();       // cheap: re-copy only stomped pages
     }
     if (vt_split_frame) vt_split_repair();   /* s21b62: raster-split slots 2/3 */
-    vt_build_16color_palette();
+    /* In a top-level vblank past the first frame, ppu.s then runs run_palette
+     * and vt_16c_palette_fixup, which rebuilds this palette as the vblank's
+     * LAST writer, so this build is overwritten unseen -- ~12% of Aero's title
+     * frame (built twice per GBA vblank).  A nested vblank (vt_vbl_outer != 0)
+     * exits before run_palette/fixup, and before firstframeready there is no
+     * fixup either: build then.  Unchanged inputs need no build at all -- the
+     * GBA palette still holds the last build's output (guide s.78). */
+    if (!firstframeready || (vt_vbl_outer && !vt_pal_same())) vt_build_16color_palette();
 }
 
 // Public ARM-mode wrapper called from ppu.s AFTER run_palette each vblank.
@@ -2408,6 +2431,13 @@ static void vt_split_build(int s, const u32 k[4])
     vt_split_assemblies++;
 }
 
+/* 3K EWRAM stack for the heavy VT C work: the vblank IRQ's CHR rebuild and
+ * palette fixup (mapVT.s trampolines) and the frame-end chain (timeout.s).
+ * IWRAM leaves ~410-470 bytes of user stack, and the IRQ nests on whatever it
+ * interrupted (guide s.77b, s.78e). */
+EWRAM_BSS u32 vt_ewram_stack[768] __attribute__((aligned(8)));
+asm(".global vt_ewram_stack_top\n.set vt_ewram_stack_top, vt_ewram_stack + 3072");
+
 #if VT_SPLIT_SLOTS
 /* Guide s.77.  Char blocks 2/3 (0x06008000-0x0600FFFF) are not free on VT
  * carts: loadcart.c's USE_ACCELERATION puts the last 32K of PRG there and
@@ -2420,12 +2450,10 @@ static void vt_split_build(int s, const u32 k[4])
  * the new memmap before another instruction executes.  The CPU is paused
  * while this runs, so the slot tiles can be written straight away. */
 EWRAM_BSS u8 *vt_prg_shadow;
-/* 3K EWRAM stack for the heavy VT C work (ppu.s vblankinterrupt, timeout.s
- * vblank_handler_0): IWRAM leaves ~470 bytes of user stack. */
-EWRAM_BSS u32 vt_ewram_stack[768] __attribute__((aligned(8)));
-asm(".global vt_ewram_stack_top\n.set vt_ewram_stack_top, vt_ewram_stack + 3072");
 EWRAM_BSS u8 vt_prg_evict_pending;
 EWRAM_BSS u8 vt_prg_evicted;
+EWRAM_BSS u16 *vt_tag_buf[2];               /* the bg0cntbuff pair ... */
+EWRAM_BSS u8 vt_tag_lo[2], vt_tag_hi[2];    /* ... and the lines tagged in each */
 extern const u8 *_speedhack_pc, *_speedhack_pc2;
 
 static const u8 *vt_prg_reloc(const u8 *p)
@@ -2457,6 +2485,7 @@ void vt_split_reset(void)
     vt_split_lru = 0;
     vt_prg_evicted = 0;
     vt_prg_evict_pending = 0;
+    vt_tag_buf[0] = vt_tag_buf[1] = 0;      /* first use scans all 240 lines */
 }
 #endif
 
@@ -2494,6 +2523,35 @@ static void vt_split_repair(void)
     }
 }
 
+#if VT_SPLIT_SLOTS
+/* bg0cntbuff line tagging, two lines per 32-bit word (the per-line loops cost
+ * ~40k cycles per NES frame on Aero's title).  A band line holds the slot's
+ * char base (2/3: bit 3 set) in bits 2-3 and its original char base (0/1) in
+ * bits 4-5, which BGCNT ignores.  Both helpers are branchless per line. */
+static inline __attribute__((always_inline)) u32 vt_line_orig2(u32 v)   /* original char base in bits 2-3 */
+{
+    const u32 m = ((v >> 3) & 0x00010001u) * 0x000Cu;         /* tagged halves */
+    return (v & 0x000C000Cu & ~m) | ((v >> 2) & m);
+}
+static void vt_lines_restore(u16 *b, int lo, int hi)
+{
+    if (lo >= hi) return;
+    if (((u32)(b + lo)) & 2) { u32 v = b[lo]; b[lo] = (u16)((v & ~0x003Cu) | vt_line_orig2(v)); lo++; }
+    u32 *w = (u32 *)(b + lo);
+    for (int n = (hi - lo) >> 1; n > 0; n--, w++) { u32 v = *w; *w = (v & ~0x003C003Cu) | vt_line_orig2(v); }
+    if ((hi - lo) & 1) { u32 v = b[hi - 1]; b[hi - 1] = (u16)((v & ~0x003Cu) | vt_line_orig2(v)); }
+}
+static void vt_lines_tag(u16 *b, int lo, int hi, u32 slot)
+{
+    if (lo >= hi) return;
+    const u32 s1 = slot << 2, s2 = s1 * 0x00010001u;
+    if (((u32)(b + lo)) & 2) { u32 v = b[lo]; b[lo] = (u16)((v & ~0x003Cu) | (vt_line_orig2(v) << 2) | s1); lo++; }
+    u32 *w = (u32 *)(b + lo);
+    for (int n = (hi - lo) >> 1; n > 0; n--, w++) { u32 v = *w; *w = (v & ~0x003C003Cu) | (vt_line_orig2(v) << 2) | s2; }
+    if ((hi - lo) & 1) { u32 v = b[hi - 1]; b[hi - 1] = (u16)((v & ~0x003Cu) | (vt_line_orig2(v) << 2) | s1); }
+}
+#endif
+
 /* _bg0cntbuff is declared in a shared header */
 extern u8 _ppuctrl0;
 void vt_bands_frame_end(void)
@@ -2504,47 +2562,62 @@ void vt_bands_frame_end(void)
      * has since been rebuilt for another bank set (Aero's title top strip,
      * guide s.77).  Band lines carry their original char base in BGCNT bits
      * 4-5 (unused by the hardware); put every such line back first. */
-    if (vt_prg_evicted) {
-        u16 *b = (u16 *)_bg0cntbuff;
-        for (int l = 0; l < 240; l++)
-            if (b[l] & 0x0008u)
-                b[l] = (u16)((b[l] & ~0x003Cu) | ((b[l] >> 2) & 0x000Cu));
+    /* Only the range tagged the last time this buffer was the current one
+     * (the pair alternates); a full 240-line pass cost ~6% on Aero's title. */
+    u16 *const cur = (u16 *)_bg0cntbuff;
+    int side = (cur == vt_tag_buf[0]) ? 0 : (cur == vt_tag_buf[1]) ? 1 : -1;
+    if (side < 0) {                        /* not seen yet: claim a side, scan it all */
+        side = vt_tag_buf[0] ? 1 : 0;
+        vt_tag_buf[side] = cur; vt_tag_lo[side] = 0; vt_tag_hi[side] = 240;
     }
+    vt_lines_restore(cur, vt_tag_lo[side], vt_tag_hi[side]);
+    int tag_lo = 240, tag_hi = 0;
 #endif
     const int n = vt_nband;
     const int ok = vt_active && (vt_reg_2010 & 0x02) && !vt_bkexten_live;   /* 4bpp BG, non-extension */
     if (ok && n > 1) {
         const u8 *preg = vt_band[n - 1].reg;
+        /* vt_chr_sync_flush decodes from vt_frame_reg on split frames and from
+         * the live registers otherwise, but only runs when a bank WRITE asked
+         * for a sync.  When the source it would use changes with no write --
+         * a split starts or ends, or the primary band's banks change -- ask for
+         * one here, or the tiles stay decoded from the old source (Hex City X:
+         * the menu kept the title's banks 12-15, guide s.78). */
+        if (!vt_split_frame || !vt_regs_same(vt_frame_reg, preg)) vt_chr_sync_from_prg();
         vt_regs_copy(vt_frame_reg, preg);
         vt_split_frame = 1;
         const int half = (_ppuctrl0 & 0x10) ? 1 : 0;
         u32 pk[4]; vt_band_key(preg, half, pk);
         u16 *buf = (u16 *)_bg0cntbuff;
-#if VT_SPLIT_SLOTS
-        int iwram_stack = !vt_prg_evicted;     /* this call entered on IWRAM */
-#endif
         for (int i = 0; i < n - 1; i++) {
             u32 k[4]; vt_band_key(vt_band[i].reg, half, k);
             if (k[0] == pk[0] && k[1] == pk[1] && k[2] == pk[2] && k[3] == pk[3]) continue;
 #if !VT_SPLIT_SLOTS
             continue;
 #else
-            /* Blocks 2/3 still hold PRG (s.77): move it now, build from the
-             * next frame on -- this call entered on the IWRAM stack, and only
-             * once vt_prg_evicted is set do ppu.s/timeout.s give the frame-end
-             * and vblank work the EWRAM stack. */
-            if (!vt_prg_evicted) { vt_prg_evict(); iwram_stack = 1; }
-            if (iwram_stack) continue;         /* no slot builds this frame */
+            if (!vt_prg_evict()) continue;     /* blocks 2/3 still hold PRG (s.77) */
 #endif
             const int slot = vt_split_slot_get(k);
             int l0 = vt_band[i].line, l1 = vt_band[i + 1].line;
             if (l1 > 240) l1 = 240;
-            for (int l = l0; l < l1; l++)      /* slot char base; original kept in bits 4-5 */
-                buf[l] = (u16)((buf[l] & ~0x003Cu) | ((buf[l] & 0x000Cu) << 2) | ((u32)slot << 2));
+#if VT_SPLIT_SLOTS
+            vt_lines_tag(buf, l0, l1, (u32)slot);   /* slot char base; original kept in bits 4-5 */
+#else
+            for (int l = l0; l < l1; l++)
+                buf[l] = (u16)((buf[l] & ~0x000Cu) | ((u32)slot << 2));
+#endif
+#if VT_SPLIT_SLOTS
+            if (l0 < tag_lo) tag_lo = l0;
+            if (l1 > tag_hi) tag_hi = l1;
+#endif
         }
     } else {
+        if (vt_split_frame) vt_chr_sync_from_prg();   /* back to the live registers */
         vt_split_frame = 0;
     }
+#if VT_SPLIT_SLOTS
+    vt_tag_lo[side] = (u8)tag_lo; vt_tag_hi[side] = (u8)tag_hi;
+#endif
     vt_band[0].line = 0; vt_regs_copy(vt_band[0].reg, vt_chr_reg);
     vt_nband = 1; vt_band_fresh = 1;
 }

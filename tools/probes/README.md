@@ -24,6 +24,8 @@ S(){ arm-none-eabi-nm pocketvt.elf | awk -v s=$1 '$3==s{print $1}'; }
 | `lbwatch` | Single-steps and reports every `lastbank` change. It stops at the first jump into NES RAM (host 0x03000000), with the preceding steps. |
 | `memwatch` | Single-steps and reports every change of one word, with ARM pc, r0, r1 and lr, plus the first 8 `instant_prg_banks` entries. Use it to find who writes a memmap entry. |
 | `bpcount` | How often given code addresses execute over N steps. Use it to check that a function runs at all. |
+| `cycprof` | A cycle-weighted profile per function: each step is charged its real GBA cycles, so EWRAM and ROM wait states count. `FT=<frametotal> ABS=1` reports cycles per NES frame, for diffing two cores. `RANGE=lo-hi` lists 16-byte bins for addr2line; `BINS=1` lists the top bins. |
+| `ftwatch` | Input keyed to NES frames, like `pvt_run`. From NES frame T0 to T1 it logs every change of one word with the writer's pc and lr. Use it to find who (never) updates a VRAM tile or variable. |
 | `spmin` | The lowest SP reached in each CPU mode. Mode 0x1F is the user stack. Compare it with `__bss_end__`: below that means stack overflow into .bss. |
 
 MAINTAINERS_GUIDE s.77 shows them used together to find the raster-split

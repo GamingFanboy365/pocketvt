@@ -36,7 +36,11 @@
 
 #undef IntrTable
 
-IntFn IntrTable[14];
+/* A real definition, not a -fcommon tentative one: ld pulls an archive member
+ * that defines a still-COMMON symbol, so the devkitARM link dragged in
+ * libgba.a(interrupt.o) and its 120-byte IntrTable won the merge -- 64 bytes
+ * of IWRAM .bss taken straight out of the ~410-byte user stack (guide s.78e). */
+IntFn IntrTable[14] = {0};
 
 //---------------------------------------------------------------------------------
 //struct IntTable IntrTable[MAX_INTS];

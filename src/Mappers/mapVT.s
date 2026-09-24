@@ -241,29 +241,32 @@ vt_apply_prg_banks:
     
     ldmfd   sp!, {pc}
 
-#if VT_SPLIT_SLOTS
 @ ============================================================================
-@ vt_chr4_rebuild_stacked -- ppu.s vblankinterrupt's call of
-@ vt_chr4_rebuild_if_dirty, on the EWRAM stack once a cart uses split slots.
-@ The vblank IRQ runs this in System mode on whatever stack it interrupted;
-@ IWRAM leaves ~470 bytes of user stack, and nested on top of the split-slot
-@ frame-end chain it overran into .bss (vt_prg_banks) -- guide s.77.  Kept in
-@ ROM: vblankinterrupt is IWRAM code, and IWRAM code eats that same stack.
+@ EWRAM-stack trampolines for the heavy VT C work the vblank IRQ runs
+@ (guide s.77b, s.78e).  The IRQ runs in System mode on whatever user stack it
+@ interrupted, and IWRAM leaves ~410-470 bytes of it.  Nested on the frame-end
+@ chain, vt_chr_sync_flush overran into .bss (vt_prg_banks sits at its top):
+@ Add 'em Up with split slots (s.77b), then Aero Gyrodine's boot on the
+@ devkitARM build, before any split (s.78e).  If sp is still in IWRAM, switch
+@ to vt_ewram_stack; if the interrupted code is already on it, keep going down
+@ it.  In ROM: vblankinterrupt is IWRAM code, and IWRAM code comes out of the
+@ same budget.
 @ ============================================================================
-    .global vt_chr4_rebuild_stacked
-vt_chr4_rebuild_stacked:
+.macro vt_ewram_trampoline name, target
+    .global \name
+\name:
     mov     r1, sp
-    ldr     r2, =vt_prg_evicted
-    ldrb    r2, [r2]
-    cmp     r2, #1                  @ C set only once evicted
-    cmphs   r1, #0x03000000         @ ...and still on the IWRAM stack
+    cmp     r1, #0x03000000
     ldrhs   sp, =vt_ewram_stack_top
     stmfd   sp!, {r1, lr}
-    bl      vt_chr4_rebuild_if_dirty
+    bl      \target
     ldmfd   sp!, {r1, lr}
     mov     sp, r1
     bx      lr
-#endif
+.endm
+    vt_ewram_trampoline vt_chr4_rebuild_stacked, vt_chr4_rebuild_if_dirty
+    vt_ewram_trampoline vt_16c_palette_fixup_stacked, vt_16c_palette_fixup
+    .ltorg
 
 @ ============================================================================
 @ write_vt4xxx  (writemem_4 hook)

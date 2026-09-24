@@ -3581,6 +3581,9 @@ Building even one slot in that frame, as a first version did, corrupted Aero's
 game state (90% after Start). Deepest IWRAM point now: 0x03007C50, 204 bytes of
 headroom, more than before.
 
+(Superseded by s.78e: the EWRAM stack is now used unconditionally, not only after
+a cart first takes slots, and there is no build-free first frame any more.)
+
 ### 77c. Stale slot lines, and an IRQ race inside vt_split_build
 
 The two remaining faults were on Aero's title. `bg0cntbuff` persists across
@@ -3616,3 +3619,116 @@ compare_furb.py now masks NES 2.0 header byte 13 to its low nibble for
 furb_cli. Furbtendulator reads the whole byte as the extended console type,
 and the VG Pocket 50-in-1 dump has 0x28 there, which crashed its PPU.
 `--furb-arg` passes anything else through.
+
+## 78. Title speed, a stale-decode bug behind a split, and a redundant palette build (after s.77)
+
+Aero Gyrodine's and Hex City X's titles went from 32-33 to 34-35 NES frames per
+GBA second (base core before s.77: 39 and 35, with the wrong tiles), and Lucky
+Lawn Mower VT369 from 38 to 41. Every testrom's compare_furb scores are
+unchanged on the build_pvt.sh path. Frame 700 is identical to the s.77 core on
+the seven carts that do not split. The only new frames are boot and scroll
+phase steps: boot fade (GBA frames 55, 108-109), VG Pocket's splash transition
+(93; neither core matches the reference there, which switches at NES frame 23),
+Time Pilot 87, and Scramble's scroll positions (87-88, 694-696; Scramble runs
+below 60, so which positions get rendered depends on timing).
+
+### 78a. Where the time goes (tools/probes/cycprof)
+
+`cycprof` charges every step its real GBA cycles (EWRAM and ROM wait states
+included) and reports per function. With `FT=<frametotal> ABS=1` it reports per
+NES frame, and with `RANGE=lo-hi` per 16-byte bin, which addr2line maps to
+source lines. On Aero's title, s.77 cost about 111k cycles per NES frame over
+the old core: `vt_bands_frame_end` 42.6k, palette 14k, and the 6502 handlers
+2-4k each because PRG now comes from EWRAM. Almost all of the frame-end cost
+was the two per-line passes (restore, then tag) over up to 240 EWRAM lines,
+in Thumb code from ROM. They are now branchless, two lines per 32-bit word
+(`vt_lines_restore`, `vt_lines_tag`), and the restore covers only the range
+tagged when that buffer was last current. A first version picked the buffer
+side wrongly and rescanned all 240 lines every frame; the word loops also
+need `vt_line_orig2` forced inline under -Os.
+
+### 78b. vt_build_16color_palette ran twice per GBA vblank
+
+The vblank IRQ built it in `vt_chr4_rebuild_if_dirty`, then `run_palette`
+overwrote it, then `vt_16c_palette_fixup` built it again as the final writer.
+That was about 12% of Aero's title frame. The first build is now skipped when
+the fixup is certain to follow: `firstframeready` is set and the vblank is top
+level. The handler stores the outer `inside_gba_vblank` in `vt_vbl_outer`
+(8 bytes of IWRAM code), because a nested vblank exits before run_palette and
+the fixup. In a nested vblank it builds only if its inputs (palette RAM +
+$2010, snapshot `vt_pal_built`) changed since the last build. This keeps the
+s21b48 rule that the palette is rebuilt every frame: the fixup still is.
+
+### 78c. Hex City X's menu: garbage metasprite, missing cursor
+
+A 16x16 sprite showed as noise in the middle of the menu and the cursor
+vanished (99.53% vs 99.98%). The old core had it; s.77 hid it only by timing.
+The cause is not the sprite path. `vt_chr_sync_flush` decodes from
+`vt_frame_reg` on split frames and from the live registers otherwise, and it
+only runs when a bank write asks for a sync. The title's last split frame
+consumed the pending sync with the title's banks (12-15). When the menu stopped
+splitting, nothing asked again, so all eight pages stayed decoded from the
+title's banks indefinitely. `vt_bands_frame_end` now calls
+`vt_chr_sync_from_prg` whenever the source changes: a split starts or ends, or
+the primary band's registers change. A stable split still never marks
+anything dirty (the s.72 storm stays fixed).
+
+Found by: `objdump`-style OAM/palette/OBJ-VRAM dumps keyed to NES frames (same
+OAM and palette, different tile data). Then `ftwatch` on the sprite tile
+(`vt_obj4_overlay` wrote it in the good build and never in the bad one). Then
+the page-bank dump (12-15 instead of 0-3). A first guess was hardening
+`vt_obj4_overlay`'s one-word probe, which changed nothing, so it was reverted.
+
+This fix applies with `VT_SPLIT_SLOTS=0` too, so that build is no longer
+byte-identical to the pre-s.77 core.
+
+### 78d. Still open
+
+60/60 on these titles needs the frame roughly halved (~500k -> ~280k cycles per
+NES frame). The biggest items are now the 6502 core, read_vt4xxx ($41xx polling,
+~8%), joypad reads (~5%) and the remaining palette build (~12%, now once per
+vblank). None of it is split-specific.
+
+### 78e. The IWRAM stack again: unconditional EWRAM stack, and libgba's IntrTable
+
+The shipped core (devkitARM Docker build) broke Aero Gyrodine with 78b: title
+64%, game stuck on the title. The build_pvt.sh core was fine. `spmin` from
+power-on showed why: the user stack reached 0x03007B80, 68 bytes below
+`__bss_end__`, inside `vt_chr_sync_flush` run from the vblank IRQ, and
+overwrote `vt_prg_banks` with 0 and $3F. This was during boot, BEFORE any PRG
+move, while s.77 still switched to the EWRAM stack only after one. 78b only
+changed when the IRQ landed; bisecting the Docker build (78a, 78b, 78c
+reverted one at a time) pinned it to 78b's timing change, not to any logic in
+78b.
+
+Two fixes:
+1. Every heavy VT C entry now runs on the 3K EWRAM stack unconditionally. The
+   vblank IRQ's `vt_chr4_rebuild_if_dirty` and `vt_16c_palette_fixup` go
+   through ROM trampolines (`vt_ewram_trampoline` in mapVT.s; IWRAM code
+   would come out of the same budget), and timeout.s switches for
+   `newframe_nes_vblank`. If the interrupted code is already on the EWRAM
+   stack, it keeps going down it. The slot-free first frame after the PRG
+   move is gone; that frame now runs on the EWRAM stack too.
+2. The Docker link pulled in `libgba.a(interrupt.o)`. PocketVT's
+   `IntFn IntrTable[14];` was a -fcommon tentative definition, and GNU ld
+   extracts an archive member that defines a still-COMMON symbol. libgba's
+   120-byte `IntrTable` then won the merge: 64 bytes of IWRAM .bss, taken
+   straight out of the stack. build_pvt.sh never links libgba, which is why
+   only the shipped core had 64 bytes less stack. `IntrTable` is now
+   initialised (a real definition); the Docker core's `__bss_end__` equals
+   build_pvt's (0x03007B84) and its ROM is 968 bytes smaller.
+
+Measured on the shipped core from power-on (12M steps each, Aero, Add 'em Up,
+Hex, Scramble, VG Pocket, LLM VT369): the deepest IWRAM point is 0x03007C1C,
+152 bytes of headroom, in non-VT code (`__clzdi2`, `spriteinit`). The EWRAM
+stack peaks at about 380 of 3072 bytes.
+
+Docker-vs-Docker scores (84f17d3 core -> this one, Start at 320): Aero title
+100 -> 99.99, Hex 100 -> 99.99, Add 'em Up t700 99.88 -> 99.85, Scramble
+99.97/99.00 -> 99.96/98.98, Push the Ball 97.49 -> 97.44. The Aero, Hex, Add
+'em Up and Scramble deltas are 2-9 px from capturing at a different GBA frame
+(faster core). Push the Ball's is a stable 20 px (one pixel column of the text
+box border). NES RAM and CHR RAM are identical between the two cores at NES
+frame 200, but ~9 bytes of the GBA tile cache differ. So PocketNES's CHR-RAM
+tile conversion misses an update under some timings: pre-existing, and not
+chased yet.

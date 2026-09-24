@@ -2890,6 +2890,10 @@ vblankinterrupt:@
 	cmp r0,#2
 	bge exit_gba_vblank
 	stmfd sp!,{r0}
+#if VT_MODE
+	ldr r1,=vt_vbl_outer	@ 0 = top level: run_palette + fixup follow (ppu_vt.c)
+	strb r0,[r1]
+#endif
 	
 	mov r0,#2
 	strb_ r0,inside_gba_vblank
@@ -2924,11 +2928,7 @@ nopal60:
 	@ Piece 2/3: assemble 4bpp tiles + 16-colour palette once per frame. Runs
 	@ in the vblank IRQ (the reliable per-frame point). The IRQ stack was
 	@ enlarged (gba_cart_my.ld __sp_irq) so this heavy work no longer overflows.
-#if VT_SPLIT_SLOTS
-	bl_long vt_chr4_rebuild_stacked	@ EWRAM stack for split carts (mapVT.s, guide s.77)
-#else
-	bl_long vt_chr4_rebuild_if_dirty
-#endif
+	bl_long vt_chr4_rebuild_stacked	@ vt_chr4_rebuild_if_dirty on the EWRAM stack (mapVT.s, guide s.78e)
 	bl_long vt_timer_tick_frame	@ maintains the VT timer boot-safety latch
 	
 	ldrb_ r0,okay_to_run_hdma
@@ -3043,7 +3043,7 @@ skipdma:
 	@ rebuild them here as the LAST palette writer of the frame.  The C
 	@ wrapper is internally gated (vt_active + $2010 16-colour bits +
 	@ COLCOMP=0) and is a no-op for plain NES carts and 2bpp VT games.
-	bl_long vt_16c_palette_fixup
+	bl_long vt_16c_palette_fixup_stacked	@ on the EWRAM stack (mapVT.s, guide s.78e)
 	@ (vt_16c_palette_fixup also performs the 4bpp sprite-cache overlay --
 	@ folded into the same call to avoid adding IRQ stack depth; the vblank
 	@ IRQ stack is canary-guarded and a second bl_long + memcpy32's 8-reg

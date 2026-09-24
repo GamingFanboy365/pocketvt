@@ -430,13 +430,12 @@ vblank_handler_0:
 	mov r0,#0
 	bl call_quickhackfinder
 	
-#if VT_SPLIT_SLOTS
-	@ guide s.77: the VT frame-end work (bands, split slots) on the EWRAM stack
+#if VT_MODE
+	@ guide s.78e: the VT frame-end work (bands, split slots, palette) on the
+	@ EWRAM stack -- the vblank IRQ nests its own C work on top of whatever it
+	@ interrupts, and IWRAM leaves ~410-470 bytes of user stack.
 	mov r1,sp
-	ldr r2,=vt_prg_evicted	@ only split carts nest this deep
-	ldrb r2,[r2]
-	cmp r2,#1	@ C set only once evicted
-	cmphs r1,#0x03000000
+	cmp r1,#0x03000000
 	ldrhs sp,=vt_ewram_stack_top
 	str r1,[sp,#-4]!
 	bl_long newframe_nes_vblank

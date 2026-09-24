@@ -90,21 +90,23 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   verify the shipping tree is clean afterwards.
 
 ## Current state (after s.77)
-See MAINTAINERS_GUIDE.md s.77 (raster-split slots) and s.73 for detail.
+See MAINTAINERS_GUIDE.md s.77-78 (raster-split slots, speed) and s.73.
 - Working: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower VT09, VG Pocket
   (all 50), Push the Ball, Time Pilot, Add 'em Up (title 98%, puzzle 99.9% vs
   furb), Aero Gyrodine and Hex City X (titles now 100% vs furb, gameplay too).
 - Raster-split BG CHR is ON by default (`VT_SPLIT_SLOTS`, config.h;
-  `-DVT_SPLIT_SLOTS=0` = the old core, byte-identical).
-- Speed (NES frames per GBA second): Add 'em Up 60, Aero title 32, Hex title 32,
-  LLM VT369 38, Table Soccer VT369 35, SA 51, LLM VT09 55, LI/Scramble/VG 60.
-- The IWRAM user stack is ~470 bytes (s.77b). Before adding depth to anything
-  that runs from the vblank IRQ or the frame-end chain, measure with
-  tools/probes/spmin against `__bss_end__`.
+  `-DVT_SPLIT_SLOTS=0` turns the slots off).
+- Speed (NES frames per GBA second): Add 'em Up 60, Aero title 35, Hex title 35,
+  LLM VT369 41, Table Soccer VT369 35, SA 51, LLM VT09 55, LI/Scramble/VG 60.
+- The IWRAM user stack is ~470 bytes and the vblank IRQ nests on whatever it
+  interrupts (s.77b, s.78e). All heavy VT C work runs on the 3K EWRAM stack
+  (mapVT.s trampolines, timeout.s). New IRQ-time or frame-end C goes through
+  them too. Measure with tools/probes/spmin FROM POWER-ON against `__bss_end__`
+  on the Docker core, the one that ships.
 
 ## Open work, in priority order
-1. Aero/Hex title speed (32/60; now correct but slow). Profile with
-   tools/arm_profile.c; the titles run PRG from EWRAM after the slot handoff.
+1. Aero/Hex title speed (35/60; correct but slow). s.78d lists what is left;
+   profile with tools/probes/cycprof (cycle-weighted, per NES frame).
 2. VG Pocket 50-in-1: several games have wrong palettes (user report). Compare
    per game with compare_furb (it now masks the header's console-type byte).
 3. VT369 platform port (s.47): Lucky Lawn Mower VT369 (77% vs furb) and Table
