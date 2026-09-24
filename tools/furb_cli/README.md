@@ -21,6 +21,12 @@ python3 tools/furb_cli/build.py           # ~2 min first time, incremental after
 ```
 
 Output: `tools/furb_cli/build/furb_cli` and `tools/furb_cli/build/Mappers/iNES.so`.
+Both link the C++ runtime statically, so they need only 32-bit glibc to run
+(`libc6-i386`). Build on an old distro (e.g. `docker run ubuntu:20.04`) for a
+binary that runs on older systems too; building there needs glibc 2.29 or newer.
+The same `build.py` works standalone: put the Furbtendulator `src` directory
+next to it as `Furbtendulator-src/` (that is how the archived release package
+is laid out) or pass `--furb`.
 The source lists come from Furbtendulator's own Visual Studio projects, so a
 newer Furbtendulator drops in without editing the build.
 

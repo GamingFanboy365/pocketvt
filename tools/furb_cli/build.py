@@ -4,8 +4,9 @@ VT/OneBus emulator) for comparing against PocketVT.
 
     python3 tools/furb_cli/build.py [--furb DIR] [--build DIR] [-j N]
 
---furb   Furbtendulator source root (default: reference/Furbtendulator-main/src;
-         gitignored, never committed -- the user supplies it)
+--furb   Furbtendulator source root (default: ./Furbtendulator-src next to this
+         script if present (standalone package), else the PocketVT tree's
+         gitignored reference/Furbtendulator-main/src)
 --build  output dir (default: tools/furb_cli/build, gitignored)
 
 Produces BUILD/furb_cli and BUILD/Mappers/iNES.so (the iNES mapper pack,
@@ -21,13 +22,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
 
 ap = argparse.ArgumentParser()
-ap.add_argument('--furb', default=os.path.join(REPO, 'reference', 'Furbtendulator-main', 'src'))
+_bundled = os.path.join(HERE, 'Furbtendulator-src')
+ap.add_argument('--furb', default=_bundled if os.path.isdir(_bundled) else
+                os.path.join(REPO, 'reference', 'Furbtendulator-main', 'src'))
 ap.add_argument('--build', default=os.path.join(HERE, 'build'))
 ap.add_argument('-j', type=int, default=os.cpu_count() or 4)
 args = ap.parse_args()
 
 if not os.path.isdir(os.path.join(args.furb, 'src-main')):
-    sys.exit('build.py: no Furbtendulator source at %s (unzip Furbtendulator-main.zip into reference/)' % args.furb)
+    sys.exit('build.py: no Furbtendulator source at %s (pass --furb, or unzip Furbtendulator-main.zip '
+             'into PocketVT\'s reference/)' % args.furb)
 
 B = os.path.abspath(args.build)
 SRC = os.path.join(B, 'src')
@@ -120,6 +124,6 @@ def link(what, cmd):
         sys.exit('build.py: linking %s failed\n%s' % (what, '\n'.join(undef) or r.stderr[-4000:]))
 
 # -z defs: the pack must be self-contained, like a DLL (fail at build, not dlopen)
-link('Mappers/iNES.so', ['g++', '-m32', '-shared', '-fvisibility=hidden', '-Wl,-z,defs', '-o', so] + ines_objs + ['-ldl'])
-link('furb_cli', ['g++', '-m32', '-o', exe] + main_objs + ['-ldl'])
+link('Mappers/iNES.so', ['g++', '-m32', '-shared', '-static-libstdc++', '-static-libgcc', '-Wl,--exclude-libs,ALL', '-fvisibility=hidden', '-Wl,-z,defs', '-o', so] + ines_objs + ['-ldl'])
+link('furb_cli', ['g++', '-m32', '-static-libstdc++', '-static-libgcc', '-o', exe] + main_objs + ['-ldl'])
 print('built %s' % exe)
