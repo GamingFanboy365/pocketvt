@@ -86,7 +86,13 @@ EWRAM_BSS u8 vt_chr_reg_201A;
 EWRAM_BSS u8 vt_chr_outer_4100;
 
 // Array tracking target PRG assignments to be handled safely in ASM
-u8 vt_prg_banks[4];
+// SESSION 21b26: 16-bit, NOT u8.  The PRG bank number is inner|middle|
+// (outer<<8), so any cart using a non-zero OUTER bank produces a bank >= 256.
+// Truncating to 8 bits silently dropped the outer bank and mapped the game to
+// the wrong 2 MB half -- VG Pocket titles in outer bank 1 crashed instantly
+// (bank 0x11C became 0x1C).  map89_/mapAB_/mapCD_/mapEF_ already accept 9-bit
+// banks: they mask with rommask>>13, which is 511 for a 4 MB image.
+u16 vt_prg_banks[4];
 u8 vt_prg_dirty = 0;
 // Set when the nametable arrangement changed; consumed by write_vt4xxx, which
 // calls vt_set_mirroring() (cart.s) from ARM context with a valid stack.
@@ -336,14 +342,14 @@ void vt_recompute_prg_banks(void)
     u32 bank_eff = vt_get_phys_bank(0xFF);
 
     if (comr6) {
-        vt_prg_banks[0] = (u8)bank_pq2;     // slot 8 receives what would have gone to slot C
-        vt_prg_banks[2] = (u8)bank_pq0;     // slot C receives what would have gone to slot 8
+        vt_prg_banks[0] = (u16)bank_pq2;     // slot 8 receives what would have gone to slot C
+        vt_prg_banks[2] = (u16)bank_pq0;     // slot C receives what would have gone to slot 8
     } else {
-        vt_prg_banks[0] = (u8)bank_pq0;
-        vt_prg_banks[2] = (u8)bank_pq2;
+        vt_prg_banks[0] = (u16)bank_pq0;
+        vt_prg_banks[2] = (u16)bank_pq2;
     }
-    vt_prg_banks[1] = (u8)bank_pq1;
-    vt_prg_banks[3] = (u8)bank_eff;
+    vt_prg_banks[1] = (u16)bank_pq1;
+    vt_prg_banks[3] = (u16)bank_eff;
 
     vt_prg_dirty = 1;
 }
@@ -375,7 +381,16 @@ void vt_mmc3_forward(u16 addr, u8 val)
     if (vt.reg[0x0B] & 0x08) return;
 
     switch (addr & 0xE001) {
-        case 0x8000:
+        case 0x8000: {
+            // s21b59: mapper 256 submappers 1/2 remap the MMC3 bank-select
+            // index (NintendulatorNRS mapper256.cpp write8, mmc3Mangle[][]),
+            // applied BEFORE the value is used anywhere, as NRS does.
+            static const u8 mmc3_mangle[16][8] = {
+                {0,1,2,3,4,5,6,7},{5,4,3,2,1,0,6,7},{0,1,2,3,4,5,7,6},{0,1,2,3,4,5,6,7},
+                {0,1,2,3,4,5,6,7},{0,1,2,3,4,5,6,7},{0,1,2,3,4,5,6,7},{0,1,2,3,4,5,6,7},
+                {0,1,2,3,4,5,6,7},{0,1,2,3,4,5,6,7},{0,1,2,3,4,5,6,7},{0,1,2,3,4,5,6,7},
+                {0,1,2,3,4,5,6,7},{0,1,2,3,4,5,6,7},{0,1,2,3,4,5,6,7},{0,1,2,3,4,5,6,7}};
+            val = (u8)((val & 0xF8) | mmc3_mangle[vt.submapper & 0x0F][val & 0x07]);
             // MMC3 cmd register.  Save the byte; the high bits also feed
             // into VT's $4105 (which holds COMR6 etc.).
             vt_mmc3_cmd = val;
@@ -383,6 +398,7 @@ void vt_mmc3_forward(u16 addr, u8 val)
             // COMR6 (bit 6) flip is a PRG bank rearrangement -> recompute.
             vt_recompute_prg_banks();
             break;
+        }
 
         case 0x8001:
             // MMC3 data register.  We currently only act on the two PRG
@@ -606,6 +622,10 @@ static inline s16 _adpcm_advance(VTAdpcmChan *ch)
 // ---------------------------------------------------------------------------
 void vt_reg_write(u8 addr_lo, u8 val)
 {
+    /* s21b59: mapper 256 submapper 2 swaps $4107/$4108 (NintendulatorNRS
+     * mapper256.cpp write4, cpuMangle[][]); identity for all others. */
+    if (addr_lo >= 0x07 && addr_lo <= 0x0A && (vt.submapper & 0x0F) == 2 && addr_lo <= 0x08)
+        addr_lo ^= 0x0F;   /* 0x07 <-> 0x08 */
     extern void vt_timer_install_now(void);
     if (!vt_timer_armed) {          /* first $41xx touch: start the free-run count */
         vt_timer_armed = 1;

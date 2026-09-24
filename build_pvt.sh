@@ -23,11 +23,11 @@ mkdir -p $BUILD
 cd $BUILD
 
 ARCH="-mthumb -mthumb-interwork"
-CFLAGS="-g -Wall -Os -mcpu=arm7tdmi -mtune=arm7tdmi -fomit-frame-pointer \
+CFLAGS="$EXTRA_CFLAGS -g -Wall -Os -mcpu=arm7tdmi -mtune=arm7tdmi -fomit-frame-pointer \
  -ffast-math -ffixed-r10 -std=gnu99 -fcommon \
  -Wno-error=incompatible-pointer-types -Wno-error=int-conversion \
  $ARCH -I$LIBGBA_INC -I$SRC"
-ASFLAGS="$ARCH -I$SRC"
+ASFLAGS="$EXTRA_CFLAGS $ARCH -I$SRC"
 
 for f in $SRC/*.c; do
   arm-none-eabi-gcc $CFLAGS -c "$f" -o "$(basename "${f%.c}").o"

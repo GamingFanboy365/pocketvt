@@ -16,6 +16,10 @@
 	global_func empty_W
 	global_func ram_R
 	global_func ram_W
+	.global ram_R_mask
+	.global ram_W_mask
+	.global ram_mask_2k
+	.global ram_mask_4k
 	global_func sram_R
 	global_func sram_W
 	.if CARTSAVE
@@ -67,15 +71,31 @@ empty_W:		@write bad address (error)
 @----------------------------------------------------------------------------
 ram_R:	@ram read ($0000-$1FFF)
 @----------------------------------------------------------------------------
+@ s21b41: the RAM mask is PATCHED AT CART LOAD (loadcart.c: set_nes_ram_4k).
+@ Stock NES/VT02/VT03 = 2 KiB mirrored 4x ($07FF).  VT09/VT32/VT369 have
+@ 4 KiB of CPU RAM mirrored 2x ($0FFF) -- see MAINTAINERS_GUIDE section 46.
+@ Do NOT fold these two instructions into anything else; the patcher writes
+@ them by symbol.
+ram_R_mask:
 	bic addy,addy,#0x1f800		@only 0x07FF is RAM
 	ldrb r0,[cpu_zpage,addy]
 	mov pc,lr
 @----------------------------------------------------------------------------
 ram_W:	@ram write ($0000-$1FFF)
 @----------------------------------------------------------------------------
+ram_W_mask:
 	bic addy,addy,#0x1f800		@only 0x07FF is RAM
 	strb r0,[cpu_zpage,addy]
 	mov pc,lr
+@----------------------------------------------------------------------------
+@ Patch templates.  These are never executed -- they exist so the C side can
+@ copy a correctly ENCODED instruction word instead of hand-rolling an ARM
+@ immediate.  Keep them assembled with the same operands as above.
+@----------------------------------------------------------------------------
+ram_mask_2k:
+	bic addy,addy,#0x1f800
+ram_mask_4k:
+	bic addy,addy,#0x1f000
 @----------------------------------------------------------------------------
 sram_R:	@sram read ($6000-$7FFF)
 @----------------------------------------------------------------------------

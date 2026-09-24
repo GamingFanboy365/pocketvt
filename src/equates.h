@@ -601,10 +601,13 @@ DISPCNTBUFF1	= 0
  _m_ hackflags2,1   @not used anymore
  _m_ mapper_number,1
 
- _m_ rompages,1
+ @ SESSION 21b13: rompages is 2 bytes so a true 4 MB cart (256 x 16 KB)
+ @ fits -- 255 pages is 16 KB short and masks off the vectors.  The byte
+ @ comes from the filler that used to follow fourscreen, so nothing after
+ @ this point shifts.  Keep in lockstep with cart.s (guide section 14).
+ _m_ rompages,2
  _m_ vrompages,1
  _m_ fourscreen,1
- _m_ ,1
 
  _m_ chrold,4
 

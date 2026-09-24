@@ -182,7 +182,7 @@ extern u8 vt_chr_reg_201A;
 extern u8 vt_chr_outer_4100;
 
 // Communication channel for PRG banks computed in C to be applied safely in ASM
-extern u8 vt_prg_banks[4];
+extern u16 vt_prg_banks[4];
 extern u8 vt_prg_dirty;
 
 // ---------------------------------------------------------------------------

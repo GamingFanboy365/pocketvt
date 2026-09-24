@@ -1,5 +1,6 @@
 #include "includes.h"
 #include "vt_regs.h"
+#include "ppu_vt.h"
 
 extern u64 simpleswap32(u32 *A, u32 *B, u32 sizeInBytes);
 
@@ -18,6 +19,58 @@ void redecompress()
 	
 	ewram_owner_is_sram=0;
 	init_cache(nesheader,0);
+}
+
+
+/* ------------------------------------------------------------------ *
+ * s21b41: CPU RAM size by NES 2.0 extended console type.
+ *
+ * The stock NES has 2 KiB of CPU RAM mirrored 4x across $0000-$1FFF.
+ * VT09, VT32 and VT369 have 4 KiB, mirrored 2x.  NintendulatorNRS
+ * encodes this as CPU_VT09 : CPU_OneBus(0, 4096, RAM) -- for VT09 it is
+ * the ONLY difference from VT03.
+ *
+ * We cannot simply grow NES_RAM: IWRAM has 508 free bytes above .bss and
+ * below the usr stack, so a 2 KiB bump would land in the stacks (the fault
+ * MAINTAINERS_GUIDE section 4 already records once).  Instead the upper
+ * 2 KiB overlays the first 2 KiB of NES_SRAM, which is safe because these
+ * carts declare no PRG-RAM (Lucky Lawn Mower's header byte 10 is 0) -- see
+ * MAINTAINERS_GUIDE section 46 for the caveat if one ever does.
+ *
+ * The mask lives in two BIC instructions in memory.s and is patched by
+ * copying a pre-assembled template word, so the hot RAM path costs nothing
+ * extra.  ARM7TDMI has no instruction cache, so self-modification is safe.
+ * ------------------------------------------------------------------ */
+extern u32 ram_R_mask, ram_W_mask, ram_mask_2k, ram_mask_4k;
+
+/* s21b56: the CPU-RAM address mask, read by BOTH VT video-DMA paths
+ * (vt_pal_dma_fast in ppu.s and the generic loop in Mappers/mapVT.s).
+ * Those paths fetch their SOURCE bytes straight out of NES_RAM and had
+ * 0x7FF hardcoded -- so on a 4 KiB cart (VT09/VT32/VT369, guide section 46)
+ * any DMA staged in $0800-$0FFF read the wrong bytes.  That is the same
+ * 11-bit-vs-12-bit fault as section 46 itself, in a path section 46 never
+ * touched, and it is what scrambled Lucky Lawn Mower's opening palette
+ * (guide section 67). */
+EWRAM_BSS u32 vt_nes_ram_mask;
+
+static void set_nes_ram_4k(int on)
+{
+	u32 w = on ? ram_mask_4k : ram_mask_2k;
+	ram_R_mask = w;
+	ram_W_mask = w;
+	vt_nes_ram_mask = on ? 0x0FFFu : 0x07FFu;
+}
+
+/* NES 2.0 byte 7 bits 0-1 == 3 selects the Extended Console Type in byte 13.
+ * 0x07 = VT03, 0x08 = VT09, 0x09 = VT32, 0x0A = VT369 (NintendulatorNRS
+ * MapperInterface.h).  Only the last three carry 4 KiB of CPU RAM. */
+static int header_wants_4k_ram(const u8 *nesheader, bool is_nes20)
+{
+	u8 ct;
+	if (!is_nes20) return 0;
+	if ((nesheader[7] & 0x03) != 0x03) return 0;
+	ct = nesheader[13] & 0x0F;
+	return (ct >= 0x08 && ct <= 0x0A);
 }
 
 static void read_rom_header(u8 *nesheader)
@@ -108,9 +161,24 @@ static void read_rom_header(u8 *nesheader)
 		}
 	}
 
+	/* s21b48: NES 2.0 byte 13 bits 4-7 are RESERVED when byte 7 bits 0-1 == 3
+	 * (they carry the Vs. Hardware type only when the console type is Vs.).
+	 * PocketVT uses that reserved nibble to name the console's colour DAC.
+	 * 0 = auto, so every image already wrapped keeps its current colours.
+	 * See MAINTAINERS_GUIDE section 57 and tools/rewrap_onebus.py. */
+	vt_dac_variant = VT_DAC_AUTO;
+	if (is_nes20 && (nesheader[7] & 0x03) == 0x03)
+		vt_dac_variant = (u8)((nesheader[13] >> 4) & 0x0F);
+
+	set_nes_ram_4k(header_wants_4k_ram(nesheader, is_nes20));
+
 	// PocketNES uses 8-bit variables for page counts internally. 
 	// Cap them at 255 to prevent memory overflow bugs (255 pages = ~4MB, plenty for GBA)
-	if (prg_pages > 255) prg_pages = 255;
+	// SESSION 21b13: rompages is 16-bit now, so a true 4 MB image (256 pages)
+	// no longer has to be truncated -- 255 pages is 16 KB short and masks off
+	// the reset/NMI vectors that live in the top bank (VG Pocket 50-in-1).
+	// CHR page count is still an 8-bit variable, so that cap stays.
+	if (prg_pages > 2048) prg_pages = 2048;   // 32 MB, the GBA cart ceiling
 	if (chr_pages > 255) chr_pages = 255;
 
 	rompages = prg_pages;
@@ -168,6 +236,19 @@ static void read_rom_header(u8 *nesheader)
 	}
 #endif
 
+	/* s21b59: VT OneBus carts (internal mapper 253).  The VT PPU code fetches
+	 * tiles through vt_chr_src/vt_chr_mask: the CHR ROM when the image has one
+	 * (rounded up to a power of two, exactly as NintendulatorNRS does), else
+	 * PRG-ROM as before -- byte-identical for every CHR-in-PRG cart.  PocketNES's
+	 * own path is then given the same CHR-RAM-style setup every other VT cart
+	 * already runs with, so nothing there tries to bank the CHR ROM itself. */
+	vt_chr_src = NULL; vt_chr_mask = 0;
+	if (mapper == 253) {
+		if (vrompages > 0) { vt_chr_src = vrombase; vt_chr_mask = vromsize - 1; }
+		else               { vt_chr_src = rombase;  vt_chr_mask = rommask; }
+		vrompages = 0; vrombase = NES_VRAM; vromsize = 8*1024;
+		bankable_vrom = 0; has_vram = 1; vram_page_mask = 0xFF; vram_page_base = 0;
+	}
 	vrommask=vromsize-1;
 }
 

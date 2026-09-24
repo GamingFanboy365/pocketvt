@@ -47,6 +47,27 @@
 #define VT_PALETTE_SIZE     512
 extern u8 vt_palette_ram[VT_PALETTE_SIZE];
 
+/* Which colour-DAC approximation this cart's console uses.  $2010 D6 is the
+ * 16-bit CHR BUS bit, not a DAC id, so it cannot tell one VT09 board from
+ * another -- carts name their DAC explicitly in the NES 2.0 header instead.
+ * See MAINTAINERS_GUIDE section 57. */
+#define VT_DAC_AUTO      0   /* infer from $2010 D6 (legacy behaviour) */
+#define VT_DAC_DEFAULT   1   /* the neutral table (Star Ally / Lonely Island) */
+#define VT_DAC_VGPOCKET  2   /* the VG Pocket's fitted table */
+#define VT_DAC_LLM       3   /* Lucky Lawn Mower's VT09 board (s21b49) */
+extern u8 vt_dac_variant;
+
+/* s21b59: where VT CHR (tile) data is fetched from.  OneBus carts normally keep
+ * CHR in the same ROM as PRG, but some (e.g. Add 'em Up, mapper 256 sub 1)
+ * ship a separate CHR ROM.  NintendulatorNRS (h_OneBus.cpp load()) reads CHR
+ * from CHR-ROM whenever one is present, rounded up to a power of two for
+ * masking, and from PRG-ROM otherwise.  Set by loadcart.c; NULL means "not a
+ * VT cart" and the accessors fall back to rombase/rommask. */
+void vt_band_mark(u32 line);
+void vt_bands_frame_end(void);
+extern u8  *vt_chr_src;
+extern u32  vt_chr_mask;
+
 // Convert a 6-bit VT colour index to a GBA 15-bit BGR555 value.
 // The conversion table is pre-built in vt_palette_to_gba[] by ppu_vt_init().
 extern u16 vt_palette_to_gba[VT_PALETTE_SIZE];

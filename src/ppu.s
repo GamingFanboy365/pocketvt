@@ -4081,8 +4081,38 @@ vt_ppu_extended_W:
 	lsr r0,addy,#8			@ r0 = high address byte ($20 or $21)
 	and r0,r0,#0x01			@ r0 = page (0 or 1)
 	and r1,addy,#0xFF		@ r1 = low byte offset
-	bl vt_ppu_reg_write
+	bl_long vt_ppu_write_marked	@ s21b62: ROM wrapper (keeps this section small)
 	ldmfd sp!,{r2,r12,pc}
+
+.pushsection .text, "ax", %progbits
+	@ s21b62: $2012-$2017 are the CHR bank registers -- note the NES scanline
+	@ so a mid-frame change becomes a raster band (vt_band_mark, guide s.73).
+	@ get_scanline_2 reads the live cycles register (r8), which the C call
+	@ before this preserved.  In: r0 = NES address.
+vt_ppu_write_marked:
+	@ vt_ppu_reg_write(r0=page, r1=offset, r2=val), then note the band.
+	@ The caller saved the NES address at [sp,#4] before calling us.
+	stmfd sp!,{r4,lr}
+	mov r4,r1			@ offset
+	mov r0,r0
+	bl vt_ppu_reg_write
+	mov r1,r4
+	ldmfd sp!,{r4,lr}
+	ldr r0,[sp,#4]			@ caller's saved r12 = NES address
+vt_band_hook:
+	tst r0,#0x100			@ $21xx page -> not a bank register
+	bxne lr
+	and r0,r0,#0xFF
+	sub r0,r0,#0x12
+	cmp r0,#5			@ offsets $12..$17
+	bxhi lr
+	stmfd sp!,{lr}
+	bl get_scanline_2		@ addy = NES scanline
+	mov r0,addy
+	bl vt_band_mark
+	ldmfd sp!,{lr}
+	bx lr
+.popsection
 #endif
 
 
@@ -4720,6 +4750,8 @@ palread:
 	.global nes_palette
 vt_pal_dma_fast:
 	stmfd sp!,{r4-r8,lr}
+	cmp r0,#0x2000			@ s21b60: RAM sources only; ROM-sourced palette
+	bhs .Lpdf_no			@ DMAs take the per-byte path, which reads ROM
 	ldrb_ r2,vramaddrinc
 	cmp r2,#1				@ only the +1 stride case
 	bne .Lpdf_no
@@ -4727,6 +4759,14 @@ vt_pal_dma_fast:
 	bic r2,r2,#0xfc000		@ AND $3fff
 	mov r3,r2,lsr #8
 	cmp r3,#0x3f			@ destination must be the palette window
+	bne .Lpdf_no
+	@ s21b59: a DMA whose destination is the VT03 HIGH bank ($3F80-$3FFF) must
+	@ not take this path -- masking its start to 0x7F would land it on the LOW
+	@ bank.  Fall back to the per-byte path, which routes each byte through
+	@ VRAM_pal_hi correctly.  Low-bank DMAs are byte-for-byte unchanged.
+	@ (Widening this window instead changed Star Ally: DMAs that used to take
+	@ the per-byte path -- and its side effects -- took this one.  Guide s.70.)
+	tst r2,#0x80
 	bne .Lpdf_no
 	and r3,r2,#0x7f			@ starting offset within the window
 	add r12,r3,r1
@@ -4736,8 +4776,8 @@ vt_pal_dma_fast:
 	ldr r4,=vt_palette_ram
 	ldr r5,=nes_palette
 	ldr r6,=NES_RAM
-	mov r7,#0x800
-	sub r7,r7,#1			@ NES RAM address mask
+	ldr r7,=vt_nes_ram_mask		@ s21b56: 0x7FF or 0xFFF by cart RAM size
+	ldr r7,[r7]			@ (was hardcoded 0x7FF -- broke 4 KiB carts)
 .Lpdf_loop:
 	and r12,r0,r7
 	ldrb r12,[r6,r12]
@@ -5147,7 +5187,7 @@ VRAM_pal_hi:	@VT03 hi-byte palette write ($3F80-$3F9F)
 	@ via the C bridge.  Mirroring of bg-color entries is handled C-side.
 	stmfd sp!,{r2,r3,addy,lr}
 	and r1,r0,#0x3f			@ r1 = value (6 valid bits)
-	and r0,addy,#0x1f		@ r0 = offset within hi bank (0..0x1F)
+	and r0,addy,#0x7f		@ r0 = offset within hi bank (0..0x7F) -- s21b59: 16-colour COLCOMP needs all 128
 	bl_long vt_palette_write_hi
 	ldmfd sp!,{r2,r3,addy,lr}
 	mov pc,lr

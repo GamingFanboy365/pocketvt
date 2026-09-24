@@ -1994,12 +1994,11 @@ _mapper_number:
 	.byte 0 @mapper_number
 
 _rompages:
-	.byte 0 @rompages
+	.hword 0 @rompages (16-bit since s21b13: 256 pages = 4 MB)
 _vrompages:
 	.byte 0 @vrompages
 _fourscreen:
 	.byte 0 @fourscreen
-	.byte 0
 
 	.word 0 @chrold
 

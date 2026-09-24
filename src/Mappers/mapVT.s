@@ -222,20 +222,21 @@ mapVTinit:
 vt_apply_prg_banks:
     stmfd   sp!, {lr}
     
+    @ s21b26: vt_prg_banks is u16 -- outer bank pushes the number past 255.
     ldr     r1, =vt_prg_banks
-    ldrb    r0, [r1, #0]
+    ldrh    r0, [r1, #0]
     bl_long map89_
     
     ldr     r1, =vt_prg_banks
-    ldrb    r0, [r1, #1]
+    ldrh    r0, [r1, #2]
     bl_long mapAB_
     
     ldr     r1, =vt_prg_banks
-    ldrb    r0, [r1, #2]
+    ldrh    r0, [r1, #4]
     bl_long mapCD_
     
     ldr     r1, =vt_prg_banks
-    ldrb    r0, [r1, #3]
+    ldrh    r0, [r1, #6]
     bl_long mapEF_
     
     ldmfd   sp!, {pc}
@@ -397,13 +398,31 @@ write_vt4xxx:
     bne     .Lvt_w_4014_dma_done
 
     ldr     r5, =NES_RAM             @ r5 = NES RAM base (0x03000000)
-    mov     r4, #0x800
-    sub     r4, r4, #1               @ r4 = 0x7FF (NES RAM addr mask)
+    ldr     r4, =vt_nes_ram_mask     @ s21b56: 0x7FF or 0xFFF by cart RAM
+    ldr     r4, [r4]                 @ size (was hardcoded 0x7FF)
 
 .Lvt_w_4014_loop:
-    @ Load source byte (mask to 2KB NES RAM range)
+    @ s21b60: a VT video DMA reads its SOURCE over the CPU bus, so a source in
+    @ PRG-ROM ($8000+) reads ROM (NintendulatorNRS runs these through the CPU
+    @ core's DMA engine).  We read NES_RAM for every source, so Aero Gyrodine
+    @ and Hex City X -- which DMA their whole title nametable from ROM
+    @ ($A000-$A3FF, $8400-$87FF) -- got an empty screen.  $8000+ now reads
+    @ through memmap_tbl (the per-8K biased pointers the 6502 core fetches
+    @ opcodes with); below $8000 is the existing RAM path, unchanged.
+    cmp     r6, #0x8000
+    blo     1f
+    mov     r0, r6, lsl #16
+    mov     r0, r0, lsr #16          @ 16-bit CPU address (a DMA may wrap $FFFF)
+    adr_    r1, memmap_tbl
+    mov     r2, r0, lsr #13
+    ldr     r1, [r1, r2, lsl #2]
+    ldrb    r0, [r1, r0]
+    b       2f
+1:
+    @ Load source byte (mask to NES RAM range)
     and     r0, r6, r4
     ldrb    r0, [r5, r0]
+2:
 
     @ Call $2007 write path -- writes r0 to current vramaddr, increments.
     @ vmdata_W clobbers r1, r2, r12, and uses addy (r12) internally.

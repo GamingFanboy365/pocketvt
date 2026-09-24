@@ -75,6 +75,17 @@ static int vt_bk_whole_step(void);
 // Other indices [0x20..0x7F] and [0xA0..0x1FF] are unused but the buffer
 // stays sized for the spec'd 512-entry future extension (VT09 enhanced).
 EWRAM_BSS u8  vt_palette_ram[VT_PALETTE_SIZE];
+#ifdef PAL_WRITE_LOG
+EWRAM_BSS u32 pal_log[256];
+EWRAM_BSS u32 pal_log_idx;
+#endif
+#ifdef DMA_LOG
+EWRAM_BSS u32 dma_log[128];
+EWRAM_BSS u32 dma_log_idx;
+#endif
+EWRAM_BSS u8  vt_dac_variant;
+EWRAM_BSS u8  *vt_chr_src;    /* see ppu_vt.h -- CHR-ROM if present, else PRG */
+EWRAM_BSS u32  vt_chr_mask;   /* VT_DAC_* -- see ppu_vt.h */
 EWRAM_BSS u16 vt_palette_to_gba[VT_PALETTE_SIZE];
 bool vt_palette_dirty = true;  /* exported: ppu.s inline palette store sets it */
 // vt_palette_active: set the first time the running game writes to the VT
@@ -176,6 +187,14 @@ static inline u16 vt_colour_to_gba(u8 vtcol)
 
 void vt_palette_write(u8 offset, u8 val)
 {
+#ifdef PAL_WRITE_LOG
+    /* s21b55: the $214x register window is a SECOND palette write path,
+     * separate from the $3F00 PPU-bus path hooked in ppu.s.  Tag these with
+     * 0x800000 so the offline reader can tell them apart. */
+    { extern u32 pal_log[256], pal_log_idx;
+      pal_log[pal_log_idx] = 0x800000u | ((u32)offset << 8) | val;
+      pal_log_idx = (pal_log_idx + 1) & 255u; }
+#endif
     if (offset >= VT_PALETTE_SIZE) return;
     vt_palette_ram[offset] = val & 0x3F;    // 6 bits only
     vt_palette_to_gba[offset] = vt_colour_to_gba(val);
@@ -238,11 +257,12 @@ void vt_palette_write_lo(u8 offset, u8 val)
 __attribute__((target("arm")))
 void vt_palette_write_hi(u8 offset, u8 val)
 {
-    offset = (offset & 0x1F) | 0x80;
+    offset = (offset & 0x7F) | 0x80;   // s21b59: all 128 hi entries (was & 0x1F)
     val    &= 0x3F;
     vt_palette_ram[offset] = val;
-    // Same bg-color mirroring within the hi bank
-    if ((offset & 0x03) == 0) {
+    // Backdrop mirroring within the hi bank, NintendulatorNRS rule
+    // (addr & 0x63) == 0 -- entries 0x80,0x84..0x9C only.
+    if ((offset & 0x63) == 0) {
         vt_palette_ram[offset ^ 0x10] = val;
     }
     vt_palette_dirty  = true;
@@ -292,6 +312,13 @@ static inline u16 vt03_composite_to_gba(u8 lo, u8 hi)
 __attribute__((target("arm")))
 void vt_palette_rebuild_gba(void)
 {
+    /* s21b62: newframe_nes_vblank (NES line 242) calls this first; the frame's
+     * catch-ups have already filled bg0cntbuff to line 240 and the buffer swap
+     * has not happened yet -- the right moment to apply raster-split bands
+     * (guide s.73).  Called from here because the VRAM code section that holds
+     * newframe_nes_vblank has no room for another call. */
+    vt_bands_frame_end();
+
     // ========================================================================
     // CRITICAL CORRECTNESS GATES -- if either of these is wrong, every game
     // boots to a black screen.  History (the old PPU_S_PATCH_INSTRUCTIONS.md
@@ -519,17 +546,42 @@ static inline u32 vt_inner_bank_mask(void)
     return 0xFFu >> vb0s_to_shift[vb0s];
 }
 
-static inline u32 vt_compute_chr_bank(u32 inner_bank)
+// SESSION 21b18: the OUTER bank is $4100.0-3 (four bits) in 2bpp but only
+// $4100.0-2 (THREE bits) in 4bpp -- see the wiki's final-address diagrams:
+// 2bpp puts the outer field at address bits 21-24, 4bpp at 22-24, because a
+// 4bpp tile eats one more low bit.  Masking with 0x0F unconditionally sends
+// any 4bpp fetch with $4100 bit 3 set to a bank 8 slots away.  Star Ally and
+// Lonely Island never set that bit so they never noticed; the VG Pocket game
+// list runs $4100 = $0B and was fetching its tiles from the wrong place.
+static inline u32 vt_compute_chr_bank_n(u32 inner_bank, int fourbpp)
 {
     u32 inner_mask    = vt_inner_bank_mask();
     u32 middle        = (u32)vt_chr_reg_201A & 0xF8u;   // RV6 in-place (bits 3-7)
     u32 intermediate  = ((u32)vt_chr_reg_2018 >> 4) & 0x07u;  // VA18-VA20 (3 bits)
-    u32 outer         = (u32)vt_chr_outer_4100 & 0x0Fu; // VA21-VA24 (4 bits)
+    u32 outer         = (u32)vt_chr_outer_4100 & (fourbpp ? 0x07u : 0x0Fu);
 
     return ((inner_bank & inner_mask)
           | (middle    & ~inner_mask))
          | (intermediate << 8)
          | (outer       << 11);
+}
+
+static inline u32 vt_compute_chr_bank(u32 inner_bank)
+{
+    return vt_compute_chr_bank_n(inner_bank, 0);
+}
+
+/* s21b59: CHR fetch source -- see ppu_vt.h. */
+static inline const u8 *vt_chr_base(void) { return vt_chr_src ? vt_chr_src : rombase; }
+static inline u32 vt_chr_mask_get(void)
+{
+    u32 m = vt_chr_src ? vt_chr_mask : rommask;
+    return m ? m : 0xFFFFFFFFu;
+}
+
+static inline u32 vt_chr_bank_byte_offset_n(u32 onebus_1k_bank, int fourbpp)
+{
+    return vt_compute_chr_bank_n(onebus_1k_bank, fourbpp) * 1024u;
 }
 
 static inline u32 vt_chr_bank_byte_offset(u32 onebus_1k_bank)
@@ -610,15 +662,25 @@ static void vt_chr_sync_flush(void)
     const bool four_bpp = (vt_reg_2010 & 0x06) != 0;  // BK16EN | SP16EN
 
     // The eight 1KB CHR pages, indexed by PPU $0000-$1FFF in 1KB chunks.
+    /* s21b62: when the last NES frame was a raster split, build the
+     * primary set from the registers at that frame's END (its last band),
+     * not the live registers.  This runs from the GBA vblank hook, which is
+     * not phase-locked to the NES timeline, so the live registers hold a
+     * different band's banks from one GBA frame to the next -- which marked
+     * the set dirty EVERY frame and re-decoded all eight pages from ROM (77%
+     * of the ARM on Aero Gyrodine's title; guide section 72).  Non-split
+     * frames use the live registers exactly as before. */
+    extern u8 vt_split_frame, vt_frame_reg[6];
+    const u8 *R = vt_split_frame ? vt_frame_reg : vt_chr_reg;
     u32 page_bank[8];
-    page_bank[0] = (vt_chr_reg[4] & 0xFEu);          // $2016 even
-    page_bank[1] = (vt_chr_reg[4] | 0x01u);          // $2016 odd
-    page_bank[2] = (vt_chr_reg[5] & 0xFEu);          // $2017 even
-    page_bank[3] = (vt_chr_reg[5] | 0x01u);          // $2017 odd
-    page_bank[4] =  vt_chr_reg[0];                   // $2012
-    page_bank[5] =  vt_chr_reg[1];                   // $2013
-    page_bank[6] =  vt_chr_reg[2];                   // $2014
-    page_bank[7] =  vt_chr_reg[3];                   // $2015
+    page_bank[0] = (R[4] & 0xFEu);          // $2016 even
+    page_bank[1] = (R[4] | 0x01u);          // $2016 odd
+    page_bank[2] = (R[5] & 0xFEu);          // $2017 even
+    page_bank[3] = (R[5] | 0x01u);          // $2017 odd
+    page_bank[4] =  R[0];                   // $2012
+    page_bank[5] =  R[1];                   // $2013
+    page_bank[6] =  R[2];                   // $2014
+    page_bank[7] =  R[3];                   // $2015
 
     {   /* No-op skip: redundant banking rewrites are the common case during
            the transition storm; identical effective banks = nothing to do. */
@@ -633,14 +695,14 @@ static void vt_chr_sync_flush(void)
 
     // rommask is the PRG-ROM address mask (= romsize-1), guaranteed power-of-2
     // by PocketNES's cart loader.  Mask each per-page source offset against it.
-    u32 mask = rommask ? rommask : 0xFFFFFFFFu;
+    u32 mask = vt_chr_mask_get(); const u8 *cbase = vt_chr_base();
     u8 *dst = (u8*)NES_VRAM;
 
     if (!four_bpp) {
         // Fast path: raw 1KB memcpy per CHR page.
         for (int p = 0; p < 8; p++) {
             u32 src_off = vt_chr_bank_byte_offset(page_bank[p]) & mask;
-            u8 *src = rombase + src_off;
+            u8 *src = cbase + src_off;
             memcpy(dst + (p * 1024), src, 1024);
         }
     } else {
@@ -660,7 +722,7 @@ static void vt_chr_sync_flush(void)
         for (int p = 0; p < 8; p++) {
             u32 phys_1k = vt_chr_bank_byte_offset(page_bank[p]) >> 10;
             u32 src_off = (phys_1k * 2048u) & mask;
-            u8 *src = rombase + src_off;
+            u8 *src = cbase + src_off;
             u8 *dp  = dst + (p * 1024);
             for (u32 j = 0; j < 1024; j++) {
                 u32 src_j = (j & 0xF) | ((j & ~0xFu) << 1);
@@ -705,6 +767,40 @@ extern unsigned char nes_rgb[];   // from ppu.s (now .global)
 // The VT chip's DAC differs noticeably from a stock NES (PocketNES's
 // nes_rgb gave the washed-out mint/salmon look); this table restores the
 // saturated greens/tans/blues the hardware shows.
+
+// SESSION 21b16: SECOND compat palette, for the VG Pocket console family.
+// Calibrated per INDEX (not per colour) with a sentinel build whose table
+// encodes i as a unique colour, so each pixel's palette index is read
+// straight out of the framebuffer and joined against Michael's vg.png
+// capture -- 87-100% confidence on every entry below.
+//
+// A single shared table CANNOT serve both consoles: index $1A must be
+// blue-violet here and GREEN on Lonely Island's console, and $12/$27 also
+// conflict.  That is a per-console DAC difference, not a table bug, which
+// is why the s21b14 attempt to satisfy both by editing one table wrecked
+// Lonely Island.  Entries not calibrated yet are inherited unchanged.
+// s21b57 REFIT under the corrected 16-bit plane order (guide section 68).
+// The s21b16-39 fit absorbed the p1/p2 swap.  Recovered by re-voting every
+// pixel of the three calibrated menus (title, category, list): target colour
+// = the OLD core's calibrated render, index = the NEW decode's palette entry.
+// 28 indices, 21 unanimous; 7 contested, all background, settled by majority
+// -- the menu captures were interpolated window grabs (section 44), so some
+// cross-screen disagreement is the references, not the decode.  Independent
+// check: tools/palette_sanity.py suspect entries 9 -> 7, and $1A -- previously
+// recorded as a "true per-console difference" -- now sits correctly in its
+// hue column.  NOT re-scored against vg.png/1.png/2.png/3.png, which are not
+// in the tree: re-score when they are.
+static const u16 vt_compat_rgb555_vg[64] = {
+    0x39CE, 0x4840, 0x6400, 0x6404, 0x0390, 0x200E, 0x0000, 0x000B,
+    0x0171, 0x00C0, 0x0120, 0x0140, 0x2900, 0x0000, 0x0000, 0x0000,
+    0x4A52, 0x2900, 0x7CAB, 0x7C6F, 0x6457, 0x4059, 0x08B9, 0x0134,
+    0x014A, 0x0246, 0x0260, 0x0200, 0x3D80, 0x0000, 0x0000, 0x0000,
+    0x7FFF, 0x4A52, 0x7D4A, 0x7DB9, 0x76FF, 0x607F, 0x10FF, 0x06BE,
+    0x7746, 0x0390, 0x0BC9, 0x53A8, 0x7746, 0x2529, 0x0000, 0x0000,
+    0x7FFF, 0x7FD7, 0x7F7B, 0x7F3F, 0x7F1F, 0x7746, 0x675F, 0x0390,
+    0x439C, 0x43D9, 0x4FF7, 0x67F5, 0x7FF5, 0x673A, 0x0000, 0x0000
+};
+
 static const u16 vt_compat_rgb555[64] = {
     0x35AD, 0x4840, 0x6400, 0x6404, 0x480B, 0x200E, 0x000E, 0x000B,
     0x0063, 0x00C0, 0x0120, 0x0120, 0x20A0, 0x0000, 0x0000, 0x0000,
@@ -716,9 +812,58 @@ static const u16 vt_compat_rgb555[64] = {
     0x3FFF, 0x3FFB, 0x4FF7, 0x67F5, 0x7FF5, 0x56B5, 0x0000, 0x0000
 };
 
+/* Single source of truth for which colour-DAC approximation this cart uses.
+ * See MAINTAINERS_GUIDE section 57. */
+// Lucky Lawn Mower's VT09 board -- a THIRD console DAC, distinct from both
+// Star Ally/Lonely Island's and the VG Pocket's.  Calibrated s21b49 by the
+// value-sentinel method (guide section 31) against Michael's native 256x240
+// gameplay capture (lawn.png), a clean 20-colour framebuffer dump.
+//
+// VALIDITY CHECK THAT MADE THIS POSSIBLE: our maze and the reference agree to
+// 94.7% on a palette-independent row signature, so per-pixel voting maps like
+// to like.  ALWAYS run that check first -- two different mazes would produce
+// confident nonsense at high vote counts.
+//
+// 16 indices measured, all at >=95% vote confidence except $21 (61%, 256 px).
+// The other 48 are inherited from vt_compat_rgb555 and are NOT evidence-backed.
+// s21b57 REFIT: the table above this line was fitted in s21b49 under the WRONG
+// 16-bit plane order (p1/p2 swapped, guide section 68), which it silently
+// absorbed -- gameplay looked right and the opening did not.  Refitted from
+// BOTH references (lawn.png + gg.png) under the corrected decode: 18 indices
+// measured, all 18 unanimous across both screens.
+static const u16 vt_compat_rgb555_llm[64] = {
+    0x294A, 0x4840, 0x6400, 0x6404, 0x480B, 0x200E, 0x000E, 0x0048,
+    0x00A1, 0x00E0, 0x0120, 0x08C0, 0x20A0, 0x0000, 0x0000, 0x0000,
+    0x5294, 0x6520, 0x7C83, 0x7C0A, 0x6412, 0x3C15, 0x0097, 0x00B2,
+    0x01AA, 0x01E0, 0x0200, 0x0200, 0x3D80, 0x0000, 0x0000, 0x0000,
+    0x7FFF, 0x7EA0, 0x7D4A, 0x7CD2, 0x7C7C, 0x607F, 0x10FF, 0x027F,
+    0x0317, 0x0349, 0x0B60, 0x1320, 0x62A0, 0x0000, 0x0000, 0x0000,
+    0x7FFF, 0x7FD7, 0x7F7B, 0x7F3F, 0x7F1F, 0x7F1F, 0x675F, 0x539F,
+    0x3FFF, 0x47B8, 0x4FF7, 0x67F5, 0x7FF5, 0x5AD6, 0x0000, 0x0000
+};
+
+__attribute__((always_inline)) static inline const u16 *vt_dac_table(void)
+{
+    if (vt_dac_variant == VT_DAC_DEFAULT)  return vt_compat_rgb555;
+    if (vt_dac_variant == VT_DAC_VGPOCKET) return vt_compat_rgb555_vg;
+    if (vt_dac_variant == VT_DAC_LLM)      return vt_compat_rgb555_llm;
+    return (vt_reg_2010 & 0x40) ? vt_compat_rgb555_vg : vt_compat_rgb555;
+}
+
 __attribute__((always_inline)) static inline u16 nes_index_to_bgr555(u8 idx)
 {
-    if (vt_active) return vt_compat_rgb555[idx & 0x3F];
+    // $2010 D6 selects the VG Pocket family (same signal as the 16-bit CHR
+    // bus in section 24) -- its DAC palette differs from Star Ally's and
+    // Lonely Island's console, so it gets its own table.  If a cart ever
+    // needs one without the other, move both to a per-cart header flag.
+    // s21b48: $2010 D6 is V16BEN -- the 16-bit CHR BUS WIDTH (guide section
+    // 52).  It is NOT a DAC identifier.  It happens to be set on the VG
+    // Pocket so it worked as a proxy there, but EVERY VT09-class console sets
+    // it and they do not share the VG Pocket's LCD/DAC.  vt_dac_variant is
+    // set at cart load from the NES 2.0 header and wins when non-zero; 0
+    // keeps the old inference so already-wrapped images are unchanged.
+    if (vt_active)
+        return vt_dac_table()[idx & 0x3F];
     const unsigned char *p = &nes_rgb[(idx & 0x3F) * 3];
     u8 r = p[0], g = p[1], b = p[2];
     return (u16)(((b >> 3) << 10) | ((g >> 3) << 5) | (r >> 3));
@@ -729,7 +874,13 @@ static void vt_build_16color_palette(void)
 {
     // Only meaningful in 16-colour mode with COLCOMP=0.
     if (!(vt_reg_2010 & 0x06)) return;   // neither plane 16-colour
-    if (vt_reg_2010 & 0x80)    return;   // COLCOMP=1 handled elsewhere
+    // s21b59: COLCOMP (12-bit colour) is handled HERE too now -- it used to
+    // bail, which left pixel values 4-15 pointing at palette entries nobody
+    // filled, so 16-colour COLCOMP games (Aero Gyrodine, Hex City X:
+    // $2010=$86) showed only the backdrop.  Same index scatter; the colour is
+    // NintendulatorNRS GetPalIndex's Palette[TC|0x80]<<6 | Palette[TC]
+    // through the 4096-entry vt03_palette_lut.
+    const int colcomp = (vt_reg_2010 & 0x80) != 0;
     // SESSION 20b: gate each plane on ITS OWN mode bit.  Star Ally runs
     // BK16EN=1 with SP16EN=0 (4bpp background, 2bpp sprites); writing the
     // OBJ banks in that state stomps the legacy 2bpp sprite sub-palettes
@@ -779,28 +930,88 @@ static void vt_build_16color_palette(void)
     // (do_bg/do_obj above) and the PIX16EN sprite-mode gate.
     // Transparency: all pattern bits zero -> backdrop ((idx & 0x63) == 0).
     int bg_attr_forced0 = (vt_reg_2010 & 0x10) != 0;   // BKEXTEN
-    for (int group = 0; group < 4; group++) {
-        for (int v = 0; v < 16; v++) {
-            int p0 = (v >> 0) & 1, p1 = (v >> 1) & 1;
-            int p2 = (v >> 2) & 1, p3 = (v >> 3) & 1;
-            if (do_bg) {
-                int a_eff = bg_attr_forced0 ? 0 : group;
+
+    /* s21b48 SPEED: the scatter index is a pure function of (group, v) and
+     * bg_attr_forced0, and the DAC table is a pure function of vt_active /
+     * vt_dac_variant / $2010 D6 -- none of which change within a frame.
+     * Profiling Lucky Lawn Mower (VT09) put this function at 13.4% of ALL
+     * executed ARM instructions because it recomputed the bit scatter and
+     * re-selected the DAC table 128 times per frame.  Hoisting both took the
+     * game from 38.7% to 67.2% of full speed; output is BYTE-IDENTICAL.
+     *
+     * DO NOT "optimise" further by skipping the rebuild when vt_palette_ram
+     * is unchanged.  Tried in s21b48: it REGRESSED 98% of Star Ally's pixels.
+     * Other code (run_palette, the legacy sprite path) also writes GBA
+     * palette RAM, so this rebuild is partly a REPAIR of those writes, not
+     * just a projection of vt_palette_ram.  It is NOT a pure function of its
+     * inputs and must run every frame.
+     *
+     * EWRAM_BSS on the statics is mandatory: IWRAM has ~508 free bytes
+     * between .bss and the usr stack (guide section 4), and putting these in
+     * IWRAM .bss overflowed into the stacks -- the GBA died on an illegal
+     * opcode.  s9's "all new C globals in EWRAM" rule covers function
+     * statics too. */
+    static EWRAM_BSS u8 idx_bg_tab[64], idx_sp_tab[64];
+    static EWRAM_BSS int idx_tab_forced0;
+    static EWRAM_BSS bool idx_tab_init;
+    if (!idx_tab_init) { idx_tab_init = true; idx_tab_forced0 = -1; }
+    if (idx_tab_forced0 != bg_attr_forced0) {
+        idx_tab_forced0 = bg_attr_forced0;
+        for (int group = 0; group < 4; group++)
+            for (int v = 0; v < 16; v++) {
+                int p0 = (v >> 0) & 1, p1 = (v >> 1) & 1;
+                int p2 = (v >> 2) & 1, p3 = (v >> 3) & 1;
+                int a_eff  = bg_attr_forced0 ? 0 : group;
                 int idx_bg = p0 | (p1 << 1) | (a_eff << 2) | (p2 << 5) | (p3 << 6);
-                if (!(idx_bg & 0x63)) idx_bg = 0;
-                u8 ci_bg = vt_palette_ram[idx_bg & (VT_PALETTE_SIZE - 1)] & 0x3F;
-                gba_bg[group * 16 + v] = nes_index_to_bgr555(ci_bg);
-            }
-            if (do_obj) {
-                // Sprite palette bits are never stolen for EVA (sprite EVA
-                // comes from OAM byte 2 bits 2-4), so the sprite attribute
-                // stays live at bits 2-3.
                 int idx_sp = p0 | (p1 << 1) | (group << 2) | (1 << 4) | (p2 << 5) | (p3 << 6);
+                if (!(idx_bg & 0x63)) idx_bg = 0;
                 if (!(idx_sp & 0x63)) idx_sp = 0;
-                u8 ci_sp = vt_palette_ram[idx_sp & (VT_PALETTE_SIZE - 1)] & 0x3F;
-                gba_obj[group * 16 + v] = nes_index_to_bgr555(ci_sp);
+                idx_bg_tab[group * 16 + v] = (u8)(idx_bg & (VT_PALETTE_SIZE - 1));
+                idx_sp_tab[group * 16 + v] = (u8)(idx_sp & (VT_PALETTE_SIZE - 1));
             }
-        }
     }
+
+    const u16 *dac;
+    static EWRAM_BSS u16 nes_dac[64];
+    if (vt_active) {
+        /* Must use the SAME rule as nes_index_to_bgr555 -- vt_dac_variant
+         * first, $2010 D6 only as the fallback.  Duplicating the raw D6 test
+         * here silently ignored the per-cart override (caught in s21b48). */
+        dac = vt_dac_table();
+    } else {
+        for (int i = 0; i < 64; i++) nes_dac[i] = nes_index_to_bgr555((u8)i);
+        dac = nes_dac;
+    }
+
+#ifdef VALUE_SENTINEL
+    /* Calibration build (guide sections 31/58/64).  Encode the GBA palette
+     * SLOT in the colour: r5 = i & 31, g5 = i >> 5.  Our value at each pixel
+     * is then read DIRECTLY from the framebuffer instead of being inferred
+     * through the DAC table -- that inference is what made section 64's
+     * confusion matrix circular.  OBJ slots get g5 = 3, which the BG encoding
+     * cannot produce, so sprite pixels mask out of the vote. */
+    if (do_bg)
+        for (int i = 0; i < 64; i++)
+            gba_bg[i] = (u16)((i & 31) | ((i >> 5) << 5));
+    if (do_obj)
+        for (int i = 0; i < 64; i++)
+            gba_obj[i] = (u16)((i & 31) | (3 << 5) | ((i >> 5) << 10));  /* b5 carries slot bit 5 */
+#else
+    if (colcomp) {
+        #define VT_CC(ix) vt03_palette_lut[(((u32)(vt_palette_ram[(ix) | 0x80] & 0x3F) << 6) \
+                                            | (vt_palette_ram[(ix)] & 0x3F)) & 0xFFF]
+        if (do_bg)  for (int i = 0; i < 64; i++) gba_bg[i]  = VT_CC(idx_bg_tab[i]);
+        if (do_obj) for (int i = 0; i < 64; i++) gba_obj[i] = VT_CC(idx_sp_tab[i]);
+        #undef VT_CC
+    } else {
+    if (do_bg)
+        for (int i = 0; i < 64; i++)
+            gba_bg[i] = dac[vt_palette_ram[idx_bg_tab[i]] & 0x3F];
+    if (do_obj)
+        for (int i = 0; i < 64; i++)
+            gba_obj[i] = dac[vt_palette_ram[idx_sp_tab[i]] & 0x3F];
+    }
+#endif
 }
 
 // Deferred heavy 4bpp assembly.  Call AT MOST ONCE PER FRAME (e.g. from the
@@ -818,6 +1029,12 @@ static void vt_build_16color_palette(void)
 // ORs instead of 8x per-bit shifting -- ~8x faster, so the full 8-page
 // assembly fits the vblank IRQ time budget (the per-bit version overran it
 // and tripped the crash handler).
+#ifndef VT_SPR_SWAP16
+#define VT_SPR_SWAP16 1
+#endif
+#ifndef VT_BG_SWAP16
+#define VT_BG_SWAP16  1
+#endif
 EWRAM_BSS u32 vt_spread[256];
 static u8 vt_spread_ready = 0;
 
@@ -851,19 +1068,30 @@ __attribute__((target("arm"), noinline))
 static void vt_chr4_assemble(void)
 {
     if (!vt_spread_ready) vt_spread_init();
-    u32 mask = rommask ? rommask : 0xFFFFFFFFu;
+    u32 mask = vt_chr_mask_get(); const u8 *cbase = vt_chr_base();
     u8 *g = vt_chr4_buf;
+    const int wide16 = (vt_reg_2010 & 0x40) != 0;
+    const u32 o1 = wide16 ? 16u : 8u;    /* plane 1 */
+    const u32 o2 = wide16 ?  1u : 16u;   /* plane 2 */
+    const u32 o3 = wide16 ? 17u : 24u;   /* plane 3 */
+    const u32 rs = wide16 ?  2u : 1u;    /* row stride */
     for (int p = 0; p < 8; p++) {
-        u32 src_base = (vt_chr_bank_byte_offset(vt_chr4_page_bank[p]) >> 10) * 2048u;
+        u32 src_base = (vt_chr_bank_byte_offset_n(vt_chr4_page_bank[p], 1) >> 10) * 2048u;
         u16 sig = 0xFFFF;
         u16 widx = 0;
         for (int t = 0; t < 64; t++, src_base += 32) {
             for (int r = 0; r < 8; r++, widx++) {
-                u32 lo = src_base + r, hi = lo + 16;
-                u32 row = vt_spread[rombase[lo & mask]]
-                        | (vt_spread[rombase[(lo + 8) & mask]] << 1)
-                        | (vt_spread[rombase[hi & mask]] << 2)
-                        | (vt_spread[rombase[(hi + 8) & mask]] << 3);
+                /* s21b57: plane byte offsets are frame constants (o1..o3, rs set
+                 * above the page loop).  8-bit bus: {+0,+8,+16,+24}, row stride 1
+                 * -- byte-for-byte the old decode.  16-bit bus: {+0,+16,+1,+17},
+                 * row stride 2 -- planes 1 and 2 SWAPPED versus the old decode
+                 * (guide section 68).  Hoisting also keeps the 8-bit path's cost
+                 * identical, so 8-bit carts are not re-timed by this change. */
+                const u32 lo2 = src_base + r * rs;
+                u32 row = vt_spread[cbase[lo2 & mask]]
+                        | (vt_spread[cbase[(lo2 + o1) & mask]] << 1)
+                        | (vt_spread[cbase[(lo2 + o2) & mask]] << 2)
+                        | (vt_spread[cbase[(lo2 + o3) & mask]] << 3);
                 // Signature: first word with high-plane bits (already in a
                 // register -- one TST, replaces a 512-word post-scan that
                 // overran the load-time IRQ budget).
@@ -956,6 +1184,8 @@ void vt_chr4_do_rebuild(void)
 // be compiled in ARM mode (bl_long = mov lr,pc; ldr pc,=label does NOT set
 // the thumb bit). Switches to a private stack so the heavy work doesn't
 // overflow the tiny vblank IRQ stack.
+extern u8 vt_split_frame;
+static void vt_split_repair(void);
 __attribute__((target("arm")))
 void vt_chr4_rebuild_if_dirty(void)
 {
@@ -1011,6 +1241,7 @@ void vt_chr4_rebuild_if_dirty(void)
     } else {
         vt_chr4_copy_to_vram();       // cheap: re-copy only stomped pages
     }
+    if (vt_split_frame) vt_split_repair();   /* s21b62: raster-split slots 2/3 */
     vt_build_16color_palette();
 }
 
@@ -1063,10 +1294,12 @@ __attribute__((target("arm"), noinline))
 // (1KB-unit) OneBus bank number to an arbitrary VRAM destination.  This is
 // the s14 SPEVA assembler, generalized so the BKEXTEN background path
 // (session 18) can reuse it for BG char slots.
-static void vt_assemble_page_to(u32 dest, u32 phys_bank)
+EWRAM_BSS u32 vt_asm_calls, vt_asm_from_framecheck, vt_asm_from_fill;
+static void vt_assemble_page_to(u32 dest, u32 phys_bank, int swap16)
 {
+    vt_asm_calls++;
     if (!vt_spread_ready) vt_spread_init();
-    u32 mask = rommask ? rommask : 0xFFFFFFFFu;
+    u32 mask = vt_chr_mask_get(); const u8 *cbase = vt_chr_base();
     // SESSION 21: assemblers are only reached from extension-active paths
     // (BKEXTEN BG slots, SPEVA/PIX16 sprites), so compose per the wiki's
     // extension-ACTIVE formula: EVA | ((inner&mask | middle&~mask) << 3)
@@ -1079,24 +1312,66 @@ static void vt_assemble_page_to(u32 dest, u32 phys_bank)
     u32 inner  = phys_bank >> 3, eva7 = phys_bank & 7u;
     u32 imask  = vt_inner_bank_mask();
     u32 middle = (u32)vt_chr_reg_201A & 0xF8u;
-    u32 outer  = (u32)vt_chr_outer_4100 & 0x0Fu;
+    u32 outer  = (u32)vt_chr_outer_4100 & 0x07u;  // 4bpp: outer is $4100.0-2
     u32 src_base = (eva7 | (((inner & imask) | (middle & ~imask)) << 3)
                          | (outer << 11)) * 2048u;   // final bank: 2KB units in 4bpp
     u32 *d = (u32*)dest;
+    /* s21b54 SPEED: the bus-width bit and its derived stride are FRAME
+     * constants, but were re-read from vt_reg_2010 twice per row -- 1024
+     * redundant tests and loads per call, on a function measured at 27.8% of
+     * all executed instructions (tools/arm_profile.c over 4M steps; note the
+     * earlier 39.2% figure in section 59 came from a 300k-step window that
+     * covered only ~2 frames and over-weighted one call).  Hoisting is
+     * output-identical. */
+    const u32 wide = (vt_reg_2010 & 0x40u);
+    /* EXTENSION path (BKEXTEN BG slots, SPEVA sprites).  s21b57 left this path
+     * unswapped because swapping scrambled the VG Pocket title logo; s21b58
+     * showed the scramble was a CACHE STOMP, not the decode (see
+     * vt_bk_slot_fill), and the swap is correct here too (guide section 69). */
+    /* swap16: apply the section 68 p1/p2 swap on the 16-bit bus.  Proven on
+     * every path (guide section 69): non-extension BG table-free; sprites by
+     * Lucky Lawn Mower's mower; BKEXTEN background by the VG Pocket title.
+     * The flag is kept only so a future cart can be diagnosed per path. */
+    const u32 o1 = wide ? (swap16 ? 16u : 1u) : 8u;   /* plane 1 */
+    const u32 o2 = wide ? (swap16 ?  1u : 16u) : 16u; /* plane 2 */
+    const u32 o3 = wide ? 17u : 24u;    /* plane 3 */
+    const u32 rs = wide ?  2u : 1u;     /* row stride */
+    const u8 *const rb = cbase;
+    const u32 *const sp = vt_spread;
     for (int t = 0; t < 64; t++, src_base += 32) {
         for (int r = 0; r < 8; r++) {
-            u32 lo = src_base + r, hi = lo + 16;
-            *d++ = vt_spread[rombase[lo & mask]]
-                 | (vt_spread[rombase[(lo + 8) & mask]] << 1)
-                 | (vt_spread[rombase[hi & mask]] << 2)
-                 | (vt_spread[rombase[(hi + 8) & mask]] << 3);
+            // SESSION 21b15: two plane layouts exist (wiki "VT02+ CHR-ROM
+            // Bankswitching", final-address diagrams).  8-BIT BUS puts the
+            // tile row in address bits 0-2 and the plane in bits 3-4, i.e.
+            // planes at +0/+8/+16/+24.  16-BIT BUS interleaves them: bit 0 =
+            // plane D0, bits 1-3 = row, bit 4 = plane D1, i.e. row r lives at
+            // +2r/+2r+1/+16+2r/+16+2r+1.  Reading a 16-bit-bus cart with the
+            // 8-bit layout pulls each row's halves from different rows, which
+            // renders as heavy horizontal striping -- measured on the VG
+            // Pocket menu: 89.6 differing pixels per adjacent row pair versus
+            // 31.3 in the reference capture; the 16-bit layout gives 33.2.
+            //
+            // The bus width is a board property with no documented register.
+            // EMPIRICAL GATE: $2010 D6, which the VT03 datasheet lists as
+            // unused, is SET on the 16-bit-bus cart (VG Pocket, $5E) and
+            // CLEAR on both 8-bit-bus carts (Star Ally $1F, Lonely Island
+            // $0E).  If a counter-example turns up, replace this with a
+            // per-cart flag in builder.py's injected header rather than
+            // widening the guess.
+            /* s21b57: frame-constant plane offsets (original decode; see the
+             * note above -- the section 68 swap is NOT applied on this path). */
+            const u32 lo = src_base + r * rs;
+            *d++ = sp[rb[lo & mask]]
+                 | (sp[rb[(lo + o1) & mask]] << 1)
+                 | (sp[rb[(lo + o2) & mask]] << 2)
+                 | (sp[rb[(lo + o3) & mask]] << 3);
         }
     }
 }
 
 static void vt_eva_assemble(int slot, u32 phys_bank)
 {
-    vt_assemble_page_to(0x06010000u + (u32)slot * 2048u, phys_bank);
+    vt_assemble_page_to(0x06010000u + (u32)slot * 2048u, phys_bank, VT_SPR_SWAP16);
 }
 
 // 2bpp SPEVA sprite assembler -- session 21b3 (the "2bpp-EVA gap", guide 8b).
@@ -1116,7 +1391,7 @@ __attribute__((target("arm"), noinline))
 static void vt_assemble_page_2bpp_to(u32 dest, u32 phys_bank)
 {
     if (!vt_spread_ready) vt_spread_init();
-    u32 mask = rommask ? rommask : 0xFFFFFFFFu;
+    u32 mask = vt_chr_mask_get(); const u8 *cbase = vt_chr_base();
     u32 inner  = phys_bank >> 3, eva7 = phys_bank & 7u;
     u32 imask  = vt_inner_bank_mask();
     u32 middle = (u32)vt_chr_reg_201A & 0xF8u;
@@ -1127,8 +1402,8 @@ static void vt_assemble_page_2bpp_to(u32 dest, u32 phys_bank)
     for (int t = 0; t < 64; t++, src_base += 16) {
         for (int r = 0; r < 8; r++) {
             u32 lo = src_base + r;
-            *d++ = vt_spread[rombase[lo & mask]]
-                 | (vt_spread[rombase[(lo + 8) & mask]] << 1);
+            *d++ = vt_spread[cbase[lo & mask]]
+                 | (vt_spread[cbase[(lo + 8) & mask]] << 1);
         }
     }
 }
@@ -1159,7 +1434,7 @@ __attribute__((target("arm"), noinline))
 static void vt_assemble_page_pix16_to(u32 dest, u32 phys_bank)
 {
     if (!vt_spread_ready) vt_spread_init();
-    u32 mask = rommask ? rommask : 0xFFFFFFFFu;
+    u32 mask = vt_chr_mask_get(); const u8 *cbase = vt_chr_base();
     // SESSION 21: assemblers are only reached from extension-active paths
     // (BKEXTEN BG slots, SPEVA/PIX16 sprites), so compose per the wiki's
     // extension-ACTIVE formula: EVA | ((inner&mask | middle&~mask) << 3)
@@ -1172,20 +1447,20 @@ static void vt_assemble_page_pix16_to(u32 dest, u32 phys_bank)
     u32 inner  = phys_bank >> 3, eva7 = phys_bank & 7u;
     u32 imask  = vt_inner_bank_mask();
     u32 middle = (u32)vt_chr_reg_201A & 0xF8u;
-    u32 outer  = (u32)vt_chr_outer_4100 & 0x0Fu;
+    u32 outer  = (u32)vt_chr_outer_4100 & 0x07u;  // 4bpp: outer is $4100.0-2
     u32 src_base = (eva7 | (((inner & imask) | (middle & ~imask)) << 3)
                          | (outer << 11)) * 2048u;   // final bank: 2KB units in 4bpp
     u32 *d = (u32*)dest;
     for (int t = 0; t < 64; t++, src_base += 32) {
         for (int r = 0; r < 8; r++) {              // LEFT half: planes 0/1
             u32 lo = src_base + r;
-            *d++ = vt_spread[rombase[lo & mask]]
-                 | (vt_spread[rombase[(lo + 8) & mask]] << 1);
+            *d++ = vt_spread[cbase[lo & mask]]
+                 | (vt_spread[cbase[(lo + 8) & mask]] << 1);
         }
         for (int r = 0; r < 8; r++) {              // RIGHT half: planes 2/3
             u32 hi = src_base + r + 16;
-            *d++ = vt_spread[rombase[hi & mask]]
-                 | (vt_spread[rombase[(hi + 8) & mask]] << 1);
+            *d++ = vt_spread[cbase[hi & mask]]
+                 | (vt_spread[cbase[(hi + 8) & mask]] << 1);
         }
     }
 }
@@ -1271,14 +1546,29 @@ static void vt_bk_slot_fill(int s, u32 bank)
 {
     u32 dest = 0x06000000u + (u32)vt_bk_slot_idx[s] * 32u;
     vt_bk_slot_bank[s] = (u16)bank;
-    vt_assemble_page_to(dest, bank);
+    vt_assemble_page_to(dest, bank, VT_BG_SWAP16);
     // SESSION 20: signature = first NONZERO word.  Word 0 alone is blind to
     // zero-stomps whenever tile0 row0 is legitimately blank (Star Ally's
     // attr-0 slot: first art at word 13) -- the 2bpp cache zeroed the slot
     // and frame_check compared 0==0 forever.  Mirrors vt_chr4_sigoff.
+    // s21b58: PREFER A WORD WITH HIGH-PLANE BITS (0xCCCCCCCC = pixel-value
+    // bits 2-3).  PocketNES's 2bpp cache can only ever write values 0-3, so it
+    // cannot reproduce such a word: a stomp is ALWAYS caught.  "First nonzero
+    // word" alone let a 2bpp stomp slip through whenever it happened to write
+    // the same value at that one word -- with the section 68 plane order that
+    // coincidence hit the VG Pocket title, and PocketNES's 2bpp tiles showed
+    // through the "Pocket" logo (guide section 69).  Pages with no high-plane
+    // bits at all fall back to first-nonzero, which still catches zero-stomps.
+    // vt_chr4_assemble has always chosen its signature this way.
     const volatile u32 *d = (const volatile u32*)dest;
-    u16 off = 0xFFFF;
-    for (int w = 0; w < 512; w++) { if (d[w]) { off = (u16)w; break; } }
+    u16 off = 0xFFFF, offnz = 0xFFFF;
+    for (int w = 0; w < 512; w++) {
+        u32 x = d[w];
+        if (!x) continue;
+        if (offnz == 0xFFFF) offnz = (u16)w;
+        if (x & 0xCCCCCCCCu) { off = (u16)w; break; }
+    }
+    if (off == 0xFFFF) off = offnz;
     vt_bk_slot_sigoff[s] = off;
     vt_bk_slot_sig[s]    = (off == 0xFFFF) ? 0u : d[off];
 }
@@ -1356,8 +1646,12 @@ void vt_bk_frame_check(void)
         u16 off = vt_bk_slot_sigoff[s];
         if (off == 0xFFFF) continue;   // page genuinely all-zero: nothing to protect
         u32 dest = 0x06000000u + (u32)vt_bk_slot_idx[s] * 32u;
+#ifdef FORCE_BK_REPAIR
+        if (1)   /* DIAGNOSTIC: re-assemble every extension slot every frame */
+#else
         if (((const volatile u32*)dest)[off] != vt_bk_slot_sig[s])
-            vt_assemble_page_to(dest, vt_bk_slot_bank[s]);
+#endif
+            { vt_asm_from_framecheck++; vt_assemble_page_to(dest, vt_bk_slot_bank[s], VT_BG_SWAP16); }
     }
 }
 
@@ -1708,7 +2002,9 @@ static void vt_obj4_overlay(void)
 {
     if (!vt_active) return;
     if (!(vt_reg_2010 & 0x04)) return;   // SP16EN off: 2bpp sprites correct
-    if (vt_reg_2010 & 0x80)    return;   // COLCOMP=1 sprite path not wired
+    // s21b59: no COLCOMP bail -- COLCOMP is a COLOUR mode, not a tile format;
+    // the 4bpp sprite tiles are identical and their colours now come from the
+    // COLCOMP-aware vt_build_16color_palette.
 
     // IRQ-BUDGET NOTE: this runs inside the vblank IRQ alongside the 16KB
     // BG copy.  A naive full 16KB per-frame CPU word-loop here blew the IRQ
@@ -1750,9 +2046,9 @@ void vt_chr4_rebuild_if_dirty_OLD(void)
     if (!vt_chr4_dirty) return;
     vt_chr4_dirty = 0;
 
-    u32 mask = rommask ? rommask : 0xFFFFFFFFu;
+    u32 mask = vt_chr_mask_get(); const u8 *cbase = vt_chr_base();
     for (int p = 0; p < 8; p++) {
-        u32 phys_1k  = vt_chr_bank_byte_offset(vt_chr4_page_bank[p]) >> 10;
+        u32 phys_1k  = vt_chr_bank_byte_offset_n(vt_chr4_page_bank[p], 1) >> 10;
         u32 src_base = phys_1k * 2048u;              // 1KB page = 2KB src
         u8 *outp = vt_chr4_buf + (p * 64 * 32);      // 64 tiles * 32 bytes
         for (int t = 0; t < 64; t++) {
@@ -1762,10 +2058,10 @@ void vt_chr4_rebuild_if_dirty_OLD(void)
             for (int r = 0; r < 8; r++) {
                 // Mask EVERY byte fetch (not just the base): a block near the
                 // top of ROM must not read past it -- this was crash #1.
-                u8 l0 = rombase[(lo_base + r)     & mask];
-                u8 l1 = rombase[(lo_base + r + 8) & mask];
-                u8 h0 = rombase[(hi_base + r)     & mask];
-                u8 h1 = rombase[(hi_base + r + 8) & mask];
+                u8 l0 = cbase[(lo_base + r)     & mask];
+                u8 l1 = cbase[(lo_base + r + 8) & mask];
+                u8 h0 = cbase[(hi_base + r)     & mask];
+                u8 h1 = cbase[(hi_base + r + 8) & mask];
                 u32 row = 0;
                 for (int c = 0; c < 8; c++) {
                     u32 px = ((l0 >> (7 - c)) & 1)
@@ -1835,8 +2131,17 @@ void vt_ppu_reg_write(u8 page, u8 offset, u8 val)
         // assume CHR-ROM carts; passing VT CHR-RAM bank-numbers wedged the
         // PPU fetch in the 0.3.x bug).
         if (offset >= 0x12 && offset <= 0x17) {
-            if (vt_chr_reg[offset - 0x12] != val) {
-                vt_chr_reg[offset - 0x12] = val;
+            /* s21b59: mapper 256 submappers 1/3/4/5 route $2012-$2017 to
+             * permuted registers (NintendulatorNRS mapper256.cpp write2,
+             * ppuMangle[][]).  Identity for every other submapper. */
+            static const u8 ppu_mangle[16][6] = {
+                {0,1,2,3,4,5},{1,0,5,4,3,2},{0,1,2,3,4,5},{5,4,3,2,0,1},
+                {2,5,0,4,3,1},{1,0,5,4,3,2},{0,1,2,3,4,5},{0,1,2,3,4,5},
+                {0,1,2,3,4,5},{0,1,2,3,4,5},{0,1,2,3,4,5},{0,1,2,3,4,5},
+                {0,1,2,3,4,5},{0,1,2,3,4,5},{0,1,2,3,4,5},{0,1,2,3,4,5}};
+            const int ri = ppu_mangle[vt.submapper & 0x0F][offset - 0x12];
+            if (vt_chr_reg[ri] != val) {
+                vt_chr_reg[ri] = val;
                 // CHR bank changed -- re-copy the 8KB CHR window from PRG
                 // into NES_VRAM so the GBA tile cache can re-render it.
                 vt_chr_sync_from_prg();
@@ -1968,3 +2273,192 @@ void vt_ppu_reg_write(u8 page, u8 offset, u8 val)
 }
 
 #endif // VT_MODE
+
+
+/* ==========================================================================
+ * s21b62: RASTER-SPLIT CHR BANKING FOR 4bpp BACKGROUNDS  (guide section 73)
+ * --------------------------------------------------------------------------
+ * Games like Aero Gyrodine, Hex City X and Add 'em Up change $2016/$2017
+ * partway down the screen (from a timer IRQ) so each horizontal band uses
+ * different graphics.  The 4bpp background used to be built once per frame
+ * from the final banks, so every band but the last showed the wrong tiles.
+ *
+ * PocketNES's background tile cache is four 8 KB slots -- the first half of
+ * each 16 KB character block -- and BG0CNT's character base is written per
+ * scanline from bg0cntbuff by HBlank DMA.  On VT carts PocketNES itself only
+ * ever occupies slot 0 (its CHR group never changes; VT banks CHR through its
+ * own registers), and the VT pipeline builds the $1000 half into slot 1, so
+ * slots 2 and 3 are free.  A 4bpp page (64 tiles x 32 bytes) is exactly 2 KB:
+ * four pages fill one slot.
+ *
+ *   vt_band_mark(line)    called from ppu.s after every $2012-$2017 write and
+ *                         from mapVT.s after MMC3 bank writes, with the NES
+ *                         scanline from get_scanline_2.  Records a band when
+ *                         the registers change mid-frame.
+ *   vt_bands_frame_end()  called from newframe_nes_vblank (NES line 242,
+ *                         after the catch-ups have filled bg0cntbuff, before
+ *                         the buffer swap).  The LAST band is primary: the
+ *                         existing pipeline already builds it into slot 0.
+ *                         Every other band's bank set gets slot 2 or 3 from a
+ *                         two-entry LRU cache (assembled only on a miss), and
+ *                         its lines in bg0cntbuff get that character base.
+ * ========================================================================== */
+#define VT_MAXB 6
+typedef struct { u8 line; u8 reg[6]; u8 pad; } VtBand;
+EWRAM_BSS VtBand vt_band[VT_MAXB];
+EWRAM_BSS u8  vt_nband;
+EWRAM_BSS u8  vt_band_fresh;          /* frame_end ran; next-frame band 0 open */
+EWRAM_BSS u8  vt_split_frame;         /* last completed frame had >1 band */
+EWRAM_BSS u8  vt_frame_reg[6];        /* its primary (last-band) registers */
+EWRAM_BSS u32 vt_split_key[2][4];     /* 1K banks held by slots 2 and 3 */
+EWRAM_BSS u32 vt_split_mode[2];       /* bus width / mode they were built in */
+EWRAM_BSS u16 vt_split_sig[2][4];     /* per-page stomp-check word offsets */
+EWRAM_BSS u8  vt_split_valid[2];
+EWRAM_BSS u8  vt_split_lru;
+EWRAM_BSS u32 vt_split_assemblies;    /* diagnostic: cache misses */
+
+static int vt_regs_same(const u8 *a, const u8 *b)
+{ for (int i = 0; i < 6; i++) if (a[i] != b[i]) return 0; return 1; }
+static void vt_regs_copy(u8 *d, const u8 *s) { for (int i = 0; i < 6; i++) d[i] = s[i]; }
+
+void vt_band_mark(u32 line)
+{
+    if (vt_nband == 0) {                       /* first use after reset */
+        vt_band[0].line = 0; vt_regs_copy(vt_band[0].reg, vt_chr_reg);
+        vt_nband = 1; vt_band_fresh = 1;
+        return;
+    }
+    if (line >= 240) {                         /* vblank / after render end */
+        if (vt_band_fresh)                     /* sets the next frame's band 0 */
+            vt_regs_copy(vt_band[0].reg, vt_chr_reg);
+        return;                                /* else frame_end captures it */
+    }
+    vt_band_fresh = 0;
+    VtBand *b = &vt_band[vt_nband - 1];
+    if (vt_regs_same(b->reg, vt_chr_reg)) return;
+    if (line <= b->line) { vt_regs_copy(b->reg, vt_chr_reg); return; }
+    if (vt_nband < VT_MAXB) {
+        b = &vt_band[vt_nband++];
+        b->line = (u8)line;
+        vt_regs_copy(b->reg, vt_chr_reg);
+    } else {
+        vt_regs_copy(vt_band[VT_MAXB - 1].reg, vt_chr_reg);   /* overflow: fold */
+    }
+}
+
+/* The four 1K banks the background reads for register set r. */
+static void vt_band_key(const u8 *r, int half, u32 k[4])
+{
+    if (!half) { k[0] = r[4] & 0xFEu; k[1] = r[4] | 1u; k[2] = r[5] & 0xFEu; k[3] = r[5] | 1u; }
+    else       { k[0] = r[0]; k[1] = r[1]; k[2] = r[2]; k[3] = r[3]; }
+}
+
+/* One 4bpp page (64 tiles) for 1K bank `bank`, decoded exactly like
+ * vt_chr4_assemble, written straight into VRAM (word stores). */
+__attribute__((target("arm"), noinline))
+static u16 vt_chr4_assemble_page_vram(volatile u32 *dst, u32 bank)
+{
+    if (!vt_spread_ready) vt_spread_init();
+    u32 mask = vt_chr_mask_get(); const u8 *cbase = vt_chr_base();
+    const int wide16 = (vt_reg_2010 & 0x40) != 0;
+    const u32 o1 = wide16 ? 16u : 8u, o2 = wide16 ? 1u : 16u;
+    const u32 o3 = wide16 ? 17u : 24u, rs = wide16 ? 2u : 1u;
+    u32 src_base = (vt_chr_bank_byte_offset_n(bank, 1) >> 10) * 2048u;
+    u16 sig = 0xFFFF, widx = 0;
+    for (int t = 0; t < 64; t++, src_base += 32) {
+        for (int r = 0; r < 8; r++, widx++) {
+            const u32 lo2 = src_base + r * rs;
+            u32 row = vt_spread[cbase[lo2 & mask]]
+                    | (vt_spread[cbase[(lo2 + o1) & mask]] << 1)
+                    | (vt_spread[cbase[(lo2 + o2) & mask]] << 2)
+                    | (vt_spread[cbase[(lo2 + o3) & mask]] << 3);
+            if (sig == 0xFFFF && (row & 0xCCCCCCCCu)) sig = widx;
+            *dst++ = row;
+        }
+    }
+    return sig;
+}
+
+static u32 vt_split_mode_word(void)
+{   /* anything besides the bank numbers that changes the decoded tiles */
+    return (u32)(vt_reg_2010 & 0x40) | ((u32)vt_chr_reg_2018 << 8)
+         | ((u32)vt_chr_reg_201A << 16) | ((u32)vt_chr_outer_4100 << 24);
+}
+
+static void vt_split_build(int s, const u32 k[4])
+{
+    volatile u32 *base = (volatile u32 *)(0x06000000u + (u32)(2 + s) * 0x4000u);
+    for (int p = 0; p < 4; p++) {
+        vt_split_sig[s][p] = vt_chr4_assemble_page_vram(base + p * 512, k[p]);
+        vt_split_key[s][p] = k[p];
+    }
+    vt_split_mode[s] = vt_split_mode_word();
+    vt_split_valid[s] = 1;
+    vt_split_assemblies++;
+}
+
+static int vt_split_slot_get(const u32 k[4])
+{
+    const u32 mode = vt_split_mode_word();
+    for (int s = 0; s < 2; s++) {
+        if (!vt_split_valid[s] || vt_split_mode[s] != mode) continue;
+        if (vt_split_key[s][0] == k[0] && vt_split_key[s][1] == k[1] &&
+            vt_split_key[s][2] == k[2] && vt_split_key[s][3] == k[3]) {
+            vt_split_lru = (u8)(s ^ 1);        /* the other one is older */
+            return 2 + s;
+        }
+    }
+    int s = vt_split_lru;
+    vt_split_lru = (u8)(s ^ 1);
+    vt_split_build(s, k);
+    return 2 + s;
+}
+
+/* Called each GBA frame from vt_chr4_rebuild_if_dirty: re-decode a split slot
+ * only if something overwrote it (one word compare per page). */
+static void vt_split_repair(void)
+{
+    for (int s = 0; s < 2; s++) {
+        if (!vt_split_valid[s]) continue;
+        const volatile u32 *base = (const volatile u32 *)(0x06000000u + (u32)(2 + s) * 0x4000u);
+        for (int p = 0; p < 4; p++) {
+            u16 off = vt_split_sig[s][p];
+            if (off == 0xFFFF) continue;
+            /* recompute the expected word cheaply by re-decoding that page only if the
+             * word no longer carries high-plane bits (a 2bpp stomp cannot produce them) */
+            if (!(base[p * 512 + off] & 0xCCCCCCCCu)) { vt_split_build(s, vt_split_key[s]); break; }
+        }
+    }
+}
+
+/* _bg0cntbuff is declared in a shared header */
+extern u8 _ppuctrl0;
+void vt_bands_frame_end(void)
+{
+    const int n = vt_nband;
+    const int ok = vt_active && (vt_reg_2010 & 0x02) && !vt_bkexten_live;   /* 4bpp BG, non-extension */
+    if (ok && n > 1) {
+        const u8 *preg = vt_band[n - 1].reg;
+        vt_regs_copy(vt_frame_reg, preg);
+        vt_split_frame = 1;
+        const int half = (_ppuctrl0 & 0x10) ? 1 : 0;
+        u32 pk[4]; vt_band_key(preg, half, pk);
+        u16 *buf = (u16 *)_bg0cntbuff;
+        for (int i = 0; i < n - 1; i++) {
+            u32 k[4]; vt_band_key(vt_band[i].reg, half, k);
+            if (k[0] == pk[0] && k[1] == pk[1] && k[2] == pk[2] && k[3] == pk[3]) continue;
+#ifndef VT_SPLIT_SLOTS   /* s21b62 WIP: off by default -- slot writes hang Add em Up (guide s.73) */
+            continue;
+#endif
+            const int slot = vt_split_slot_get(k);
+            int l0 = vt_band[i].line, l1 = vt_band[i + 1].line;
+            if (l1 > 240) l1 = 240;
+            for (int l = l0; l < l1; l++)
+                buf[l] = (u16)((buf[l] & ~0x000Cu) | ((u32)slot << 2));
+        }
+    } else {
+        vt_split_frame = 0;
+    }
+    vt_band[0].line = 0; vt_regs_copy(vt_band[0].reg, vt_chr_reg);
+    vt_nband = 1; vt_band_fresh = 1;
+}

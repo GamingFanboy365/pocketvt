@@ -128,7 +128,7 @@ extern u8 _bank8[4];
 extern u8 _Cbank0[8];
 extern u8 _nes_chr_map[8];
 extern u8 _vrompages;
-extern u8 _rompages;
+extern u16 _rompages;
 extern u8 NES_VRAM[8192];
 extern void* _readmem_tbl[PRG_BANK_COUNT];
 extern void* _writemem_tbl[PRG_BANK_COUNT];
@@ -272,7 +272,7 @@ extern u8* _rombase;
 extern u8* _vrombase;
 extern u32 _vrommask;
 extern u32 _rommask;
-extern u8 _rompages;
+extern u16 _rompages;
 extern u8 _vrompages;
 
 //extern char lfnName[256];
