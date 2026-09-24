@@ -26,6 +26,25 @@ after pushing, pull before committing again. The Docker build uses a different G
 byte-comparable with a build_pvt.sh core. Compare within one path only.
 `EXTRA_CFLAGS` reaches the assembler too (`.s` files use `#if`).
 
+## Reference emulator: furb_cli + compare_furb.py (USE THIS instead of asking for screenshots)
+Furbtendulator (the reference) builds as a headless Linux CLI from the gitignored
+source in reference/Furbtendulator-main (tools/furb_cli/README.md):
+```
+apt install g++-multilib libmgba-dev; pip install numpy pillow
+python3 tools/furb_cli/build.py                  # -> tools/furb_cli/build/furb_cli
+python3 tools/compare_furb.py testroms/Scramble.nes --at 300,700 --input "320-325:Start" \
+        [--core ../pvt_build/pocketvt.gba]        # -> furbcmp/cmp_t*.png + report.json
+```
+Same ROM, same input, keyed to NES frames on both sides (PocketVT's `frametotal`),
+so slow carts stay aligned. `struct` = palette-independent picture match; the
+mismatch lines list disagreeing colour pairs (black<->colour = positional,
+colour<->colour = palette). First results: Time Pilot 100%, Scramble title 99.97% / gameplay
+99.0% (residue = the 1-px terrain edge, +-1 row; decimation or a real 1-row
+offset, undecided), Push the Ball 97.5%, Add 'em Up 81.8% with the top strip
+flagged (open item 1).
+furb_cli alone dumps PPM + raw palette indices + $2000/$4100 registers + palette
+RAM + CPU RAM per frame. Games can diverge over long runs; compare early frames.
+
 ## THE TRAP THAT HAS BITTEN SIX TIMES
 `build_pvt.sh` **rm -rf's the build directory**, deleting builder.py, every .nes
 and every harness binary. Afterwards builder.py silently reports
@@ -47,7 +66,8 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
 3. `tools/score_5bit.sh <builddir>` for Lucky Lawn Mower vs gg.png / lawn.png
    (currently ~96.5% opening, ~97.1% gameplay). Compare pixels in 5-BIT space
    (`>>3` both sides) -- mgba expands 5->8 bit differently from references.
-4. **Emulation speed = NMIs per 60 frames.** nmi_handler (timeout.s) increments
+4. `tools/compare_furb.py` on each testrom at a few frames: `struct` must not drop.
+5. **Emulation speed = NMIs per 60 frames.** nmi_handler (timeout.s) increments
    a debug byte at 0x020007DF; read it before/after 60 runFrame calls.
 
 ## Diagnostic habits that paid off
@@ -96,6 +116,8 @@ LOCAL ONLY, gitignored, never commit (the user supplies them as test.zip):
 - reference/nrs/: NintendulatorNRS OneBus sources (h_OneBus.cpp, OneBus.cpp,
   mapper256.cpp, ...). The authority on VT behaviour.
 - reference/NESdev_Wiki-*.xml: NESdev wiki exports (VT02+ pages, MMC3).
+- reference/Furbtendulator-main/: the full Furbtendulator source (from
+  Furbtendulator-main.zip); tools/furb_cli builds it headless.
 - testroms/: Add 'em Up, Push the Ball, Scramble, Table Soccer, Time Pilot.
   The controls (Star Ally, Lonely Island, LLM, VG Pocket) are NOT in it; ask.
 

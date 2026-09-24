@@ -73,10 +73,23 @@ file is always larger than the ~107 KB core.
 
 ## Local test material (not in git)
 
-`testroms/` (ROMs) and `reference/` (NESdev wiki XML exports and the
-NintendulatorNRS OneBus sources in `reference/nrs/`) live in the working
+`testroms/` (ROMs) and `reference/` (NESdev wiki XML exports, the
+NintendulatorNRS OneBus sources in `reference/nrs/`, and the full
+Furbtendulator source in `reference/Furbtendulator-main/`) live in the working
 tree but are gitignored, as are all `*.nes`, captures (`*.png`) and build
 output. Keep them locally and never commit them.
+
+## Checking against the reference emulator
+
+`tools/furb_cli` builds Furbtendulator as a headless Linux program, and
+`tools/compare_furb.py` runs a ROM through it and through PocketVT with the
+same input, then writes side-by-side images and scores. See
+`tools/furb_cli/README.md`.
+
+```bash
+python3 tools/furb_cli/build.py
+python3 tools/compare_furb.py testroms/Scramble.nes --at 300,700 --input "320-325:Start"
+```
 
 ## Repository layout
 
@@ -85,6 +98,7 @@ output. Keep them locally and never commit them.
 | `src/` | the emulator: PocketNES core (ARM asm + C) plus the VT additions |
 | `src/vt_regs.c`, `src/ppu_vt.c`, `src/Mappers/mapVT.s`, `src/6502_vt.s` | VT registers, VT video, VT mapper hooks, encryption wrappers |
 | `tools/` | test harnesses (libmgba), scoring and helper scripts |
+| `tools/furb_cli/`, `tools/compare_furb.py` | headless Furbtendulator (reference emulator) and a one-command frame comparison against PocketVT |
 | `build_pvt.sh`, `Makefile` | toolchain-only build, devkitARM build |
 | `builder.py` | packs `.nes` files onto the core |
 

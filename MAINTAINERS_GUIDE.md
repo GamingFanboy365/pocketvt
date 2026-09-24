@@ -3409,3 +3409,56 @@ Open items those docs carried, still unimplemented:
 * **$2000 D7 NMI polarity** and the **VT02 low-luminance palette corner**
   are spec-vs-code notes, not bugs. See DATASHEET_DIGEST.md appendix B
   before "fixing" either.
+
+## 75. furb_cli: the reference emulator, headless, and compare_furb.py (after s21b62)
+
+No emulator change. Michael supplied the full Furbtendulator source
+(Furbtendulator-main.zip, unpacked to the gitignored reference/). It now builds
+as a 32-bit Linux CLI (tools/furb_cli, README there), and tools/compare_furb.py
+runs one .nes through it and through PocketVT (builder.py + mGBA) with the same
+input and scores every requested frame. This replaces reference screenshots for
+anything the testroms cover; ask for captures only for carts not on disk.
+
+How it is built: compat/ shims Win32/DirectX (every GUI/DirectX/registry call
+inert, all settings at compiled-in defaults: NTSC palette, VT03Palette=0); the
+iNES mapper pack becomes Mappers/iNES.so loaded through a dlopen-backed
+LoadLibrary, exactly like iNES.dll; furb_cli.cpp replaces WinMain and runs
+NES::Thread's CPU loop, owning the keyboard state the standard controller reads.
+Traps met on the way, recorded so nobody re-debugs them: (1) -m32 is required,
+the savestate macros and DWORD assume a 32-bit long; (2) registry stubs must
+return a NONZERO code -- Controllers::LoadSettings tests == ERROR_SUCCESS and a
+zero stub made it parse garbage; (3) Settings::FSkip must be 0, a large value
+makes the PPU take its frame-skip path and draw nothing (one-colour frames);
+(4) __forceinline must expand to nothing -- MSVC silently emits an out-of-line
+copy that other files call; (5) -msse2 -mfpmath=sse matches MSVC's float model.
+Deterministic: identical runs give identical frame hashes, across clean rebuilds.
+
+Alignment (the part that makes the scores mean something):
+* Frames are NES frames on both sides. PocketVT's `frame` word (symbol
+  `frametotal`, the globals-block counter timeout.s bumps once per emulated
+  frame) keys the harness's input and captures. At full speed GBA frame 700 is
+  only NES frame ~563 (about 140 GBA frames of boot), so GBA-frame alignment is
+  wrong even for 60/60 carts.
+* PocketVT's screen trails its counter by up to ~5 NES frames when it runs
+  below 60 (Scramble gameplay, 47/60), so each capture is matched against
+  +-8 reference frames (ties go to the nearest).
+* Screen geometry: column = x + 8 always (no horizontal scaling). Row: dma0buff
+  vofs = NES scroll + (source row - line), so line-to-line steps are scale75's
+  decimation (1 or 2) except at a raster split; the tool rebuilds the row map
+  from the steps, substitutes the 3-line rhythm at splits, and searches each
+  split segment's offset separately (Scramble: playfield -1, HUD -2).
+  DO NOT use y + vofs directly as the row -- that is tilemap space, and was
+  only right in earlier tools because their screens were unscrolled.
+
+First results (repo-root core, testroms): Time Pilot 100.00% struct at f200 and
+f600; Scramble title 99.97% (0 mismatched px), gameplay f700 99.0%; Push the
+Ball f600 97.5% (moving robot/paddles only); Add 'em Up f600 81.8% with the top
+strip flagged -- the raster-split CHR gap, open item 1. On Scramble gameplay
+every reference colour has exactly one PocketVT counterpart (same palette
+indices, different DAC: e.g. (189,192,0) -> (148,148,0)), so there is no colour
+fault; the remaining ~1% is the 1-pixel terrain outline. Per column, PocketVT's
+terrain top maps one NES row ABOVE the reference's on 160 columns and to the
+same row on 63. That is consistent with scale75 dropping the edge row on some
+lines, but a real 1-row vertical offset in gameplay (NES scroll Y = 2 there) is
+not ruled out -- worth one look with the VALUE_SENTINEL build. Scramble also diverges in game state by ~f850 (the reference's ship dies, ours
+does not) -- expected over long runs, so compare early frames.
