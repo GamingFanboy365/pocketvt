@@ -12,12 +12,16 @@ what is proven, what was disproved, and why. Sections are numbered; newest last.
 
 ## Build
 ```
-bash build_pvt.sh                      # -> pvt_build/pocketvt.gba (core only)
+LIBGBA=/path/to/libgba bash build_pvt.sh   # -> ../pvt_build/pocketvt.gba (core only)
 EXTRA_CFLAGS=-DFOO BUILD=/some/dir bash build_pvt.sh   # variant build
+tools/restage.sh [builddir]            # ALWAYS, right after build_pvt.sh
 python3 builder.py rom1.nes [rom2.nes ...]   # run IN the build dir -> play_me.gba
+sudo docker run --rm -v "$PWD":/src -w /src devkitpro/devkitarm make  # devkitARM build -> ./pocketvt.gba
 ```
 Toolchain: gcc-arm-none-eabi, libnewlib-arm-none-eabi, libgba headers
-(devkitPro/libgba). Harnesses use libmgba (`libmgba-dev`).
+(git clone https://github.com/devkitPro/libgba). Harnesses use libmgba (`libmgba-dev`).
+The Docker build uses a different GCC than build_pvt.sh: its core is NOT
+byte-comparable with a build_pvt.sh core. Compare within one path only.
 `EXTRA_CFLAGS` reaches the assembler too (`.s` files use `#if`).
 
 ## THE TRAP THAT HAS BITTEN SIX TIMES
@@ -25,8 +29,10 @@ Toolchain: gcc-arm-none-eabi, libnewlib-arm-none-eabi, libgba headers
 and every harness binary. Afterwards builder.py silently reports
 "Successfully compiled 0 game(s)" and every test runs a bare ~105 KB core --
 which looks exactly like a catastrophic regression. **Run `tools/restage.sh`
-after every build** (edit its paths for your machine), and check that a play ROM
-is larger than the ~107 KB core.
+after every build** (it copies builder.py, testroms/*.nes and every .nes in
+`$PVT_ROMS`; `$PVT_HARNESS` = dir of harness .c files to rebuild), and check that
+a play ROM is larger than the ~107 KB core. builder.py now exits non-zero when
+it injected 0 games.
 
 ## Regression procedure (do this for ANY change)
 Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket.
@@ -83,12 +89,20 @@ See MAINTAINERS_GUIDE.md s.73 for detail.
 4. VT369 platform port (s.47); Table Soccer (mapper 419, reference in
    reference/nrs/mapper419.cpp).
 
-## Reference material in the tree
+## Reference material
+LOCAL ONLY, gitignored, never commit (the user supplies them as test.zip):
 - reference/nrs/: NintendulatorNRS OneBus sources (h_OneBus.cpp, OneBus.cpp,
   mapper256.cpp, ...). The authority on VT behaviour.
+- reference/NESdev_Wiki-*.xml: NESdev wiki exports (VT02+ pages, MMC3).
+- testroms/: Add 'em Up, Push the Ball, Scramble, Table Soccer, Time Pilot.
+  The controls (Star Ally, Lonely Island, LLM, VG Pocket) are NOT in it; ask.
+
+In git:
 - DATASHEET_DIGEST*.md: VT02/VT03 datasheet notes. Bit numbering there is
-  1-INDEXED; the code is 0-indexed.
-- IMPLEMENTATION_NOTES.md, ROADMAP.md, MAINTAINERS_GUIDE.md.
+  1-INDEXED; the code is 0-indexed. DATASHEET_DIGEST.md appendices A/B hold the
+  spec-vs-code verdicts (no VT extra opcodes; NMI polarity; $410F).
+- MAINTAINERS_GUIDE.md (s.74 maps the retired docs and their open items),
+  CHANGELOG.md (0.1-0.5.2 only), README.md.
 - Reference screenshots supplied (NOT in the tree; ask for them):
   gg.png / 1.png (LLM opening), lawn.png (LLM gameplay), vgp.png / vgp2.png
   (VG menus), aero.png, hex.png, add.png, add2.png, bug.png, shot.png.

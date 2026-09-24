@@ -89,7 +89,7 @@ Sound (p.3 feature list):
 - [DIVERGE] The "VT extra opcodes" (TAD/TDA/PHX/PHY/PLX/PLY/ADX/LDAXD/LDAD)
   are not in the VT02/VT03 CPU instruction tables (VT02 p.47-48, VT03
   p.47-48); both chips are stock 6502. These belong to the VT369-era sound
-  coprocessor. Already documented in FINDINGS_vt_opcodes.md.
+  coprocessor. Documented in appendix A below.
 - [GAP] 16-bit video bus mode (`V16BEN`) documented (p.3), not implemented.
 - [?] Opcode encryption (Jungletac/Cube-Tech XOR gate) has NO section in
   the VT03 table of contents -- it is not a documented VT03 feature,
@@ -218,7 +218,7 @@ forces this IOP configuration and disables external SRAM.
 ### $410F R -- I/O port 2,3 input data (p.27): same XRA10/XAD/XRC/XRCB/XVOEB/XVRW layout, read.
 
 *** [DIVERGE] -- ENCRYPTION GATE ADDRESS ***
-PocketVT's README states the VT09/Jungletac opcode-encryption gate is
+PocketVT's old README stated the VT09/Jungletac opcode-encryption gate is
 "toggled by $410F writes." But on documented VT03, $410F is plainly the
 I/O port 2,3 output-data register (GPIO: XRA10/XAD10-12/XRC/XRCB/XVOEB/
 XVRW). There is NO encryption function at $410F in the VT03 datasheet.
@@ -1250,3 +1250,266 @@ VT03-ONLY. VT02 content needs a separate, simpler palette path (64-entry
 6-bit LUM/PHA, single $3F00-$3F1F writes), $2010 treated as BKEXTEN/SPEXTEN
 only, and 4-color 8x8/8x16 sprites. A VT02-vs-VT03 chip-type flag should
 gate the difference. Details in DATASHEET_DIGEST_VT02.md sections 0, 3, 7, 9, 10.
+
+---
+
+## Appendix A. The "VT extra opcodes" are not VT02/VT03 main-CPU instructions
+
+(Formerly FINDINGS_vt_opcodes.md.) Recorded when Lonely Island and Star Ally
+did not yet boot. Both run now; the encryption turned out to be a
+per-submapper opcode bit-permutation (appendix B, finding 4), not an XOR.
+The conclusion about the opcodes still stands.
+
+### What the datasheets actually say
+
+Both datasheets carry a full CPU instruction table. VT02 prints the
+opcode matrix on its page 47; VT03 prints it on page 48 (revision A6,
+dated Oct 13 2008). The two matrices are identical and are the **stock
+NMOS 6502 set**. Every cell that the project treats as a "VT extra"
+opcode is blank in the official table:
+
+    0x3C  (PLX)    -- blank
+    0x34  (PLY)    -- blank
+    0x5A  (TAD)    -- blank
+    0x7A  (TDA)    -- blank
+    0xC2  (PHX)    -- blank
+    0xD2  (PHY)    -- blank
+    0x62  (ADX)    -- blank
+    0xA7  (LDAXD)  -- blank
+    0xBF  (LDAD)   -- blank
+
+There is no PHX/PLX/PHY/PLY/TAD/TDA/ADX/LDAXD/LDAD on the VT02 or VT03
+main CPU. The VT02/VT03 6502 is plain.
+
+### Where the opcodes really come from
+
+Furbtendulator defines all of these only in `OneBus_VT369.cpp`, inside
+the class `CPU_VT369_Sound` -- the **audio coprocessor** 6502 of the
+VT369 / VT32 / VT168 generation, not the main CPU and not VT03. They
+are dispatched only when `reg4100[0x62] == 0x0D`, i.e. when that second
+CPU core is the one fetching.
+
+`LDAXD` (0xA7) and `LDAD` (0xBF) both do the same thing on that core:
+
+    A = PRGROMData[((dataBank << 16 | calc_addr) + vt369relative)
+                   & (PRGROMSize - 1)];
+    set N, Z from A
+
+That is a far-PRG streaming read: a 24-bit address built from a data
+bank register (set via TAD) plus a fixed relative base, masked to the
+PRG image size. Its purpose on real hardware is to pull sample data out
+of PRG ROM to feed the ADPCM sound channels.
+
+### Why this matters for PocketVT specifically
+
+1. **VT03 is the named target of this emulator, and VT03 has none of
+   these opcodes.** Patching them into the main dispatch table in
+   `vt_patch_optable` models instructions the target chip does not have.
+
+2. **PocketVT does not emulate the VT369 sound coprocessor**, and on the
+   GBA it does not need to: the sample streaming that `LDAXD`/`LDAD`
+   perform on hardware is handled here by the ADPCM mixer
+   (`vt_adpcm_mix_gba`) reading PRG directly. There is no second CPU in
+   this port for these instructions to belong to.
+
+3. **The two test ROMs are not blocked on these opcodes.**
+   `Lonely Island.nes` and `Star Ally (VT03).nes` are both
+   mapper 256 / submapper 15 (Jungletac). Their reset code decodes to
+   garbage even after a flat XOR-0xA1 over fetched bytes, which means
+   the real opcode-encryption gate is a bit-permutation-plus-XOR, not
+   the flat XOR-0xA1 the README describes. The blocker is the encryption
+   model (and, for any genuinely sound-CPU code, the absence of that
+   second core) -- not a missing main-CPU `0xA7`/`0xBF` handler.
+
+### Consequence / recommendation
+
+- Do **not** wire `LDAXD`/`LDAD` into the main 6502. The stub lines in
+  `vt_patch_optable` stay commented out. (If a main-CPU stream ever did
+  reach `0xA7`/`0xBF`, the only defensible stock-6502 behaviour is
+  `LAX` -- load A and X from the addressed byte -- but the datasheet
+  says VT02/VT03 never emit those bytes in the first place.)
+
+- The already-implemented TAD/TDA/PHX/PHY/ADX handlers are, by the same
+  evidence, not VT02/VT03 instructions either. They are harmless on
+  carts that never execute those bytes, but the project's framing of
+  them as "VT03/VT09 extra opcodes" is incorrect; they are VT369-era
+  sound-CPU opcodes. Leaving the handlers in place is fine for now, but
+  the documentation should stop attributing them to VT03.
+
+- To actually boot the sub-15 test ROMs, the real work is the
+  Jungletac/Cube-Tech opcode-encryption permutation, not opcodes.
+
+---
+
+## Appendix B. Register spec-vs-code verdicts
+
+(Formerly the tail of CODE_AUDIT.md, which checked this digest's flagged
+discrepancies against the source. The rest of that file was the session 3-5
+"garbled from boot" hunt, since superseded by the 4bpp path; see
+MAINTAINERS_GUIDE.md sections 15 and 74.) Line numbers below are from that
+era and have since moved; grep for the function names.
+
+### Finding 1 -- $2000 D7 NMI polarity  => SPEC-VS-CODE (do not change yet)
+
+Digest claim (DATASHEET_DIGEST.md S3, DATASHEET_DIGEST_VT02.md S3):
+  VT02 p.28 and VT03 p.29 both literally state $2000 D7 (NMI EN) is
+  0 = ENABLE NMI, 1 = DISABLE -- inverted vs NES (where bit7=1 enables).
+
+What the code does (ppu.s):
+  - A VT cart's $2000 write routes through vt_ppu_w_check_extended
+    (ppu.s ~3899): offsets 0-7 go straight to the stock PocketNES
+    PPU_W_dispatch -> ctrl0_W. Only $2008+ goes to vt_ppu_reg_write.
+  - ctrl0_W (ppu.s ~3938) interprets D7 with NES polarity:
+        tst r2,#0x80     @ NMI-enable bit changed?
+        tstne r0,#0x80    @ ...and the NEW value's bit7 is SET?
+        -> if so, and vblank flag on, trigger NMI (ctrl0_trigger_nmi).
+    So PocketVT treats bit7=1 as "enable NMI" = NES semantics, the OPPOSITE
+    of the literal VT datasheet.
+
+Verdict: SPEC-VS-CODE. The datasheet wording is clear and appears on BOTH
+chips independently, so it is not a scan artifact. BUT:
+  - PocketVT runs real VT ROMs today and NMI-driven games are not visibly
+    broken, which is strong evidence that real VT silicon/games use NES
+    polarity in practice.
+  - VT chips are deliberately NES-compatible (they run ported NES code);
+    a truly inverted NMI bit would break every ported NES game's vblank
+    handler, which would have been caught long ago.
+  - Most likely the datasheet's "0=enable" is an erratum, OR the bit is
+    described from the chip's internal active-low signal while the
+    programmer-visible behaviour is NES-standard.
+DO NOT flip the polarity based on the datasheet alone. Changing ctrl0_W
+(or adding a VT-specific inversion) would risk breaking every currently-
+working VT game. This needs a real test: a VT ROM whose NMI behaviour is
+known, run both ways, to see which polarity actually renders correctly.
+If anything, the lesson is the datasheet bit description is unreliable
+here -- trust the working NES-compat path.
+
+ACTION: none (leave code as-is). Reclassify the digest's [DIVERGE] note to
+"documented-but-NES-compat-in-practice" so nobody else tries to "fix" it.
+
+---
+
+### Finding 2 -- $4100 nibble usage (PRG D7-D4 vs CHR D3-D0)   => OK
+
+Digest claim: PRG banking must use $4100 D7-D4 (PA24-21); CHR uses
+$4100 D3-D0 (VA24-21). Easy to get backwards.
+
+What the code does (vt_regs.c):
+  - PRG side, vt_get_phys_bank() ln 209-217, matches VT03 p.16/17 exactly:
+        ps     = $410B & 0x07                    (PS[2:0])
+        prgAND = (ps==7)?0xFF:(0x3F>>ps)          (BANK mask per PS case:
+                 PS0->0x3F, PS1->0x1F ... PS7->0xFF -- matches the formula table)
+        pa21   = ($4100 >> 4) & 0x0F              (HIGH nibble = PA24-21  CORRECT)
+        prgOR  = (pq3 | (pa21<<8)) & ~prgAND      ($410A + PA21 extension)
+  - PQ2EN ($410B b6) and COMR6 ($4105 b6) handled in vt_recompute_prg_banks
+    (ln 228-245), including the slot $8<->$C swap on COMR6 -- matches the
+    digest's CPU-map + exchange rule.
+  - CHR side (ln 505): vt_chr_outer_4100 = val & 0x0F (LOW nibble = VA24-21
+    CORRECT).
+  - Code cites h_OneBus.cpp::syncPRG as its reference -> ported from a
+    known-good OneBus impl, not guessed.
+
+Verdict: OK. Both nibbles used correctly; PRG=high, CHR=low, exactly as the
+datasheet specifies. No action.
+
+### Finding 3 -- VT02 vs VT03 palette path   => OK (no stall) + caveat [OPEN]
+
+Digest worry: a VT02 game writes only $3F00-$3F1F (one 6-bit byte, LUM[1:0]
++PHA[3:0], no $3F80 saturation bank). I feared PocketVT's two-byte VT03
+assembler might stall waiting for a $3F80 half that never comes, or
+mis-decode.
+
+What the code does (ppu_vt.c, ppu.s):
+  - Routing (ppu.s 4845-4901): $3F00-$3F1F -> vt_palette_write_lo;
+    $3F80-$3F9F -> vt_palette_write_hi. Independent; lo does NOT wait for hi.
+  - Compositor vt03_composite_to_gba() (ppu_vt.c 222):
+        COLCOMP=1: idx = (hi<<6)|lo, full 12-bit LUT lookup   (VT03 path, OK)
+        COLCOMP=0: return vt03_palette_lut[lo & 0x3F]          (fallback)
+  - A VT02 game never writes hi, never sets COLCOMP, so it always takes the
+    COLCOMP=0 path: lo & 0x3F indexed into the LUT.
+
+Does the fallback render VT02 colour correctly?
+  - LUT is indexed [SAT:4][LUM:4][HUE:4] (12 bits). lo & 0x3F = the low 6
+    bits = entries 0-63 = the SAT=0, LUM=0..3, HUE=0..15 corner of the cube.
+  - VT02's 6-bit colour = LUM[1:0] (bits 5:4) + PHA[3:0] (bits 3:0). That
+    maps lo[5:4]->LUT LUM field, lo[3:0]->LUT HUE field, SAT=0.
+  - So STRUCTURALLY the mapping is plausible: VT02 hue lands in HUE, VT02
+    2-bit luminance lands in the low 4 LUM rows at zero saturation.
+
+Verdict: OK that it does not stall or wait for a hi byte (my digest worry
+was unfounded -- good). CAVEAT/[OPEN]: VT02's 2-bit luminance maps only to
+the LUT's LOWEST 4 luminance rows (LUM 0-3 of 16) at SAT=0, so VT02 games
+may render darker / lower-contrast than intended IF VT02's 2-bit luminance
+is meant to span the full brightness range rather than the bottom quarter.
+Only a real VT02 ROM can confirm whether the corner-of-cube mapping looks
+right or needs a VT02-specific 64-entry LUM/PHA table that spreads the 4
+luminance levels across the full range.
+
+ACTION: none required for correctness-of-mechanism (it works, won't crash).
+If a VT02 game looks too dark, add a dedicated 64-entry VT02 palette table
+(LUM[1:0] spread across full brightness, PHA[3:0] as hue, SAT=0) and select
+it when the cart is VT02 / COLCOMP never set. Low priority until a VT02 ROM
+is on hand. PocketVT's primary target is VT03 anyway.
+
+### Finding 4 -- $410F encryption-gate association   => OK (VT09 overload, resolved)
+
+Digest flag: README says the encryption gate is "toggled by $410F writes,"
+but VT02/VT03 datasheets define $410F as I/O port 2,3 output data (GPIO).
+Suspected the encryption-at-$410F association was wrong.
+
+What the code does (vt_regs.c):
+  - $410F (VT_REG_SECURITY) write -> vt09_set_encryption(val == 0x00)
+    (ln 569-572), gated behind #if VT09_ENCRYPTION. vt.reg[0x0F] resets to
+    0xFF ("Security register reset value", ln 160).
+  - Encryption itself is NOT a flat XOR-0xA1 (as the README loosely said).
+    It is a per-submapper BIT-PERMUTATION in vt09_decode_opcode() (ln 356):
+        mode 12: swap bits 6<->7 and 1<->2 (mask 0xC6)
+        mode 13: swap bits 1<->4
+        mode 14: swap bits 6<->7
+    Only the opcode byte is permuted; operands are not. Committed on JMP.
+    References Furbtendulator CPU_OneBus::Unscramble / CPU_VT32::GetOpcode.
+  - encryption_active is set from the submapper (>=12), NOT from $410F;
+    $410F only schedules enable/disable transitions for carts that use it.
+
+Resolution: The digest's hypothesis was right -- $410F is GPIO on VT02/VT03,
+and the encryption use is a LATER VT09-class OVERLOAD of the same address.
+The code handles this correctly: it is VT09-specific (#if VT09_ENCRYPTION,
+submapper>=12 gate), so VT02/VT03 carts that never enable encryption just
+shadow the $410F write harmlessly. This also CORRECTS my earlier flat-XOR
+disassembly attempts -- the real scheme is a bit-permutation, which is why
+XOR-0xA1 produced garbage. The code already implements the right algorithm.
+
+Minor caveat (not a bug): if a real VT02/VT03 game used $410F as actual
+GPIO output, the code would read a $410F=$00 write as "disable encryption"
+(harmless when encryption inactive) and would not drive the physical pins
+(GBA has no equivalent anyway). No practical issue.
+
+ACTION: none. Update the README's loose "XOR-0xA1 toggled by $410F"
+wording to "per-submapper bit-permutation; $410F is the VT09 security-
+register overload of the VT02/VT03 GPIO address" so the description matches
+the (correct) code.
+
+---
+
+### Summary
+
+| # | Finding | Verdict |
+|---|---------|---------|
+| 1 | $2000 D7 NMI polarity | SPEC-VS-CODE -- code uses NES polarity, datasheet says inverted; code is probably right, DO NOT change without a test ROM |
+| 2 | $4100 nibble (PRG hi / CHR lo) | OK -- both nibbles correct, ported from h_OneBus |
+| 3 | VT02 vs VT03 palette path | OK mechanism (no stall); caveat: VT02 maps to LUT's low-luminance corner, may render dark -- needs VT02 ROM to confirm |
+| 4 | $410F encryption association | OK -- correct VT09 overload + bit-permutation (not flat XOR); README wording should be updated |
+
+Big picture: the VT register/bank/encryption code is in noticeably good
+shape -- it cross-references both the datasheets AND Furbtendulator, and the
+two genuinely-suspicious findings (1 and 3) turned out to be "code is right,
+datasheet/worry was the problem" rather than real bugs. The audit-first
+approach was the correct call: NONE of the four flagged discrepancies is a
+confirmed bug requiring a code change. The only doc fixes are cosmetic
+(README NMI note, README encryption wording).
+
+This also informs the VT02-vs-VT03 question: VT02 needs NO new core work to
+NOT-crash (palette doesn't stall, banks are correct, opcodes are plain
+6502). The only VT02-specific polish is an optional 64-entry palette table
+if VT02 games render too dark -- and that's low priority since the project
+targets VT03 and there's no VT02 test ROM on hand.

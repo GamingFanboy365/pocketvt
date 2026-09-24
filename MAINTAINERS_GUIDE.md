@@ -28,6 +28,14 @@ in progress; "Lucky Lawn Mower" (VT09) -- future work, untouched.
 
 ## 2. Environment: exact recipe
 
+In a git checkout (Claude Code) the short path is: `LIBGBA=<libgba clone>
+bash build_pvt.sh`, then `tools/restage.sh` (copies builder.py, testroms/ and
+anything in $PVT_ROMS into the build dir). The devkitARM Makefile also builds
+unmodified: `sudo docker run --rm -v "$PWD":/src -w /src devkitpro/devkitarm
+make` -> ./pocketvt.gba (a different GCC, so NOT byte-comparable with a
+build_pvt.sh core -- compare like with like). testroms/ and reference/ are
+local-only and gitignored. The recipe below is the original sandbox one.
+
 The sandbox resets between sessions. Rebuild it with:
 
     apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi \
@@ -133,6 +141,16 @@ Call-chain forensics: dump the user stack (0x03007B00-0x03007F00 by r/4)
 and symbolize every word that looks like a code address against `nm -n`.
 The region 0x03007700-0x03007B40 is DATA (the timeout.s event-handler
 table), not stack. __sp_usr = 0x03007D60, __sp_irq = 0x03007E00.
+
+The Python mini-reference, tools/vtref.py (from the retired ROADMAP.md): a
+py65 CPU + descrambling fetch + PRG banking + timer IRQ + NMI + controllers +
+$6000 WRAM, no video. It runs Lonely Island's logic at full fidelity, supports
+per-address read/write tracing by monkeypatching Mem, and answers "what does
+the game want" questions in seconds -- it found the P2-input and WRAM
+discoveries. It reads the LI PRG from $VTREF_PRG (default ./li_prg.bin, i.e.
+the .nes minus its 16-byte header). tools/vtview.py adds a PPU write model and
+a 16-colour COLCOMP=0 BG renderer on top; it also needs the session scratch
+files vtchart.py / vtcompat.py (dir in $VTVIEW_AUX), which are not in the tree.
 
 ## 4. Architecture map: who does what
 
@@ -435,38 +453,6 @@ Fixed by repairing the layout drift (timeout.s + equates.h). Verified: both
 multicart pairs launch and stay launched, and Time Pilot -- which restarted
 eight times in 400 frames even as a SOLO build -- now boots once and runs.
 
-## 13b. VT timer: $4101 counts AD12 transitions, not scanlines
-
-$4101 bit 7 (TSYNEN) picks the count source: 1 = HSYNC transitions, 0 = AD12
-high/low transitions.  AD12 only toggles while the PPU is fetching, so with
-bit 7 clear the counter STALLS through vblank.  Scheduling expiries as
-period * 341 dots of free-running timestamp counts vblank too and lands every
-expiry ~22 lines early; in Star Ally that put the raster split above the HUD
-text and painted the HUD page across the bottom of the screen (the "orange
-band along the bottom").  sound.s now pushes any expiry that lands after
-render_end_time on by one vblank, derived at runtime so it holds for PAL.
-If a game ever sets bit 7, the plain scanline schedule is the correct one --
-honour the bit rather than reverting this.
-
-## 14. The globals block: storage and offsets must stay in lockstep
-
-The IWRAM globals live twice: as labelled storage in the ordered `.data.NNN`
-sections (`_dontstop: .byte 0`), and as offsets in equates.h's `_m_` list
-that the `str_`/`ldr_` macros index off `globalptr`. Nothing enforces
-agreement. Add a variable to one list only and everything after it shifts:
-code using the macro and code using the label then touch DIFFERENT words, and
-the next variable someone appends can land on top of a live one. Two such
-defects were live simultaneously until session 21b4 (a VT timer triple with
-no storage; sh_encrypted with no offset entry), and their combination caused
-the multicart hang.
-
-Rules: (1) every `_m_ name,size` gets matching storage `_name:` in the same
-relative position, and vice versa; (2) run `check_globals.py <elf>` after
-every link -- it compares each global's label address against
-GLOBAL_PTR_BASE + offset and fails on any nonzero delta; (3) never reference
-one of these variables by BOTH forms in different files without checking the
-delta is zero first.
-
 ## 10. Reference: Lonely Island internals (for regression work)
 
 Pad bits as the game sees them: A=$80 B=$40 Sel=$20 St=$10 U=$08 D=$04
@@ -477,6 +463,19 @@ loop C5 26 A5 26 F0 FC sits at guest $E094 (VRAM 0x0600E094) and is
 speedhacked. LI's iNES header lives at offset 0x184B0 inside any single-LI
 .gba. Autoplay route frames: {400,0x10},{620,0},{630,0x80},{690,0},
 {700,0x10},{760,0} -- starting before ~frame 400 is too early.
+
+More LI structure (from the retired ROADMAP.md, session 10): the island map
+is a node graph in famiclone WRAM at $6500+, indexed by position packed as YX
+nibbles (current $06F4, target $06F7/$0602): type $01 = path, $0A-$0F = the
+six house/level nodes (Y2XD=$0F, Y3X9=$0A, Y4X3=$0B, Y7X8=$0C, Y9XD=$0D,
+YBX6=$0E). The direction handler ($CE15, fixed $C000 bank) validates and
+queues; the walk executor ($B824, bank $0B at $A000) animates and commits; its
+single caller $D073 also queues footstep sound $12 to the mailbox $05CD.
+Walking INTO a house node enters its scene (position resets to 0, banks flip
+to [7,6]); Select opens a level menu that scans all six special nodes. The NMI
+uploads nametable data with a stack-blast ($E221: SP -> $01FF, then PLA/STA
+$2007 pairs; the producer fills $0100 and raises $87 bit 4). $2010 stays $0E
+on the map and in the first house scene.
 
 ## 11. Session 19 addendum: two s18 regressions fixed
 
@@ -504,7 +503,7 @@ crashes; Lonely Island walk test and 60fps unchanged.  If a wild-PC crash
 ever returns, bisect by disabling the vt_bk_scrub body first, and check
 realtime for grey/white canary flashing.
 
-## §12 — Session 20: the Lonely Island "dashes" and the unaligned-buffer class
+## 12. Session 20: the Lonely Island "dashes" and the unaligned-buffer class
 
 Sessions 18 and 19 both misdiagnosed this bug (stale scanline buffers, then
 BG2 glyphs). Session 20's investigation went through three further wrong
@@ -582,7 +581,7 @@ keeps animating. LI regression check on the same core: 0.10% vs s15.
 gameplay will be missing/garbling sprites until then — then speed, then a
 long-run crash soak.**
 
-## §13 — ARM/Thumb interworking rule for asm-called C functions (session 20)
+## 13. ARM/Thumb interworking rule for asm-called C functions (session 20)
 Any C function called from assembly via `bl_long`/`b_long` (`mov lr,pc;
 ldr pc,=sym`) MUST be compiled ARM: mark it
 `__attribute__((target("arm")))`. On ARM7TDMI, loading PC does NOT switch
@@ -599,6 +598,38 @@ Audit command (run after adding any new asm->C call):
     done
 Related: the linker only inserts interworking veneers for BL relocations,
 never for literal-pool `ldr pc` data references.
+
+## 13b. VT timer: $4101 counts AD12 transitions, not scanlines
+
+$4101 bit 7 (TSYNEN) picks the count source: 1 = HSYNC transitions, 0 = AD12
+high/low transitions.  AD12 only toggles while the PPU is fetching, so with
+bit 7 clear the counter STALLS through vblank.  Scheduling expiries as
+period * 341 dots of free-running timestamp counts vblank too and lands every
+expiry ~22 lines early; in Star Ally that put the raster split above the HUD
+text and painted the HUD page across the bottom of the screen (the "orange
+band along the bottom").  sound.s now pushes any expiry that lands after
+render_end_time on by one vblank, derived at runtime so it holds for PAL.
+If a game ever sets bit 7, the plain scanline schedule is the correct one --
+honour the bit rather than reverting this.
+
+## 14. The globals block: storage and offsets must stay in lockstep
+
+The IWRAM globals live twice: as labelled storage in the ordered `.data.NNN`
+sections (`_dontstop: .byte 0`), and as offsets in equates.h's `_m_` list
+that the `str_`/`ldr_` macros index off `globalptr`. Nothing enforces
+agreement. Add a variable to one list only and everything after it shifts:
+code using the macro and code using the label then touch DIFFERENT words, and
+the next variable someone appends can land on top of a live one. Two such
+defects were live simultaneously until session 21b4 (a VT timer triple with
+no storage; sh_encrypted with no offset entry), and their combination caused
+the multicart hang.
+
+Rules: (1) every `_m_ name,size` gets matching storage `_name:` in the same
+relative position, and vice versa; (2) run `check_globals.py <elf>` after
+every link -- it compares each global's label address against
+GLOBAL_PTR_BASE + offset and fails on any nonzero delta; (3) never reference
+one of these variables by BOTH forms in different files without checking the
+delta is zero first.
 
 ## 15. Session history in one page (the status files were deleted; this replaces them)
 
@@ -626,6 +657,44 @@ CHR bank register, not a relocated controller port (that came from a
 disassembler that descrambled operand bytes as well as opcodes); and the
 strip along the bottom of Star Ally's screen was never "the HUD rendering
 correctly".
+
+## 15b. The sprite path is NOT the Scramble bug -- the horizontal crop is (s21b40)
+
+Open item 4 said "Scramble's BG pipeline is verified complete, so look at the
+SPRITE path". The sprite path checks out. Two things that LOOK wrong and are
+not, so nobody re-opens them:
+
+**Sprite X is `nes_x - 12`, the BG is `nes_x - 8`, and that is correct.**
+In SCALED_SPRITES mode `update_sprites` emits DOUBLE-SIZE affine OBJs
+(attr0 rot/scale=1 + double=1; matrix 0 is PA=0x0100, PB=PC=0, PD=0x0150).
+A double-size OBJ's content sits 4 px inside its 2x box, which is exactly what
+the `ands r1,r6,#0x100 / add r1,r1,#SCREEN_LEFT<<6` pair compensates for --
+r1 becomes 0x300, and `subs r1,r3,r1,lsl#18` subtracts 12 from the X byte.
+Net visible left edge = nes_x - 8, same as the BG. SCREEN_LEFT is 8 for both.
+
+**The `@FIXME` on `windowtop` in update_sprites is benign in SCALED mode.**
+Sprites index YSCALE_LOOKUP with `windowtop` (measured 0) while scale75 uses
+`windowtop_scaled6_8` (measured 16). The two disagree, but the lookup table
+already bakes the offset in -- measured `yscale[y] = 0.75*y - 17`. Verified
+empirically instead of by arithmetic: the 8x16 sprite at NES y=56 gets an OBJ
+box covering GBA lines 31..43, and the BG puts NES rows 57..72 at GBA lines
+31..42. Aligned to within PD rounding. (Do NOT measure this by comparing the
+sprite's LIT ROWS to the box -- the glyph does not fill its 8x16 slot, and
+that mismatch reads as a 3-line offset that is not there.)
+
+**What is actually wrong: 16 NES columns are deleted unconditionally.**
+12 of Scramble's 18 on-screen sprites are one object -- tile $83 at NES x=248,
+at y = 15, 31, 47 ... 191, i.e. a continuous 8 px wide strip down NES rows
+16..207. It is a right-edge border. We never draw it: the horizontal window is
+hard-wired to NES columns 8..247 (SCREEN_LEFT is a compile-time 8 and BG0HOFS
+reads back a constant 8 on every line), so those OBJs land at GBA x=240..247,
+one pixel past the screen. There is NO horizontal pan -- the L/R handling in
+update_sprites moves `windowtop`, which is VERTICAL.
+
+So section 16's horizontal note is understated. It is not "16 columns happen to
+be off-screen at whatever scroll the game set"; it is a fixed 8-left/8-right
+crop, and on Scramble it removes a real game element rather than overscan.
+Item 4 and the horizontal half of item 1 are the same bug.
 
 ## 16. Display mapping: 256x240 -> 240x160 (measured, s21b7; CORRECTED s21b40)
 
@@ -707,6 +776,1029 @@ while the BG cache addresses 512+ tiles (slots at 0, 64, ... 960). Any affine
 plan has to solve that first -- e.g. a smaller per-frame working set, or
 splitting the screen across two affine layers. The stock unscaled/pannable
 mode (L/R plus Up/Down) is the other lever and costs nothing.
+
+## 16b. WHAT THE SHIPPED TARBALL DOES *NOT* CONTAIN (s21b40)
+
+The session tarball carries src/, tools/, reference/*.xml, the DATASHEET
+digests, the docs and testroms/ (Add 'em Up, Push the Ball, Scramble, Table
+Soccer, Time Pilot). It does NOT carry, and cannot carry:
+
+* the VG Pocket 50-in-1 4 MB image
+* Star Ally and Lonely Island (the two regression CONTROLS)
+* every reference capture -- vg.png, 1.png, 2.png, 3.png, 11.png
+
+Without those, none of the VG scoring in sections 36-45 can be reproduced and
+neither control can be checked for byte-identity. A session that only extracts
+the tarball can build, link, run check_globals and exercise the five testroms,
+and nothing more. Ask for the images up front rather than discovering this
+after the toolchain is up.
+
+## 17. VT timer: vblank must be SKIPPED, not compensated (fixed s21b9)
+
+$4101 D7 (TSYNEN) = 0 selects AD12-transition counting. AD12 only toggles
+while the PPU is fetching, so the hardware counter STALLS through vblank.
+Scheduling plain 341-dot scanlines fires every expiry ~22 lines early; in Star
+Ally that put the raster split above its HUD text and painted the HUD page
+across the bottom of the screen -- the orange/yellow band.
+
+The working implementation (sound.s, both scheduling sites -- install_now and
+the handler), with r1 = base timestamp and r2 = period * 341:
+
+    ldr_ r0,frame_timestamp
+    ldr_ r12,render_end_time
+    add  r0,r0,r12          @ absolute end of rendering, this frame
+    cmp  r1,r0
+    bhs  1f                 @ already in vblank -> resume at next line 0
+    add  r1,r1,r2
+    cmp  r1,r0
+    bls  2f                 @ lands inside the rendered area -> done
+    sub  r2,r1,r0           @ carry ONLY the leftover count
+1:  ldr_ r0,frame_timestamp
+    ldr_ r12,cyclesperframe
+    add  r0,r0,r12
+    ldr_ r12,line_zero_start_time
+    add  r0,r0,r12          @ line 0 of the NEXT frame, absolute
+    add  r1,r0,r2
+2:
+
+Three traps, each of which cost a build:
+
+1. render_end_time (82181 NTSC) and line_zero_start_time (292) are OFFSETS
+   WITHIN A FRAME, not absolute timestamps. The absolute base is
+   frame_timestamp -- that is how timeout.s itself uses them
+   (`ldr_ r0,frame_timestamp / ldr_ r2,render_end_time / add r1,r0,r2`).
+   Comparing a live timestamp against the raw offsets schedules the expiry
+   into the past or the far future and the game hangs with $2010 = 00.
+2. The two cases must be EXCLUSIVE. Moving the base into the next frame AND
+   then wrapping the overshoot pushes the expiry a whole extra frame out --
+   same hang.
+3. ldr_/str_ have no conditional forms; write `ldrhs r1,[globalptr,#label]`.
+
+An earlier version (s21b6) added a FIXED vblank whenever the target passed
+render end. That got the position right but wrecked the phase, because the
+guest re-arms from inside its NMI handler -- i.e. from inside vblank -- where
+the correction should be the distance actually spent in vblank. It shook
+visibly and was reverted before this version replaced it.
+
+VERIFY BOTH PROPERTIES, always: a raster change is only good if the split is
+in the right PLACE and STABLE. Run ~400 gameplay frames, record the line where
+the per-line VOFS jumps, and histogram it. Reference numbers for Star Ally:
+s21b6 = lines 138-145 with 116 changes (broken); revert = line 122 with 15
+changes (stable but wrong place, band present); s21b9 = line 138 on all 401
+frames with 0 changes, band gone, and NES line ~207 matches where 2.png puts
+the score.
+
+## 18. Real hardware vs emulators (GBARunner2 on DS does not boot)
+
+Reported: PocketVT runs under mGBA on 3DS but will not boot under GBARunner2
+on DS. Not reproducible in this sandbox -- mGBA is not GBARunner2 -- but the
+build uses two techniques GBARunner2 is known to struggle with, and they are
+the first things to test:
+
+1. CODE EXECUTING FROM VRAM. The .vram1 section (4KB at 0x06003000, copied
+   from LMA at startup by main()) holds the speedhack helpers. GBARunner2 maps
+   GBA VRAM onto DS VRAM banks; instruction fetch from there is the single
+   most likely blocker. Test by relinking .vram1 into EWRAM (it is not on the
+   hottest path) and seeing whether the DS boots.
+2. HBLANK DMA. ppu.s programs DMA0 from dma0buff into REG_BG0HOFS every
+   scanline for the per-line scroll. HDMA timing is a known weak spot there.
+3. Startup register pokes: REG_WAITCNT (0x4000204) and the EWRAM wait-state
+   register REG_WRWAITCTL (0x4000800). The latter is GBA-specific; on DS it is
+   not the same register, and writing it early can be fatal.
+
+Change ONE of these at a time and note which one moves the needle -- and keep
+the change behind a build flag so GBA-native performance is not paid for a DS
+workaround.
+
+## 19. COLCOMP=1 with 16 colours, and the palette hi-byte width (fixed s21b10)
+
+Two separate defects kept the new colour mapping from working with 16-colour
+planes. Add 'em Up runs $2010 = $86 -- COLCOMP=1, BK16EN=1, SP16EN=1 -- and hit
+both.
+
+**Defect 1: the 16-colour builder refused to run.** vt_build_16color_palette
+bailed on COLCOMP=1 with the comment "handled elsewhere".
+vt_palette_rebuild_gba does handle COLCOMP=1, but only in the 2bpp layout --
+entries 0..3 of each GBA bank. A 4bpp game needs all 16, so pixel values 4..15
+indexed slots nothing ever wrote and rendered black. Measured before the fix:
+BG bank 0 held 0000 7ee7 75c0 0539 followed by twelve zeros.
+
+The scatter index is the same in both colour modes; only the lookup differs, so
+the builder now calls vt_pal_entry_colour(idx), which branches on COLCOMP:
+
+* COLCOMP=0 -> nes_index_to_bgr555(lo). Do NOT route this through
+  vt03_palette_lut: its first 64 entries are all 0x0000 (the SAT=0/LUM=0 row),
+  which is precisely the 0.4 "every game boots black" bug.
+* COLCOMP=1 -> vt03_palette_lut[(hi << 6) | lo], hi taken from idx | 0x80.
+
+**Defect 2: the hi byte was masked to five bits.** A colour is the pair
+($3F00+k lo, $3F80+k hi) for k = 0..$7F. The lo path in ppu.s deliberately
+stores the full 7-bit offset ("games upload the whole 128-byte palette before
+enabling BK16EN"), but the hi path did `and r0,addy,#0x1f` and
+vt_palette_write_hi re-masked with `(offset & 0x1F) | 0x80`. Every hi byte for
+entries $20-$7F was therefore discarded AND aliased onto entries 0-$1F -- and
+those upper entries are exactly where the scattered 16-colour indices live.
+Both sides now keep 7 bits, and the backdrop mirroring in the hi bank is
+confined to its low 32 entries, matching the lo half.
+
+Result: all 16 entries per bank carry real colour and Add 'em Up went from
+~3.2K lit pixels to ~18K.
+
+Verification notes worth repeating: Lonely Island stayed bit-identical and the
+Star Ally split histogram stayed at line 138 x 401 with zero changes. Star
+Ally's TITLE does differ frame-for-frame, but that screen fades in and the two
+builds are a few frames apart in the fade (b9 settles at ~11951 lit pixels by
+f79; b10 climbs 9289 -> 11975 by f90). The settled menu differs by 138 bytes of
+153600 and scores marginally closer to the 11.png reference than before. Judge
+animated screens by a settled frame or a sweep, never by one frame.
+
+## 20. CHR ROM vs CHR-in-PRG: which image VT tile fetches address (fixed s21b11)
+
+Every VT CHR fetch in ppu_vt.c read from `rombase` -- the PRG image. That is
+right for a OneBus cart, which keeps character data inside PRG (vrompages == 0,
+so loadcart points vrombase at the 8 KB CHR-RAM in EWRAM): Star Ally, Lonely
+Island, Time Pilot, Scramble, Push the Ball. It is wrong for a dump that has a
+REAL CHR ROM. Add 'em Up is 64 KB PRG + 216 KB CHR, so loadcart sets
+vrombase = rombase + romsize -- a second image in cart space -- and the game's
+bank numbers index that one. Reading it from rombase fetched every tile 64 KB
+too early: "just garbled graphics".
+
+Fix: vt_chr_src_base() / vt_chr_src_mask() pick vrombase+vrommask when
+vrombase points into cart space (>= 0x08000000) and rombase+rommask otherwise,
+and every fetch site uses them (both sync-copy paths and all four assemblers).
+
+Evidence it worked: with rombase the screen was a uniform solid fill and not
+one drawn tile could be found anywhere in the ROM; with the CHR ROM the screen
+is a structured grid (it is a puzzle game) and the drawn tiles match CHR data.
+Lonely Island stayed bit-identical, Star Ally's menu identical and its split
+histogram still line 138 x 401 with zero changes -- as expected, since for
+CHR-in-PRG carts the helper returns exactly what the code used before.
+
+## 21. Scramble: the "empty palette banks" lead was a RED HERRING (s21b26)
+
+The old note here said Scramble's GBA BG palette banks 1-3 were entirely zero
+and hunted for whoever zeroed them. They ARE zero -- and it does not matter:
+ALL 960 of its cells use ATTRIBUTE 0, so banks 1-3 are never selected. Dump the
+attribute table before theorising about attribute handling (the same mistake
+was made on the VG category menu, section 32).
+
+Its palette RAM is coherent, just laid out differently from the VG Pocket's:
+Scramble writes $3F00-03, $3F10-13, $3F20-23, $3F30-33 -- two 32-colour palette
+banks, each with a BG half and a sprite half (bit 4), four colours per group.
+The VG Pocket instead uses $3F00/$3F20/$3F40/$3F60. Both fit our model.
+
+BG pipeline checked end to end on the current core: of the 114 cells with a
+non-zero name, 114 have a non-zero GBA map entry and 114 have real pixel data
+in the tile they point at. There is no missing BG content.
+
+STATUS: Michael reported a glitchy title screen, but that was BEFORE the
+s21b15/b17 bus-layout fixes and the s21b22 geometry correction, and there is no
+capture of Scramble to score against. Ask him to re-check it on a current build,
+and for a native-resolution capture if it is still wrong -- without one this is
+guesswork, exactly as it was for the VG menus.
+
+## 22. VG Pocket 50-in-1, and 4 MB carts (booting since s21b13)
+
+The dump is a 4 MB raw OneBus image: no iNES header, 6502 vectors in the last
+six bytes (NMI $F9E0, RESET $F862, IRQ $FA80), and the reset code reads as
+clean 6502 RAW -- `CLD / SEI / LDX #$FF / TXS / LDA #$00 / STA $2000 ...` -- so
+this cart is NOT opcode-scrambled, unlike Star Ally. Valid vectors also sit at
+the 2 MB, 1 MB and 512 KB boundaries, which is what a 50-in-1 assembled from
+sub-images looks like, each keeping its own fixed bank on top. It is a mixed
+bag of VT03 and possibly other OneBus variants, so expect per-title differences
+in $2010 mode once individual games are launched.
+
+Wrap a raw image like this in a NES 2.0 header -- mapper 256, submapper 0, no
+CHR, PRG = 256 x 16 KB pages (byte 4 = 0x00 LSB, byte 9 low nibble = 1):
+
+    4E 45 53 1A 00 00 00 08 01 01 00 00 00 00 00 00
+
+WHAT HAD TO CHANGE: loadcart.c parsed the NES 2.0 size correctly (256 pages)
+and then capped page counts at 255, because `rompages` was a u8. 255 pages is
+4080 KB -- 16 KB SHORT of a true 4 MB image -- so rommask became 0x3FBFFF and
+the top bank, where the vectors live, was masked off; the CPU never started.
+
+`rompages` is now 16-bit. The extra byte came from the filler that used to sit
+after `fourscreen` in the globals block, so rompages(2) + vrompages(1) +
+fourscreen(1) still totals four bytes and NOTHING after it shifts -- the one
+way to widen a global in that block without a layout migration (section 14).
+No assembly reads rompages; only C does, via asmcalls.h, where both `extern u8
+_rompages` declarations became u16. The PRG cap is now 2048 pages (32 MB, the
+GBA cart ceiling); the CHR page count is still 8-bit, so that cap stays.
+
+Result: the cart boots and draws its menu ($2010 = $5E -- BKEXTEN, SPEXTEN and
+both 16-colour planes). Regression set after the change: Star Ally title, menu
+and Lonely Island f400 all BIT-IDENTICAL, split histogram still line 138 x 401
+with zero changes, Push the Ball and Time Pilot unchanged.
+
+Still unverified: whether the menu is pixel-correct, and whether individual
+titles launch and run. Those need a capture to compare against.
+
+## 23. The COLCOMP=0 compat palette is CALIBRATED, not derived (partly fixed s21b14)
+
+`vt_compat_rgb555[64]` is not from a datasheet -- it was fitted in an early
+session against reference captures, and it is wrong wherever no capture pinned
+it down. Michael's vg.png (VG Pocket menu) exposed that: 16 distinct colours on
+each side and only BLACK in common, while the SHAPES lined up (82% ink recall,
+77% precision), i.e. right pixels, wrong colours.
+
+HOW TO CALIBRATE AGAINST A CAPTURE (this method works, use it again):
+1. Render the same screen headless and transform the capture into our geometry
+   -- crop x+8, and take NES row (y*3)/2 for GBA row y (we drop every third
+   line). Verify the offset by search; for vg.png dy=0 dx=8 is optimal.
+2. Vote OUR colour -> REFERENCE colour, counting only pixels whose 3x3
+   neighbourhood is uniform on BOTH sides. Edge pixels are noise; interiors
+   give 94-100% confidence where the raw vote gives 20-57%.
+3. Map colour->colour, NEVER colour->index: the table contains duplicate
+   values (0x0120, 0x0200, 0x7F1F all appear twice), so inverting a rendered
+   colour back to an index is ambiguous and will mis-attribute.
+4. Discard any pair whose target is BLACK. Those are pixels we draw where the
+   reference has none -- a structural fault, not a palette one. Folding them
+   into the table would blank that colour everywhere it is legitimately used.
+5. SCORE EVERY REFERENCE BEFORE KEEPING: exact-pixel match against vg.png,
+   11.png (SA menu) and 2.png (SA gameplay). Entries are shared between games.
+
+s21b14 applied five pairs -- 35AD->06BE, 1320->53A8, 0200->7CAB, 7C83->53A8,
+00B2->06BE (six table slots, since 0200 is duplicated). Result: VG Pocket menu
+38.8% -> 51.1% exact-pixel match, Star Ally menu 64.9% and gameplay 87.7% both
+UNCHANGED. A second calibration pass then found no further colour mismatches,
+so the palette is converged for this cart.
+
+WHAT REMAINS on that screen is structural, not colour: we draw ~3.6K ink pixels
+the reference lacks (including 312 in rows 0-19 where it is pure black) and
+miss ~3.3K it has. Alignment is already optimal, so it is real extra/missing
+content -- chase that next, not the palette.
+
+## 24. 8-bit vs 16-bit CHR bus: the plane/row layout (fixed s21b15)
+
+The wiki's "VT02+ CHR-ROM Bankswitching" final-address diagrams give TWO 4bpp
+layouts, and we only implemented one:
+
+  8-bit bus : ...TTTTTTPPRRR  row = addr bits 0-2, plane = bits 3-4
+              -> planes at +0, +8, +16, +24 within the 32-byte tile
+  16-bit bus: ...TTTTTTPRRRp  plane D0 = bit 0, row = bits 1-3, plane D1 = bit 4
+              -> row r at +2r, +2r+1, +16+2r, +16+2r+1
+
+Reading a 16-bit-bus cart with the 8-bit layout takes each row's halves from
+different rows, which renders as heavy horizontal STRIPING. Metric that catches
+it (ink recall/precision does NOT -- it barely moved, 82->83%): mean count of
+pixels differing between vertically adjacent rows. VG Pocket menu measured 89.6
+under the 8-bit layout, 33.2 under the 16-bit one, against 31.3 for the
+reference capture itself.
+
+GATING: bus width is a board property with no documented register. The
+empirical gate is $2010 D6 -- listed as UNUSED in the VT03 datasheet, but SET
+on our only 16-bit-bus cart (VG Pocket, $5E) and CLEAR on both 8-bit-bus carts
+(Star Ally $1F, Lonely Island $0E). If a counter-example appears, move this to
+a per-cart flag in builder.py's injected header instead of widening the guess.
+Verified after gating: Star Ally menu and Lonely Island f400 byte-identical,
+Star Ally title byte-identical at f100/f120/f190 (its f80 differs only because
+that screen is mid-fade -- always compare a SETTLED frame).
+
+## 25. The compat palette needs per-INDEX ground truth, not per-colour
+
+Do not repeat the s21b14 mistake. Calibrating our rendered COLOUR -> reference
+colour and patching every table slot holding that value is only valid if the
+image is otherwise correct. It was not: the calibration was run on a STRIPED
+render, and the resulting patch was wrong (e.g. 017C calibrated to BLACK on the
+striped image but to GREY 39CE once unstriped). Applied to the shared table it
+recoloured Lonely Island's foliage green -> blue-violet, which Michael
+confirmed is wrong, and it was reverted.
+
+There is also a genuine conflict the per-colour method cannot resolve: the
+table VALUE 0x0200 must be green for Lonely Island and blue-violet (0x7CAB, at
+100% confidence) for the VG Pocket menu. Since 0x0200 occupies TWO indices
+(0x1A and 0x1B) and duplicates exist elsewhere too (0x0120, 0x7F1F), the real
+hardware almost certainly has DIFFERENT colours at those indices and our table
+has collapsed them.
+
+The way to settle it: build a debug core whose vt_compat_rgb555[i] = a distinct
+sentinel encoding i, render each game, and read the index straight out of the
+framebuffer per pixel. That gives index -> reference-colour pairs with no
+ambiguity, for every game with a capture, and will show whether the two games'
+index sets are disjoint. Only then patch the table, and re-score vg.png,
+11.png and 2.png together.
+
+## 26. Per-console compat palettes, calibrated per INDEX (s21b16)
+
+The COLCOMP=0 compat palette is NOT one table for all VT carts. Proof: index
+$1A must be blue-violet on the VG Pocket and GREEN on Lonely Island's console;
+$12 and $27 conflict too. That is a per-console DAC difference, which is why
+s21b14's attempt to satisfy both by editing one shared table wrecked Lonely
+Island's foliage. There are now two tables, selected by $2010 D6 -- the same
+signal that picks the 16-bit CHR bus (section 24).
+
+HOW TO CALIBRATE A NEW CONSOLE'S TABLE (repeatable, and far better than the
+colour->colour method that preceded it):
+1. Build a SENTINEL core: replace vt_compat_rgb555[i] with a value that encodes
+   i uniquely, e.g. r = i & 31, g = i >> 5, b = 0.
+2. Render the screen headless. Every pixel's colour now decodes straight back
+   to the palette INDEX that produced it -- no ambiguity, unlike inverting a
+   real colour (the real tables contain duplicate values).
+3. Join against the capture, transformed into our geometry (crop x+8, NES row
+   (y*3)/2), voting only where the 3x3 neighbourhood is uniform on BOTH sides.
+4. Print, per index, current vs derived plus which OTHER games use that index.
+   That tells you immediately whether a change is safe or a conflict.
+5. Apply only to the new console's table; re-score every reference.
+
+Result for the VG Pocket title: 8 entries corrected at 87-100% confidence,
+exact-pixel match against vg.png 38.8% -> 65.6%. Star Ally byte-identical.
+Lonely Island's colour SET is unchanged (its 234 differing pixels are object
+motion from a small timing shift, not colour) and it never sets D6 -- verified
+by step-sampling, 0 hits in 300000 samples.
+
+## 27. Outer CHR bank is 3 bits in 4bpp, 4 bits in 2bpp (s21b18)
+
+From the wiki's final-address diagrams: 2bpp puts the outer bank at address
+bits 21-24 ($4100.0-3, four bits), 4bpp at bits 22-24 ($4100.0-2, THREE bits),
+because a 4bpp tile consumes one more low address bit. We masked with 0x0F
+everywhere, so any 4bpp fetch with $4100 bit 3 set aimed eight outer slots too
+high. vt_compute_chr_bank_n(inner, fourbpp) now takes the width, and the 4bpp
+callers (vt_chr4_assemble, the extension-active composer, the pix16 composer)
+pass 1 while the 2bpp sync-copy path passes 0.
+
+Honest note on impact: this changed NOTHING visible on any cart we have. For a
+4 MB image rommask is 0x3FFFFF, and the outer field contributes multiples of
+4 MB, so every value masks to the same offset. Star Ally and Lonely Island
+never set $4100 bit 3 at all. It is a correctness fix that will matter on carts
+larger than 4 MB; it did not fix the VG Pocket game list, and I checked rather
+than assuming it had.
+
+## 28. Comparing our output to a capture: GET THE GEOMETRY FROM THE EMULATOR
+
+This section exists because a wrong geometry assumption invalidated a whole
+session of measurements. Read it before scoring anything against a capture.
+
+Our 240x160 frame is NOT the top-left of the NES 256x240 frame decimated from
+row 0. The per-line scroll table (_dma0buff, one entry per GBA line, VOFS in
+the high half-word) gives the real mapping, and for the VG Pocket it is:
+
+    GBA row 0 -> NES row 16 ... GBA row 159 -> NES row 228
+    advance +1 on 106 lines, +2 on 53 lines;  HOFS -> x + 8
+
+i.e. the first sixteen NES rows are not shown at all. Assuming NES row
+(y*3)/2 from row 0 puts every comparison sixteen rows out, which no small
+dx/dy search will recover. ALWAYS read the mapping:
+
+    nes_row[y] = y + (dma0buff[y] >> 16 as signed)
+
+Measured effect of fixing this on the VG category menu, same build, same
+capture: structural match 63.5% -> 85.8%, exact-pixel 27.7% -> 50.2%. Nothing
+about the emulator changed; only the yardstick.
+
+Two more traps in the same family:
+* The reference screenshots are antialiased window grabs (585x481 for a
+  256x240 screen). De-scale by CENTRE-SAMPLING each destination pixel and then
+  snapping to the top-N colours -- and use N=32, not 16: these menus use four
+  palette banks and genuinely exceed 16 colours. Snapping to 16 destroys the
+  image and produced zero ROM tile matches.
+* Read register shadows by SYMBOL, never by guessing addresses adjacent to a
+  known one. vt_reg_2010 is in one BSS group and vt_chr_reg_2018/201A/4100 in
+  another entirely. Reading the bytes after vt_reg_2010 returned $2018=$19,
+  $201A=$29, $4100=$0B -- all garbage from unrelated variables -- and sent me
+  hunting a bank-composition bug that did not exist. The true values are all
+  $00 on both VG screens.
+
+## 29. Confirming a bank formula against ROM contents (method)
+
+When a screen looks wrong and you suspect banking, do not guess formulas --
+find where the correct tiles actually live:
+
+1. Dump the live nametable and page_bank from the emulator.
+2. Recover the capture at native resolution (section 28).
+3. For each candidate bank B, decode the ROM tiles at B*2048 + (name&63)*32
+   and compare them to the capture's 8x8 blocks using a PALETTE-INDEPENDENT
+   signature -- whether each pixel equals its right and lower neighbour
+   (112 booleans per tile). Sum over ~48 structurally rich cells.
+4. The true bank stands out sharply: for the VG category menu, bank 204 scored
+   84.5% while every other candidate, including our then-current effective
+   bank, sat at the 52-59% noise floor.
+
+Applied here it PROVED the bank composition was already correct (true bank =
+inner bank = page_bank value, with $201A/$2018/$4100 all zero), and it
+independently re-confirmed the 16-bit bus layout: the same search under the
+8-bit layout peaked at only 61-68%.
+
+## 29b. Scoring a screen against a capture (tools/, use these -- do not re-derive)
+
+tools/capture_screen.c + tools/score_vs_reference.py are the corrected-geometry
+harness. Build: gcc -O2 tools/capture_screen.c -o cap -lmgba. Usage:
+`cap <rom> <sa150|sa700|vgtitle|vgcat> <_dma0buff addr> <out-prefix>` writes
+<prefix>_fb.raw and <prefix>_geom.txt, then
+`python3 tools/score_vs_reference.py <fb> <geom> <reference.png> <label>`.
+
+THE GEOMETRY IS NOT (y*3)/2 FROM ROW 0. Our 240x160 frame starts partway down
+the NES field and drops lines unevenly. Read it from the emulator, never assume:
+    nes_row[y] = y + (int16)(dma0buff[y] >> 16)        HOFS -> nes_x = x + 8
+Getting this wrong cost a whole line of investigation -- it made correct screens
+look structurally broken, and NO small dx/dy search recovers it (the offset is
+~16 rows). Fixing only the yardstick moved the VG category menu from 63.5% to
+85.8% structural with zero code change.
+
+De-scaling a window-grab capture: resize to 256x240 nearest, then snap every
+pixel to the top-32 colours. Snapping to 16 destroys these menus -- they use
+four palette banks and legitimately exceed 16 colours on screen.
+
+Baseline scores to regress against (s21b22 core):
+    VG title     exact 90.7%  structural 99.6%
+    VG category  exact 61.9%  structural 86.5%
+    SA menu      exact 68.2%  structural 99.1%
+    SA gameplay  exact 89.8%  structural 90.6%   <- NOISY, see below
+SA gameplay's exact score is not a reliable discriminator: any change in
+per-frame host work shifts SA's RNG and object positions. Judge model changes on
+the three STATIC screens.
+
+## 30. VG Pocket status after s21b22
+
+Title screen: structural 100.0%, exact-pixel 90.7% against vg.png.
+Category menu: structural 85.8%, exact-pixel 63.8%.
+Star Ally and Lonely Island byte-identical throughout.
+
+Remaining on these screens is palette, not structure. The sentinel calibration
+(section 26) now runs against the true geometry, and most indices verify as
+already-correct at 100% confidence.
+
+ONE UNRESOLVED SIGNAL WORTH CHASING: index $08 calibrates to brown (17,11,0)
+on the title screen and to white (31,31,31) on the category menu, each at 100%
+confidence over hundreds of pixels. A fixed DAC cannot produce two colours for
+one index, so our palette-INDEX attribution must be wrong on one of those
+screens -- most likely the scatter that forms the index (plane bits, the
+BKEXTEN-dependent attribute contribution, or the bg/spr bit). That is a real
+emulation bug, not a calibration choice, and it is the highest-value thread
+left on this cart. Index $19 differs only slightly between captures
+((3,18,0) vs (6,18,0)) and is consistent with capture gamma, not a bug.
+
+## 30b. The BG palette index: three models tested, the plane-scatter wins
+
+vt_build_16color_palette maps (attr, 4bpp value) -> a VT palette-RAM address.
+What the hardware does is not obvious and the datasheet text alone is
+misleading, so here is the evidence.
+
+WHAT THE GAMES ACTUALLY WRITE (dump vt_palette_ram; this is the key datum):
+both VG Pocket screens fill the whole 128-byte palette with $0E and then write
+only FOUR entries per 32-colour palette -- at $3F00-03, $3F20-23, $3F40-43,
+$3F60-63. That matches the datasheet's four 32-colour palettes at
+$3F00/$3F20/$3F40/$3F60 (p.22), with four colours used in each.
+
+MODEL A (shipped, plane-scatter):
+    idx = p0 | p1<<1 | (BKEXTEN ? 0 : attr)<<2 | p2<<5 | p3<<6
+With BKEXTEN=1 this reads exactly the 16 written entries -- the upper two plane
+bits select the 32-colour palette. That is why the VG title scores 90.7%.
+
+MODEL B (datasheet p.22 read literally -- "palette selected by BG7-6, colours
+within by SB5 and BG4-1"):  idx = attr<<5 | bgspr<<4 | value.
+    VG title 62.3% (-28.4), VG category 37.2% (-24.7), SA menu 67.7%.
+    REJECTED. SA gameplay rose to 91.9% but that screen's score is noise (above).
+    A sprites-only variant of B left VG untouched and made SA gameplay WORSE
+    (88.1%), proving the SA movement came from the BG term, not the sprite term.
+
+MODEL J (unify: low two planes index within a group, a 2-bit BANK selector picks
+the palette -- attr normally, upper two planes when BKEXTEN steals attr):
+    idx = p0 | p1<<1 | (BKEXTEN ? (p2|p3<<1) : attr)<<5
+    Identical to A when BKEXTEN=1; VG category fell to 35.5%. REJECTED.
+
+So model A stands. The remaining VG category error (61.9% exact / 86.5%
+structural) is NOT explained by any of these, and the two rejected models both
+made it worse -- do not re-try them.
+
+Note on the "$08 conflict": colour number $08 calibrating to brown on the title
+and white on the category menu does NOT by itself prove an index-attribution
+bug. Both screens legitimately contain $08 (title $3F20, category $3F42), and a
+calibration taken from a screen that is only ~62% correct is unreliable. Treat
+it as a symptom of the category error, not as independent evidence.
+
+## 31. The VALUE-sentinel: calibrating the DAC without guessing indices (s21b24)
+
+Section 26's index sentinel answers "which palette-RAM entry did this pixel
+use". The VALUE sentinel answers the more useful question directly: set
+gba_bg[group*16 + v] = v (encode the 4bpp value as the colour), render, and
+every pixel's colour IS its 4bpp value. Join that with the capture and you get
+value -> true colour at ~100% confidence. The game's own palette RAM then gives
+value -> colour index, so you can read off index -> true colour with no
+inversion and no ambiguity, and simultaneously CHECK the index model: if every
+value lands on an entry the game actually wrote, the model is right.
+
+That check is what finally validated model A (section 30b) on the VG category
+screen: values 0,1,4,6,9,10,13 mapped to $3F00,$3F01,$3F20,$3F22,$3F41,$3F42,
+$3F61 -- all written entries, all with sensible colours.
+
+It also killed the last two "conflicts" cheaply:
+* Every visible cell on that screen has ATTRIBUTE 0, so the unwritten $3F04-0B
+  entries our model reaches for attr != 0 are never read. Dump the attribute
+  table before theorising about attribute handling.
+* ci $19 reads (3,18,0) on vg.png and (6,18,0) on the category grab. That is
+  capture gamma, not a hardware conflict: vg.png is a native 256x240 capture,
+  the menu shots are rescaled window grabs.
+
+PREFER THE NATIVE CAPTURE when two disagree. Applying the title-derived values
+($08 -> 0x0171, $19 -> 0x0243) moved the VG title from 90.7% to 97.1% exact.
+The category screen's exact score drops (61.9 -> 45.5) purely because its own
+capture's gamma no longer matches: at +/-4 per-channel tolerance the two builds
+are within 2.4 points on the category (82.9 vs 80.5) while the title is 98.8 vs
+94.5, and the category's STRUCTURAL score is unchanged at 86.5% -- nothing
+renders differently. A native-resolution capture of the category menu would
+settle the remaining few counts.
+
+## 32. The blank VG Pocket games: vt_prg_banks was 8 bits wide (FIXED s21b26)
+
+Both games that booted to a black screen were crashes, and both had ONE cause:
+the PRG bank number is `inner | middle | (outer << 8)`, so any cart using a
+non-zero OUTER bank produces a bank >= 256 -- and `vt_prg_banks[4]` was a **u8
+array**, written through explicit `(u8)` casts and read back with `ldrb` in
+vt_apply_prg_banks. The outer bank was silently discarded: entry 0's bank 0x11C
+became 0x1C, mapping the game to the wrong 2 MB half of the image, and the CPU
+ran off into fill bytes.
+
+The two failures looked different only because the two wrong regions had
+different fill: one is 0x00 (the CPU executes BRK forever, PC pinned at guest
+$0000, stack filling with BRK pushes), the other is 0xFF (the CPU sprays $FF
+into every register -- nametable and CHR all zero, guest palette all $3F,
+$2000/$2001 = $3F, and $4100 itself ends up $FF, which is a SYMPTOM and not the
+cause; do not chase it).
+
+HOW IT WAS FOUND -- the clean discriminator: capture the bank registers at the
+frame the launcher writes them, not later. Entries 0 and 1 turned out to have
+IDENTICAL registers except $4100 (0x10 vs 0x00). Entry 1, outer bank 0, worked.
+Entry 0, outer bank 1, crashed. Same for entry 4. "Outer bank 0 works, outer
+bank 1 crashes" points straight at the outer term being lost.
+
+The fix is the width: u16 in vt_regs.c and vt_regs.h, (u16) casts, and ldrh at
+offsets 0/2/4/6 in mapVT.s. Nothing else needed -- map89_/mapAB_/mapCD_/mapEF_
+already accept 9-bit banks (they mask with rommask>>13, i.e. 511 for a 4 MB
+image).
+
+RESULT: all five reachable VG Pocket games now render (entry 0: 0 -> 36186 lit
+pixels, entry 4: 0 -> 37288). Star Ally menu and gameplay and Lonely Island are
+BYTE-IDENTICAL, and the VG title and category scores are unchanged -- as
+expected, since SA and LI never set a non-zero PRG outer bank.
+
+This is worth remembering for any future multicart: a game that boots black
+while its neighbours work is a banking-width question first, and the register
+capture at the launch frame is the cheapest way to see it.
+
+TOOLING TRAP FOUND HERE: _m6502_pc is an ARM REGISTER (r9) spilled to memory
+only at certain boundaries. Reading it between core->step() calls returns
+garbage -- a ring buffer of "PCs" full of values like 9a4ac4de and c83f6000 is
+the tell. Frame-granular reads (after runFrame) are reliable; instruction-level
+6502 tracing needs a different mechanism.
+
+## 33. The VG Pocket has FIVE category menus, not one list (s21b28)
+
+Navigation is three levels, not two:
+  title --A--> CATEGORY menu (green bushes, 5 wooden signs: Action, Racing,
+  Shooting, Sports, Wits) --Down x C, A--> GAME LIST for that category (black
+  background, paw icons, 5 titles, first row highlighted purple)
+  --Down x G, A--> launch.
+An earlier note called the category menu "the game list"; it is not. Use
+tools/capture_screen.c screens `vgcat` and `vglist`.
+
+PALETTES (calibrated with the section 31 value sentinel against Michael's two
+menu captures):
+  VG title     97.1% exact / 99.6% structural   (95.0% with the $19 choice below)
+  VG category  61.9% exact / 86.5% structural
+  VG game list 79.2% exact / 92.1% structural   <- first ever measurement
+The list screen is BLACK in hardware. Entries $0E/$1D/$23 must be black and
+$2D is the purple highlight; $23 was coloured here, which is exactly why that
+screen rendered green.
+
+THE $19 TRADE-OFF, measured across all three screens (it is used by both the
+title and the category background, and the two captures disagree by 3/31 in
+red):
+  $19 = 0x0243 (title/vg.png):  title 97.1, category 45.5, list 79.2
+  $19 = 0x0246 (category grab): title 95.0, category 61.9, list 79.2
+Shipped 0x0246 -- the category screen is a large flat area where the error is
+obvious, and it gains 16.4 points for 2.1 lost on the title.
+
+SPRITE CAVEAT for the value sentinel: it instruments only gba_bg, so any pixel
+covered by a SPRITE in the reference mis-attributes. That is the whole story
+behind the "$08 conflict" -- the category menu's sign text is sprite-drawn, so
+45 pixels claimed $08 was white while the title's 766 pixels said brown. Weigh
+by vote count and prefer the native capture.
+
+## 34. OPEN: the solid-colour VG Pocket game (category 0, entry 2)
+
+Mechanism located precisely; the fix is NOT yet decidable. Symptoms next to its
+working neighbour (category 0, entry 3):
+
+  broken  $2010=$06  832/960 nametable names   CHR words in VRAM:   1/1024
+  working $2010=$16  819/960 names             CHR words in VRAM: 773/1024
+
+So the game loads a full screen of names and we assemble no tiles for it -- the
+screen fills with one colour. Its CHR page banks are 160-163 with $4100=$10,
+$201A=$00, $2018=$00. In 4bpp a bank is 2 KiB, so bank 160 is ROM 0x50000 --
+and that region is 63 of 64 tiles BLANK, which is exactly the 1/1024 we see.
+
+Our CHR banking matches the wiki article: outer = $4100 bits 0-3 (VA21-24) with
+`OuterBank << 11`, intermediate = $2018 bits 4-6, the $201A mask table, and
+"1 KiB (2 KiB in 4bpp modes)" units. $4100=$10 therefore gives CHR outer 0 even
+though the PRG outer (bits 4-7) is 1 -- this game's CODE is in the upper 2 MB
+while we fetch its GRAPHICS from the lower 2 MB.
+
+Candidate offsets that DO contain data: bank160 x 2 KiB + 2 MB, and
+bank160 x 1 KiB (with or without +2 MB). DO NOT guess between them. An offline
+tile-coherence test was tried to pick a winner and FAILED ITS CONTROL -- a
+known-good game's CHR scored 1.01/8 on the same metric, i.e. the metric does not
+separate art from noise for these carts. (Same failure mode as the offline BG
+renderer in section 28: always run the control first.)
+
+What would settle it: a capture of that game running on hardware. That is
+exactly how vg.png settled the title screen. Until then, changing CHR outer
+handling risks the games that currently work, which is the b10/b14 mistake.
+
+Worth noting for future work: the VG Pocket GAMES run with $2010 D6 CLEAR
+($06, $16, $46, $56 seen), unlike its MENUS ($4E, $5E). So the games use the
+8-bit CHR bus layout and the SA/LI palette table, while the menus use the 16-bit
+layout and the VG table. Decode with the right layout when analysing them -- a
+coherence test run with the wrong one is meaningless.
+
+## 35. The first game ("Right Spot"): structure CONFIRMED, palette DISPUTED
+
+Reference 1.png is the first game, reached by three A taps (title -> category ->
+game list -> launch; category 0, entry 0). Michael notes it is a VARIANT capture
+-- it carries "Right Spot" and "PRESS START" logos that the VG Pocket's copy
+does not -- so treat it as authoritative for SHAPE and provisional for COLOUR.
+
+GOOD NEWS, and the point worth keeping: our render scores **94.8% structural**
+against it. So for a game in PRG outer bank 1 with $2010 = $56 (D6 set), the CHR
+banking, geometry and tile assembly are all essentially correct. Whatever ails
+the other games, it is not a general failure of the game path.
+
+THE PALETTE CONFLICT (unresolved -- do not "fix" it by picking a side):
+The value sentinel calibrated all 16 of that screen's values at 88-100%
+confidence. Applying them:
+    Right Spot game   5.4% -> 89.8% exact   (+84.4)
+    VG title         95.0% -> 81.6%         (-13.4)
+    VG category      61.9% -> 42.8%         (-19.1)
+    VG game list     79.2% -> 78.7%         (-0.5)
+Fifteen of sixteen entries disagree with the menu-derived values, and not by a
+little: $20 is white on the title and dark green in the game, $1A is
+blue-violet on the title and white in the game. That is not capture gamma.
+
+Reverted -- the menus were calibrated from captures of Michael's actual console,
+1.png is a different release. But note what this implies: on real silicon ONE
+DAC serves both, so a single table must satisfy both screens. It does not, which
+means our value -> palette-index attribution differs from hardware on one of
+them. The screens differ in $2010: game $56 (SPEXTEN=0, BKEXTEN=1), title $5E
+(SPEXTEN=1, BKEXTEN=1), menus $4E (SPEXTEN=1, BKEXTEN=0). Both game and title
+have BKEXTEN=1 and identical four-palettes-of-four palette RAM layouts, so model
+A should apply identically -- yet they disagree. Worth checking whether the chip
+has an old (25-colour) versus new (121-colour) palette mapping select, which
+would translate indices differently between modes.
+
+CORRECTION to an earlier note: it is NOT true that VG Pocket games all run with
+$2010 D6 clear. $06 and $16 have it clear; $46 and $56 have it SET. Check the
+bit per screen -- it selects both the CHR bus layout and which compat palette
+table is used.
+
+## 36. Four native captures reconcile the DAC (s21b30)
+
+Michael supplied native captures of all three VG Pocket menu levels plus the
+first game: vg.png (title), 1.png (category), 2.png (game list), 3.png ("Get it
+Right"). 3.png is his own console's copy -- it LACKS the "Right Spot"/"PRESS
+START" logos that the earlier variant capture carried, which is how you tell
+them apart.
+
+With four native references the DAC becomes consistent: calibrating each screen
+independently, **20 colour indices AGREE across screens and only 3 conflict**
+($14 and $19 differ by ~3/31, i.e. capture noise; $29 is a real disagreement
+between the category and game screens). That is the single-DAC coherence the
+variant capture could not give -- and it retires guide section 35's worry that
+our index attribution differed per screen. It does not; the earlier conflict was
+an artifact of comparing against a different release.
+
+RESULT (scores below): Get it Right 0.6% -> 43.6% exact with every other screen
+UNCHANGED, and Star Ally + Lonely Island byte-identical. Strict improvement.
+
+TWO MEASUREMENT TRAPS THIS TURN, both worth keeping:
+1. THE MENU CAPTURES ARE CROPPED, NOT FULL FRAMES -- 256x210 and 256x209, not
+   256x240. The reference row for our GBA row y is (y + vofs - R0), and R0 must
+   be found, not assumed: 0 for the title, ~7-10 for the menus, ~20 for the
+   game. Assuming R0=0 silently mis-scores everything.
+2. ALIGN ON A PALETTE-INDEPENDENT SIGNATURE, NOT ON COLOUR. Choosing R0 by
+   maximising exact-colour agreement picks spurious offsets (it chose R0=26 for
+   the category screen against R0=7 from the signature). tools/score_vs_reference.py
+   now searches R0 and a vertical scale by the neighbour-equality signature,
+   then reports exact match at that alignment.
+
+## 37. OPEN: the category menu is STRUCTURALLY wrong, not just mis-coloured
+
+Measured against the native 1.png with correct alignment: **structural 59.4%,
+exact 27.5%** -- while the title is 100.0/95.0, the game list 93.0/80.7 and the
+game 80.3/43.6. So screens 1, 3 and 4 are structurally sound and screen 2 is
+not. Its earlier 85.8% structural was measured against a 585x481 window grab
+resized to 256x240, which STRETCHED 210 rows to 240 and flattered the result.
+
+This is the screen that also wanted a vertical scale of 1.067 in the alignment
+search, so re-check the capture's own geometry before assuming a rendering bug.
+Then use the section 29 ROM-search (palette-independent tile signature) to find
+which bank its cells should come from, exactly as that search proved bank 204
+correct in s21b22.
+
+## 38. Category menu: the BUSHES are right, the SIGNS are not (s21b31)
+
+Narrowed considerably. The screen is completely STATIC (0 pixels change over 240
+frames), so no phase effect, and it uses ZERO sprites -- the wooden signs are
+background, not objects. Rendering it beside the capture shows the bush pattern
+matching along both edges while the five signs come out as flat bars where the
+reference has textured planks with text.
+
+The nametable explains the split: bush cells carry names $08-$33, i.e. CHR PAGE
+0, while every sign row carries $51-$D4 -- pages 1, 2 and 3. Page 0's bank was
+proven correct back in s21b22; pages 1-3 have never been verified.
+
+ROM SEARCH RESULT (section 29 method, palette-independent tile signature, 100
+cells per page):
+    page 0  best bank  204 = 0.655   2nd 0.564   floor 0.504   <- we use 204, CORRECT
+    page 1  best bank  256 = 0.584   2nd 0.577   floor 0.482   <- we use 205
+    page 2  best bank  256 = 0.577   2nd 0.576   floor 0.477   <- we use 206
+    page 3  best bank  955 = 0.594   2nd 0.583   floor 0.491   <- we use 207
+Page 0 separates cleanly; pages 1-3 have NO winner -- the top candidate is
+within noise of the second. Since the same search does find page 0, the sign
+tiles are evidently NOT plain 4bpp tiles sitting in a 2 KiB bank anywhere in the
+image. Something about how those pages are fetched differs; that is the thread
+to pull, not the bank number.
+
+ALIGNMENT, and a correction to section 36: for 1.png the true crop offset is
+**R0 = 2**, not the 7 that the neighbour-signature search reported. Pin it by
+ANCHORING ON KNOWN-GOOD DATA instead -- score page-0 cells against the proven
+bank 204 across candidate R0 and take the peak (R0=2 gives 0.666 under the
+16-bit layout, 0.637 under 8-bit, which also re-confirms the 16-bit bus for this
+screen). With R0=7 the search preferred the 8-bit layout and produced misleading
+bank rankings, so a wrong alignment does not merely lower scores, it flips
+conclusions.
+
+## 39. Why the VG palettes CANNOT be finished by calibration (s21b33)
+
+Michael's verdict after b30 was blunt and correct: none of the palettes are
+fixed. This section records why, so nobody burns another session calibrating.
+
+Two colour indices give IRRECONCILABLE readings from two native captures of the
+SAME console:
+    $19  title (3,18,0)      vs  category bushes (6,18,0)
+    $29  Get it Right (31,26,19 cream)  vs  category bushes (16,28,0 green)
+$29 is not capture noise -- green versus cream, 795 and 989 votes, both at 100%
+within-screen confidence.
+
+Everything that could explain it away has been RULED OUT by measurement:
+* Not structure. The category votes were restricted to CHR page 0 (the bushes),
+  whose bank was proven correct in s21b22; only the sign cells are wrong.
+* Not sprites. In a sentinel build a background pixel satisfies r==g and b==0,
+  so sprite-covered pixels can be excluded exactly. Zero were skipped on any of
+  the four screens -- these screens use no sprites at all.
+* Not animation. The category screen changes 0 pixels over 240 frames, and the
+  game's palette RAM is byte-identical from +80 to +560 frames.
+* Not alignment. R0 is pinned by anchoring on known-good data (section 38).
+* Not the index model. Category value 1 -> palette RAM index 1 ($29) and game
+  value 3 -> index 3 ($29) under our model, under the datasheet-literal model B
+  and under model J alike; all three agree here, so no choice among them helps.
+
+A single DAC cannot render colour number $29 as both green and cream. Therefore
+our value -> palette-RAM-index mapping is wrong on one of these screens in a way
+none of the three tested models captures, and NO table can satisfy both. Chasing
+better numbers by adjusting entries just moves the error between screens:
+
+     $19          $29           title  categ  glist  game   TOTAL
+     (3,18,0)     (31,26,19)    97.1    7.4   80.6   47.1   232.2
+     (3,18,0)     (16,28,0)     97.1   15.8   80.7   43.7   237.4
+     (6,18,0)     (31,26,19)    95.0   14.7   80.6   47.1   237.4
+     (6,18,0)     (16,28,0)     95.0   23.1   80.7   43.7   242.5   <- shipped
+
+Shipped the best total. The real work is finding what differs between a
+BKEXTEN=0 screen (category, $2010=$4E) and a BKEXTEN=1 screen (game, $56) in
+how a pixel value reaches palette RAM. Note the category ALSO has the flat-sign
+fault (section 38) whose tiles match no bank in the image -- one mechanism may
+well explain both, so treat them as one investigation, not two.
+
+## 40. The VG Pocket catalogue: 54 menu entries, not 50 (s21b34)
+
+Counted two independent ways that agree. Method that works and is fast: from a
+game list, hash the live nametable (NES_VRAM2, 960 bytes) after each Down tap
+and find where the hash cycle repeats -- no launching required. Cross-checked
+by launching each entry and comparing the PRG bank signature (vt.reg[7..0x0B]),
+which repeats on exactly the same period.
+
+    CATEGORY menu: 5 categories (entry 5 repeats entry 0)
+      category 0 (Action)    5 entries
+      category 1 (Racing)    4
+      category 2 (Shooting)  6
+      category 3 (Sports)    4
+      category 4 (Wits)     35   <- this list SCROLLS; the others fit on one page
+      TOTAL                 54
+
+So the unit advertises 50 and its menu actually offers 54 entries. Entry 35 of
+category 4 repeats entry 1, and no PRG bank signature recurs across categories,
+so these look like 54 distinct titles rather than duplicates.
+
+STATUS OF EVERY ENTRY (px = lit pixels, cols = distinct colours, after launch
+and ~420 frames):
+  RENDERS SOMETHING PLAUSIBLE  ~30 entries
+  BLANK (0 px)                 ~13: C2 G2; C3 G1, G3; C4 G4, G7, G9, G10, G16,
+                                    G19, G22, G29 (+C4 G5 at 254 px)
+  FLAT (one colour, 38400 px)    4: C0 G1; C2 G5; C3 G0, G2
+  VERY SPARSE (<6000 px)         5: C2 G4; C4 G12, G21, G27, G30
+  NOT MEASURED                   5: C4 G0, G8, G17, G26, G34 -- the harness
+                                    dropped the launch tap, NOT a game fault
+Category 3 (Sports) is the worst: all four of its entries are blank or flat.
+
+CAVEAT ON THE HARNESS: a "no-launch" row means the menu tap was missed, which
+happens every dozen or so entries with tap(8 frames on, 22 off). Confirm with
+the bank registers before recording a game as broken, and re-run those indices.
+
+## 41. Hunting unused games in the VG Pocket image (s21b35 — none confirmed)
+
+Worth doing, and the tooling is reusable, but the honest result is negative.
+
+STEP 1 -- which banks does the menu actually use? Compute each entry's $E000
+bank from its launch registers: eff = (0xFF & A) | ((pq3 | outer<<8) & ~A) with
+A = 0x3F>>ps, ps = $410B bits 0-2, pq3 = $410A, outer = $4100 bits 4-7. The 54
+entries resolve to only 39 DISTINCT banks (several share one; nine entries map
+to bank 31), so entries are not one-to-one with fixed banks.
+
+STEP 2 -- which banks look like a game? Scan all 512: NMI/RESET/IRQ all within
+$8000-$FFFF, all three distinct, RESET >= $E000 (it must live in its own fixed
+bank), and the byte at RESET a plausible opening opcode (SEI/CLD/LDX/JMP/...).
+43 banks qualify. Five are not claimed by any menu entry -- 143, 255, 319, 359,
+391 -- and each has unique 8 KiB content (its md5 matches no other bank), so
+they are not duplicate copies.
+
+STEP 3 -- BOOT THEM. Build a probe ROM that overwrites the image's BOOT bank
+with a launcher stub. The boot bank is **63 (ROM 0x7E000)**, NOT the last bank
+of the image -- putting the stub at the end does nothing and you just get the
+normal title screen, which is exactly how this first went wrong. The stub must
+copy its register writes to RAM and run them from there, because setting the
+banks pulls the fixed bank out from under itself:
+
+    $E000: SEI, CLD, LDX #$FF, TXS, LDX #len-1,
+           LDA $E100,X / STA $0200,X / DEX / BPL, JMP $0200
+    $E100: LDA #ps  STA $410B ; LDA #pq3 STA $410A ; LDA #outer<<4 STA $4100
+           LDA #0   STA $4107 ; LDA #1   STA $4108 ; JMP ($FFFC)
+    vectors at $FFFA all point to $E000
+
+Choose ps as the smallest value with (target & A) == A, then pq3 = target & ~A
+and outer = target >> 8. ALWAYS include a control: bank 207 is a reachable
+game and boots to ~36.8K lit pixels / 16 colours, which proves the stub works.
+
+RESULT: 143, 255 and 319 boot BLANK; 391 fills the screen with one colour; 359
+produces a real screen (36947 px, 26 colours, $2010 = $5E) -- but that closely
+matches menu entry C4 G35 (37294 px, 26 colours, $5E), so bank 359 is very
+likely already reachable and step 1 simply missed it. Step 1's bank numbers come
+from registers read AFTER launch, which the game itself may have rewritten, so
+treat that "used" set as approximate.
+
+NO hidden game is confirmed. Two caveats before anyone concludes there are none:
+the stub sets only ps/$410A/$4100/$4107/$4108, while the real launcher may also
+set $4109, mirroring or $2010 -- so a blank probe does not prove "not a game";
+and the launcher's per-game table was NOT found (searching all 22 known
+$4107..$410B signatures as contiguous bytes gives zero hits, so it is
+column-major or encoded). Finding that table is the clean way to settle this.
+
+## 42. The reference captures are SCALED, not cropped — and that changes conclusions (s21b36)
+
+Michael's menu/game captures are 256x210, 256x209 and 256x210. Sections 36 and
+38 treated the missing 30 rows as a CROP and searched for an offset R0. That was
+wrong: they are a vertical SCALE of the full 240-row frame. The correct mapping
+is
+
+    reference_row = int( (y + vofs) * H / 240 )        vofs from _dma0buff
+    reference_col = x + 8
+
+PROOF, and it is decisive. Take the three CHR pages the category menu uses and
+score each against the bank our emulator assigns it, sweeping scale and offset:
+at scale 0.875 (= 210/240) and offset 0, ALL THREE pages agree with their
+assigned banks -- page 0 vs bank 204 = 0.704, page 1 vs 205 = 0.682, page 2 vs
+206 = 0.648, against a ~0.50 noise floor. Under the crop model no single offset
+did that; page 0 wanted offset 2 and page 1 wanted 10, an 8-pixel disagreement
+that looked like a one-cell displacement of the signs.
+
+WHAT THIS RETRACTS:
+* Section 38's headline -- "the sign tiles are NOT plain 4bpp tiles in any 2 KiB
+  bank" -- is WRONG. Banks 204/205/206 are correct for pages 0/1/2. There is no
+  missing fetch mechanism to find.
+* Every category-menu score taken with the crop model is void. With the scale
+  model the same build scores 46.3% exact / 71.8% structural, not 23.1 / 55.8.
+* The palette calibration for that screen sampled reference pixels through the
+  wrong mapping, so the $19 and $29 "irreconcilable" readings in section 39 are
+  suspect and must be re-derived before anyone concludes the index model is
+  broken.
+
+The lesson is the one from section 38 restated more strongly: a wrong geometry
+does not merely lower scores, it manufactures phantom bugs. Fit scale AND offset
+by the palette-independent signature, and sanity-check by scoring known-good
+banks -- if a bank you have already proven correct does not come out on top, the
+geometry is wrong, not the emulator.
+
+TOOL NOTE: tools/capture_screen.c had lost its `vglist` and `vggame` routes (they
+were only ever patched into a /tmp copy), so those names silently fell through to
+the vgcat branch and produced identical captures. Both routes and the palette-RAM
+dump are now in the tree copy. If two screens score identically, check you are
+actually capturing two screens.
+
+## 43. Palettes recalibrated on the corrected geometry (s21b37)
+
+Redoing section 31's value-sentinel calibration with the SCALE mapping from
+section 42 instead of the crop mapping. Two rules made the difference:
+
+1. **A screen may only vote on colour once its STRUCTURE is right.** Fit each
+   capture's scale and offset first, then rank the screens by that structural
+   fit and let the best-fitting screen own each index:
+       title 1.000 > game list 0.961 > Get it Right 0.885 > category 0.707
+   The title supplies 12 indices, the list 3, the game 9, the category 2.
+2. **Settle genuine disputes by measuring, not by vote count.** $19 and $29 are
+   claimed by both the title/game and the category. Scoring all four
+   resolutions across all four screens offline (synthesise the frame from the
+   sentinel VALUE render plus the game's own palette RAM -- no rebuild needed):
+       priority, game $29        268.1 total
+       category $29              278.2
+       category $29 + $19        290.3   <- shipped
+       category $19 only         280.2
+
+RESULT, verified on a real build against the four native captures:
+       title       95.0% exact / 100.0% structural
+       category    46.3 / 71.8
+       game list   86.5 / 95.8      (was 80.7 under the crop mapping)
+       Get it Right 62.0 / 86.8     (was 43.6)
+Star Ally's menu is 68.6% vs 11.png (baseline 68.2, i.e. unchanged within
+noise) and Lonely Island is identical on every measure -- 32278 lit pixels,
+19 colours, dominant 0x8400 -- as expected, since neither ever sets $2010 D6
+and so neither reads the VG table.
+
+The category menu remains the weakest at 71.8% structural. That is now known
+NOT to be a banking fault (section 42 proved banks 204/205/206 correct), so the
+residue is either its own capture's geometry -- it is the only screen whose
+offset search does not reach a sharp optimum -- or something specific to
+BKEXTEN=0 rendering. Chase the geometry first; a screen that will not align
+cleanly is usually telling you about the capture, not the emulator.
+
+## 44. The captures are INTERPOLATED — quantise before comparing (s21b38)
+
+vg.png is a clean framebuffer dump: 256x240, exactly **16 distinct colours**.
+The menu and game captures are not. Scaling them introduced blending:
+
+    1.png (category)    4873 distinct colours, top-16 cover only 49% of pixels
+    3.png (Get it Right) 4826 distinct colours, top-16 cover 76%
+    2.png (game list)   1055 distinct colours, top-16 cover 92%
+
+Half the category capture is blend pixels, which no emulator can ever match.
+That was depressing both metrics uniformly and, worse, diluting the calibration
+votes. ALWAYS snap a reference to its dominant colours before scoring or
+calibrating: take the top 16 by area and map every pixel to the nearest.
+
+Effect of quantising alone, same build, no code change:
+    category    46.3 exact / 71.8 structural  ->  52.4 / 80.1
+    Get it Right 62.0 / 86.8                  ->  68.8 / 93.1
+    title and game list unchanged (they were barely blended)
+
+Recalibrating on the quantised references then lifted the usable index count
+from 26 to 30 and improved the table again. Final, verified on a real build:
+
+    title        95.0% exact / 100.0% structural
+    category     52.4 / 80.1
+    game list    86.7 / 96.1
+    Get it Right 70.7 / 93.3      (was 43.6 exact three builds ago)
+    SA menu      68.6 / 99.5      (unchanged -- control)
+    Lonely Island identical: 32278 lit pixels, 19 colours (control)
+
+DIAGNOSTIC WORTH REUSING: when a screen scores badly, split the comparison by
+CHR page using the live nametable. On the category menu all four pages scored
+alike (66-76% structural) INCLUDING page 0, whose bank is proven correct -- a
+uniform deficit across a screen means the yardstick, not the renderer. A
+page-specific deficit would have meant the opposite. That is what pointed at the
+capture rather than at another phantom banking bug.
+
+## 45. The VG palette is at its measurable limit — the residue is the DOWNSCALE (s21b39)
+
+Michael: "the palettes still aren't fixed... the second screen is almost there,
+but still not precisely." He is right that it is not precise, and here is why,
+with the evidence, so nobody spends another session recalibrating.
+
+FIRST, two hypotheses killed cheaply:
+* The VG DAC is NOT a standard NES palette. Substituting the 2C02 table scores
+  130.1 total against the fitted table's 305.5, and the captures' own colours
+  sit 10-24 units (RGB555) away from their nearest NES colour. Empirical
+  fitting is necessary.
+* Every remaining disputed index was tested INDIVIDUALLY against all four
+  references. Only $0C improved anything (+2.1). $27, $20, $11 and $08 each
+  made the total WORSE by 1.4-7.2. The title-derived values are right; the
+  category's disagreements are attribution noise, not colour errors.
+
+SECOND, and this is the actual answer: measure exact match against a 3x3
+tolerance -- "does our colour appear anywhere in the reference's neighbourhood".
+
+    title        95.0% exact -> 95.0% within-3x3   (+0.0)
+    category     54.5       -> 80.5               (+26.0)
+    game list    86.7       -> 91.9               (+5.2)
+    Get it Right 70.7       -> 75.0               (+4.3)
+
+The title gains NOTHING from the tolerance because it is large flat shapes, and
+it is already at 95%. The category gains 26 POINTS, because it is dense foliage
+and our 240x160 output drops one scanline in four (section 16). Its colours are
+substantially correct; its pixels simply land on different rows than the
+console's. No palette entry can fix that -- only reducing the vertical
+decimation can, which is the section 16 scaling work.
+
+So: the category menu's palette is close to correct and further calibration will
+not move it. If it still looks off on hardware, the thing to fix is the
+256x240 -> 240x160 mapping, not the table.
 
 ## 46. VT09 is VT03 plus 4 KiB of CPU RAM -- and that was the whole bug (s21b41)
 
@@ -1990,8 +3082,8 @@ normally keep CHR inside PRG. Two faults, both documented as open work:
   PocketNES's own path is given the CHR-RAM-style setup every other VT cart
   already runs with. For CHR-in-PRG carts the source is rombase/rommask as
   before -- byte-identical.
-* **Submapper byte-mangling** (IMPLEMENTATION_NOTES.md listed it as "the
-  remaining work"). From reference/nrs/mapper256.cpp, all three tables are now
+* **Submapper byte-mangling** (the retired IMPLEMENTATION_NOTES.md listed
+  it as "the remaining work"). From reference/nrs/mapper256.cpp, all three tables are now
   implemented: ppuMangle on $2012-$2017 writes (ppu_vt.c), mmc3Mangle on the
   $8000 bank-select value (vt_mmc3_forward, applied before use exactly as NRS
   does), cpuMangle on $4107/$4108 (vt_reg_write; only submapper 2 differs).
@@ -2252,1063 +3344,68 @@ writes skipped it runs at 60/60. So char blocks 2/3 are not free on that cart
 that VRAM when vrompages was set (PocketNES's 1K bank cache / bank_search,
 or loadcart's buffer placement). Find the occupant before enabling.
 
-## 15b. The sprite path is NOT the Scramble bug -- the horizontal crop is (s21b40)
-
-Open item 4 said "Scramble's BG pipeline is verified complete, so look at the
-SPRITE path". The sprite path checks out. Two things that LOOK wrong and are
-not, so nobody re-opens them:
-
-**Sprite X is `nes_x - 12`, the BG is `nes_x - 8`, and that is correct.**
-In SCALED_SPRITES mode `update_sprites` emits DOUBLE-SIZE affine OBJs
-(attr0 rot/scale=1 + double=1; matrix 0 is PA=0x0100, PB=PC=0, PD=0x0150).
-A double-size OBJ's content sits 4 px inside its 2x box, which is exactly what
-the `ands r1,r6,#0x100 / add r1,r1,#SCREEN_LEFT<<6` pair compensates for --
-r1 becomes 0x300, and `subs r1,r3,r1,lsl#18` subtracts 12 from the X byte.
-Net visible left edge = nes_x - 8, same as the BG. SCREEN_LEFT is 8 for both.
-
-**The `@FIXME` on `windowtop` in update_sprites is benign in SCALED mode.**
-Sprites index YSCALE_LOOKUP with `windowtop` (measured 0) while scale75 uses
-`windowtop_scaled6_8` (measured 16). The two disagree, but the lookup table
-already bakes the offset in -- measured `yscale[y] = 0.75*y - 17`. Verified
-empirically instead of by arithmetic: the 8x16 sprite at NES y=56 gets an OBJ
-box covering GBA lines 31..43, and the BG puts NES rows 57..72 at GBA lines
-31..42. Aligned to within PD rounding. (Do NOT measure this by comparing the
-sprite's LIT ROWS to the box -- the glyph does not fill its 8x16 slot, and
-that mismatch reads as a 3-line offset that is not there.)
-
-**What is actually wrong: 16 NES columns are deleted unconditionally.**
-12 of Scramble's 18 on-screen sprites are one object -- tile $83 at NES x=248,
-at y = 15, 31, 47 ... 191, i.e. a continuous 8 px wide strip down NES rows
-16..207. It is a right-edge border. We never draw it: the horizontal window is
-hard-wired to NES columns 8..247 (SCREEN_LEFT is a compile-time 8 and BG0HOFS
-reads back a constant 8 on every line), so those OBJs land at GBA x=240..247,
-one pixel past the screen. There is NO horizontal pan -- the L/R handling in
-update_sprites moves `windowtop`, which is VERTICAL.
-
-So section 16's horizontal note is understated. It is not "16 columns happen to
-be off-screen at whatever scroll the game set"; it is a fixed 8-left/8-right
-crop, and on Scramble it removes a real game element rather than overscan.
-Item 4 and the horizontal half of item 1 are the same bug.
-
-## 16b. WHAT THE SHIPPED TARBALL DOES *NOT* CONTAIN (s21b40)
-
-The session tarball carries src/, tools/, reference/*.xml, the DATASHEET
-digests, the docs and testroms/ (Add 'em Up, Push the Ball, Scramble, Table
-Soccer, Time Pilot). It does NOT carry, and cannot carry:
-
-* the VG Pocket 50-in-1 4 MB image
-* Star Ally and Lonely Island (the two regression CONTROLS)
-* every reference capture -- vg.png, 1.png, 2.png, 3.png, 11.png
-
-Without those, none of the VG scoring in sections 36-45 can be reproduced and
-neither control can be checked for byte-identity. A session that only extracts
-the tarball can build, link, run check_globals and exercise the five testroms,
-and nothing more. Ask for the images up front rather than discovering this
-after the toolchain is up.
-
-## 17. VT timer: vblank must be SKIPPED, not compensated (fixed s21b9)
-
-$4101 D7 (TSYNEN) = 0 selects AD12-transition counting. AD12 only toggles
-while the PPU is fetching, so the hardware counter STALLS through vblank.
-Scheduling plain 341-dot scanlines fires every expiry ~22 lines early; in Star
-Ally that put the raster split above its HUD text and painted the HUD page
-across the bottom of the screen -- the orange/yellow band.
-
-The working implementation (sound.s, both scheduling sites -- install_now and
-the handler), with r1 = base timestamp and r2 = period * 341:
-
-    ldr_ r0,frame_timestamp
-    ldr_ r12,render_end_time
-    add  r0,r0,r12          @ absolute end of rendering, this frame
-    cmp  r1,r0
-    bhs  1f                 @ already in vblank -> resume at next line 0
-    add  r1,r1,r2
-    cmp  r1,r0
-    bls  2f                 @ lands inside the rendered area -> done
-    sub  r2,r1,r0           @ carry ONLY the leftover count
-1:  ldr_ r0,frame_timestamp
-    ldr_ r12,cyclesperframe
-    add  r0,r0,r12
-    ldr_ r12,line_zero_start_time
-    add  r0,r0,r12          @ line 0 of the NEXT frame, absolute
-    add  r1,r0,r2
-2:
-
-Three traps, each of which cost a build:
-
-1. render_end_time (82181 NTSC) and line_zero_start_time (292) are OFFSETS
-   WITHIN A FRAME, not absolute timestamps. The absolute base is
-   frame_timestamp -- that is how timeout.s itself uses them
-   (`ldr_ r0,frame_timestamp / ldr_ r2,render_end_time / add r1,r0,r2`).
-   Comparing a live timestamp against the raw offsets schedules the expiry
-   into the past or the far future and the game hangs with $2010 = 00.
-2. The two cases must be EXCLUSIVE. Moving the base into the next frame AND
-   then wrapping the overshoot pushes the expiry a whole extra frame out --
-   same hang.
-3. ldr_/str_ have no conditional forms; write `ldrhs r1,[globalptr,#label]`.
-
-An earlier version (s21b6) added a FIXED vblank whenever the target passed
-render end. That got the position right but wrecked the phase, because the
-guest re-arms from inside its NMI handler -- i.e. from inside vblank -- where
-the correction should be the distance actually spent in vblank. It shook
-visibly and was reverted before this version replaced it.
-
-VERIFY BOTH PROPERTIES, always: a raster change is only good if the split is
-in the right PLACE and STABLE. Run ~400 gameplay frames, record the line where
-the per-line VOFS jumps, and histogram it. Reference numbers for Star Ally:
-s21b6 = lines 138-145 with 116 changes (broken); revert = line 122 with 15
-changes (stable but wrong place, band present); s21b9 = line 138 on all 401
-frames with 0 changes, band gone, and NES line ~207 matches where 2.png puts
-the score.
-
-## 18. Real hardware vs emulators (GBARunner2 on DS does not boot)
-
-Reported: PocketVT runs under mGBA on 3DS but will not boot under GBARunner2
-on DS. Not reproducible in this sandbox -- mGBA is not GBARunner2 -- but the
-build uses two techniques GBARunner2 is known to struggle with, and they are
-the first things to test:
-
-1. CODE EXECUTING FROM VRAM. The .vram1 section (4KB at 0x06003000, copied
-   from LMA at startup by main()) holds the speedhack helpers. GBARunner2 maps
-   GBA VRAM onto DS VRAM banks; instruction fetch from there is the single
-   most likely blocker. Test by relinking .vram1 into EWRAM (it is not on the
-   hottest path) and seeing whether the DS boots.
-2. HBLANK DMA. ppu.s programs DMA0 from dma0buff into REG_BG0HOFS every
-   scanline for the per-line scroll. HDMA timing is a known weak spot there.
-3. Startup register pokes: REG_WAITCNT (0x4000204) and the EWRAM wait-state
-   register REG_WRWAITCTL (0x4000800). The latter is GBA-specific; on DS it is
-   not the same register, and writing it early can be fatal.
-
-Change ONE of these at a time and note which one moves the needle -- and keep
-the change behind a build flag so GBA-native performance is not paid for a DS
-workaround.
-
-## 19. COLCOMP=1 with 16 colours, and the palette hi-byte width (fixed s21b10)
-
-Two separate defects kept the new colour mapping from working with 16-colour
-planes. Add 'em Up runs $2010 = $86 -- COLCOMP=1, BK16EN=1, SP16EN=1 -- and hit
-both.
-
-**Defect 1: the 16-colour builder refused to run.** vt_build_16color_palette
-bailed on COLCOMP=1 with the comment "handled elsewhere".
-vt_palette_rebuild_gba does handle COLCOMP=1, but only in the 2bpp layout --
-entries 0..3 of each GBA bank. A 4bpp game needs all 16, so pixel values 4..15
-indexed slots nothing ever wrote and rendered black. Measured before the fix:
-BG bank 0 held 0000 7ee7 75c0 0539 followed by twelve zeros.
-
-The scatter index is the same in both colour modes; only the lookup differs, so
-the builder now calls vt_pal_entry_colour(idx), which branches on COLCOMP:
-
-* COLCOMP=0 -> nes_index_to_bgr555(lo). Do NOT route this through
-  vt03_palette_lut: its first 64 entries are all 0x0000 (the SAT=0/LUM=0 row),
-  which is precisely the 0.4 "every game boots black" bug.
-* COLCOMP=1 -> vt03_palette_lut[(hi << 6) | lo], hi taken from idx | 0x80.
-
-**Defect 2: the hi byte was masked to five bits.** A colour is the pair
-($3F00+k lo, $3F80+k hi) for k = 0..$7F. The lo path in ppu.s deliberately
-stores the full 7-bit offset ("games upload the whole 128-byte palette before
-enabling BK16EN"), but the hi path did `and r0,addy,#0x1f` and
-vt_palette_write_hi re-masked with `(offset & 0x1F) | 0x80`. Every hi byte for
-entries $20-$7F was therefore discarded AND aliased onto entries 0-$1F -- and
-those upper entries are exactly where the scattered 16-colour indices live.
-Both sides now keep 7 bits, and the backdrop mirroring in the hi bank is
-confined to its low 32 entries, matching the lo half.
-
-Result: all 16 entries per bank carry real colour and Add 'em Up went from
-~3.2K lit pixels to ~18K.
-
-Verification notes worth repeating: Lonely Island stayed bit-identical and the
-Star Ally split histogram stayed at line 138 x 401 with zero changes. Star
-Ally's TITLE does differ frame-for-frame, but that screen fades in and the two
-builds are a few frames apart in the fade (b9 settles at ~11951 lit pixels by
-f79; b10 climbs 9289 -> 11975 by f90). The settled menu differs by 138 bytes of
-153600 and scores marginally closer to the 11.png reference than before. Judge
-animated screens by a settled frame or a sweep, never by one frame.
-
-## 20. CHR ROM vs CHR-in-PRG: which image VT tile fetches address (fixed s21b11)
-
-Every VT CHR fetch in ppu_vt.c read from `rombase` -- the PRG image. That is
-right for a OneBus cart, which keeps character data inside PRG (vrompages == 0,
-so loadcart points vrombase at the 8 KB CHR-RAM in EWRAM): Star Ally, Lonely
-Island, Time Pilot, Scramble, Push the Ball. It is wrong for a dump that has a
-REAL CHR ROM. Add 'em Up is 64 KB PRG + 216 KB CHR, so loadcart sets
-vrombase = rombase + romsize -- a second image in cart space -- and the game's
-bank numbers index that one. Reading it from rombase fetched every tile 64 KB
-too early: "just garbled graphics".
-
-Fix: vt_chr_src_base() / vt_chr_src_mask() pick vrombase+vrommask when
-vrombase points into cart space (>= 0x08000000) and rombase+rommask otherwise,
-and every fetch site uses them (both sync-copy paths and all four assemblers).
-
-Evidence it worked: with rombase the screen was a uniform solid fill and not
-one drawn tile could be found anywhere in the ROM; with the CHR ROM the screen
-is a structured grid (it is a puzzle game) and the drawn tiles match CHR data.
-Lonely Island stayed bit-identical, Star Ally's menu identical and its split
-histogram still line 138 x 401 with zero changes -- as expected, since for
-CHR-in-PRG carts the helper returns exactly what the code used before.
-
-## 21. Scramble: the "empty palette banks" lead was a RED HERRING (s21b26)
-
-The old note here said Scramble's GBA BG palette banks 1-3 were entirely zero
-and hunted for whoever zeroed them. They ARE zero -- and it does not matter:
-ALL 960 of its cells use ATTRIBUTE 0, so banks 1-3 are never selected. Dump the
-attribute table before theorising about attribute handling (the same mistake
-was made on the VG category menu, section 32).
-
-Its palette RAM is coherent, just laid out differently from the VG Pocket's:
-Scramble writes $3F00-03, $3F10-13, $3F20-23, $3F30-33 -- two 32-colour palette
-banks, each with a BG half and a sprite half (bit 4), four colours per group.
-The VG Pocket instead uses $3F00/$3F20/$3F40/$3F60. Both fit our model.
-
-BG pipeline checked end to end on the current core: of the 114 cells with a
-non-zero name, 114 have a non-zero GBA map entry and 114 have real pixel data
-in the tile they point at. There is no missing BG content.
-
-STATUS: Michael reported a glitchy title screen, but that was BEFORE the
-s21b15/b17 bus-layout fixes and the s21b22 geometry correction, and there is no
-capture of Scramble to score against. Ask him to re-check it on a current build,
-and for a native-resolution capture if it is still wrong -- without one this is
-guesswork, exactly as it was for the VG menus.
-
-## 22. VG Pocket 50-in-1, and 4 MB carts (booting since s21b13)
-
-The dump is a 4 MB raw OneBus image: no iNES header, 6502 vectors in the last
-six bytes (NMI $F9E0, RESET $F862, IRQ $FA80), and the reset code reads as
-clean 6502 RAW -- `CLD / SEI / LDX #$FF / TXS / LDA #$00 / STA $2000 ...` -- so
-this cart is NOT opcode-scrambled, unlike Star Ally. Valid vectors also sit at
-the 2 MB, 1 MB and 512 KB boundaries, which is what a 50-in-1 assembled from
-sub-images looks like, each keeping its own fixed bank on top. It is a mixed
-bag of VT03 and possibly other OneBus variants, so expect per-title differences
-in $2010 mode once individual games are launched.
-
-Wrap a raw image like this in a NES 2.0 header -- mapper 256, submapper 0, no
-CHR, PRG = 256 x 16 KB pages (byte 4 = 0x00 LSB, byte 9 low nibble = 1):
-
-    4E 45 53 1A 00 00 00 08 01 01 00 00 00 00 00 00
-
-WHAT HAD TO CHANGE: loadcart.c parsed the NES 2.0 size correctly (256 pages)
-and then capped page counts at 255, because `rompages` was a u8. 255 pages is
-4080 KB -- 16 KB SHORT of a true 4 MB image -- so rommask became 0x3FBFFF and
-the top bank, where the vectors live, was masked off; the CPU never started.
-
-`rompages` is now 16-bit. The extra byte came from the filler that used to sit
-after `fourscreen` in the globals block, so rompages(2) + vrompages(1) +
-fourscreen(1) still totals four bytes and NOTHING after it shifts -- the one
-way to widen a global in that block without a layout migration (section 14).
-No assembly reads rompages; only C does, via asmcalls.h, where both `extern u8
-_rompages` declarations became u16. The PRG cap is now 2048 pages (32 MB, the
-GBA cart ceiling); the CHR page count is still 8-bit, so that cap stays.
-
-Result: the cart boots and draws its menu ($2010 = $5E -- BKEXTEN, SPEXTEN and
-both 16-colour planes). Regression set after the change: Star Ally title, menu
-and Lonely Island f400 all BIT-IDENTICAL, split histogram still line 138 x 401
-with zero changes, Push the Ball and Time Pilot unchanged.
-
-Still unverified: whether the menu is pixel-correct, and whether individual
-titles launch and run. Those need a capture to compare against.
-
-## 23. The COLCOMP=0 compat palette is CALIBRATED, not derived (partly fixed s21b14)
-
-`vt_compat_rgb555[64]` is not from a datasheet -- it was fitted in an early
-session against reference captures, and it is wrong wherever no capture pinned
-it down. Michael's vg.png (VG Pocket menu) exposed that: 16 distinct colours on
-each side and only BLACK in common, while the SHAPES lined up (82% ink recall,
-77% precision), i.e. right pixels, wrong colours.
-
-HOW TO CALIBRATE AGAINST A CAPTURE (this method works, use it again):
-1. Render the same screen headless and transform the capture into our geometry
-   -- crop x+8, and take NES row (y*3)/2 for GBA row y (we drop every third
-   line). Verify the offset by search; for vg.png dy=0 dx=8 is optimal.
-2. Vote OUR colour -> REFERENCE colour, counting only pixels whose 3x3
-   neighbourhood is uniform on BOTH sides. Edge pixels are noise; interiors
-   give 94-100% confidence where the raw vote gives 20-57%.
-3. Map colour->colour, NEVER colour->index: the table contains duplicate
-   values (0x0120, 0x0200, 0x7F1F all appear twice), so inverting a rendered
-   colour back to an index is ambiguous and will mis-attribute.
-4. Discard any pair whose target is BLACK. Those are pixels we draw where the
-   reference has none -- a structural fault, not a palette one. Folding them
-   into the table would blank that colour everywhere it is legitimately used.
-5. SCORE EVERY REFERENCE BEFORE KEEPING: exact-pixel match against vg.png,
-   11.png (SA menu) and 2.png (SA gameplay). Entries are shared between games.
-
-s21b14 applied five pairs -- 35AD->06BE, 1320->53A8, 0200->7CAB, 7C83->53A8,
-00B2->06BE (six table slots, since 0200 is duplicated). Result: VG Pocket menu
-38.8% -> 51.1% exact-pixel match, Star Ally menu 64.9% and gameplay 87.7% both
-UNCHANGED. A second calibration pass then found no further colour mismatches,
-so the palette is converged for this cart.
-
-WHAT REMAINS on that screen is structural, not colour: we draw ~3.6K ink pixels
-the reference lacks (including 312 in rows 0-19 where it is pure black) and
-miss ~3.3K it has. Alignment is already optimal, so it is real extra/missing
-content -- chase that next, not the palette.
-
-## 24. 8-bit vs 16-bit CHR bus: the plane/row layout (fixed s21b15)
-
-The wiki's "VT02+ CHR-ROM Bankswitching" final-address diagrams give TWO 4bpp
-layouts, and we only implemented one:
-
-  8-bit bus : ...TTTTTTPPRRR  row = addr bits 0-2, plane = bits 3-4
-              -> planes at +0, +8, +16, +24 within the 32-byte tile
-  16-bit bus: ...TTTTTTPRRRp  plane D0 = bit 0, row = bits 1-3, plane D1 = bit 4
-              -> row r at +2r, +2r+1, +16+2r, +16+2r+1
-
-Reading a 16-bit-bus cart with the 8-bit layout takes each row's halves from
-different rows, which renders as heavy horizontal STRIPING. Metric that catches
-it (ink recall/precision does NOT -- it barely moved, 82->83%): mean count of
-pixels differing between vertically adjacent rows. VG Pocket menu measured 89.6
-under the 8-bit layout, 33.2 under the 16-bit one, against 31.3 for the
-reference capture itself.
-
-GATING: bus width is a board property with no documented register. The
-empirical gate is $2010 D6 -- listed as UNUSED in the VT03 datasheet, but SET
-on our only 16-bit-bus cart (VG Pocket, $5E) and CLEAR on both 8-bit-bus carts
-(Star Ally $1F, Lonely Island $0E). If a counter-example appears, move this to
-a per-cart flag in builder.py's injected header instead of widening the guess.
-Verified after gating: Star Ally menu and Lonely Island f400 byte-identical,
-Star Ally title byte-identical at f100/f120/f190 (its f80 differs only because
-that screen is mid-fade -- always compare a SETTLED frame).
-
-## 25. The compat palette needs per-INDEX ground truth, not per-colour
-
-Do not repeat the s21b14 mistake. Calibrating our rendered COLOUR -> reference
-colour and patching every table slot holding that value is only valid if the
-image is otherwise correct. It was not: the calibration was run on a STRIPED
-render, and the resulting patch was wrong (e.g. 017C calibrated to BLACK on the
-striped image but to GREY 39CE once unstriped). Applied to the shared table it
-recoloured Lonely Island's foliage green -> blue-violet, which Michael
-confirmed is wrong, and it was reverted.
-
-There is also a genuine conflict the per-colour method cannot resolve: the
-table VALUE 0x0200 must be green for Lonely Island and blue-violet (0x7CAB, at
-100% confidence) for the VG Pocket menu. Since 0x0200 occupies TWO indices
-(0x1A and 0x1B) and duplicates exist elsewhere too (0x0120, 0x7F1F), the real
-hardware almost certainly has DIFFERENT colours at those indices and our table
-has collapsed them.
-
-The way to settle it: build a debug core whose vt_compat_rgb555[i] = a distinct
-sentinel encoding i, render each game, and read the index straight out of the
-framebuffer per pixel. That gives index -> reference-colour pairs with no
-ambiguity, for every game with a capture, and will show whether the two games'
-index sets are disjoint. Only then patch the table, and re-score vg.png,
-11.png and 2.png together.
-
-## 26. Per-console compat palettes, calibrated per INDEX (s21b16)
-
-The COLCOMP=0 compat palette is NOT one table for all VT carts. Proof: index
-$1A must be blue-violet on the VG Pocket and GREEN on Lonely Island's console;
-$12 and $27 conflict too. That is a per-console DAC difference, which is why
-s21b14's attempt to satisfy both by editing one shared table wrecked Lonely
-Island's foliage. There are now two tables, selected by $2010 D6 -- the same
-signal that picks the 16-bit CHR bus (section 24).
-
-HOW TO CALIBRATE A NEW CONSOLE'S TABLE (repeatable, and far better than the
-colour->colour method that preceded it):
-1. Build a SENTINEL core: replace vt_compat_rgb555[i] with a value that encodes
-   i uniquely, e.g. r = i & 31, g = i >> 5, b = 0.
-2. Render the screen headless. Every pixel's colour now decodes straight back
-   to the palette INDEX that produced it -- no ambiguity, unlike inverting a
-   real colour (the real tables contain duplicate values).
-3. Join against the capture, transformed into our geometry (crop x+8, NES row
-   (y*3)/2), voting only where the 3x3 neighbourhood is uniform on BOTH sides.
-4. Print, per index, current vs derived plus which OTHER games use that index.
-   That tells you immediately whether a change is safe or a conflict.
-5. Apply only to the new console's table; re-score every reference.
-
-Result for the VG Pocket title: 8 entries corrected at 87-100% confidence,
-exact-pixel match against vg.png 38.8% -> 65.6%. Star Ally byte-identical.
-Lonely Island's colour SET is unchanged (its 234 differing pixels are object
-motion from a small timing shift, not colour) and it never sets D6 -- verified
-by step-sampling, 0 hits in 300000 samples.
-
-## 27. Outer CHR bank is 3 bits in 4bpp, 4 bits in 2bpp (s21b18)
-
-From the wiki's final-address diagrams: 2bpp puts the outer bank at address
-bits 21-24 ($4100.0-3, four bits), 4bpp at bits 22-24 ($4100.0-2, THREE bits),
-because a 4bpp tile consumes one more low address bit. We masked with 0x0F
-everywhere, so any 4bpp fetch with $4100 bit 3 set aimed eight outer slots too
-high. vt_compute_chr_bank_n(inner, fourbpp) now takes the width, and the 4bpp
-callers (vt_chr4_assemble, the extension-active composer, the pix16 composer)
-pass 1 while the 2bpp sync-copy path passes 0.
-
-Honest note on impact: this changed NOTHING visible on any cart we have. For a
-4 MB image rommask is 0x3FFFFF, and the outer field contributes multiples of
-4 MB, so every value masks to the same offset. Star Ally and Lonely Island
-never set $4100 bit 3 at all. It is a correctness fix that will matter on carts
-larger than 4 MB; it did not fix the VG Pocket game list, and I checked rather
-than assuming it had.
-
-## 28. Comparing our output to a capture: GET THE GEOMETRY FROM THE EMULATOR
-
-This section exists because a wrong geometry assumption invalidated a whole
-session of measurements. Read it before scoring anything against a capture.
-
-Our 240x160 frame is NOT the top-left of the NES 256x240 frame decimated from
-row 0. The per-line scroll table (_dma0buff, one entry per GBA line, VOFS in
-the high half-word) gives the real mapping, and for the VG Pocket it is:
-
-    GBA row 0 -> NES row 16 ... GBA row 159 -> NES row 228
-    advance +1 on 106 lines, +2 on 53 lines;  HOFS -> x + 8
-
-i.e. the first sixteen NES rows are not shown at all. Assuming NES row
-(y*3)/2 from row 0 puts every comparison sixteen rows out, which no small
-dx/dy search will recover. ALWAYS read the mapping:
-
-    nes_row[y] = y + (dma0buff[y] >> 16 as signed)
-
-Measured effect of fixing this on the VG category menu, same build, same
-capture: structural match 63.5% -> 85.8%, exact-pixel 27.7% -> 50.2%. Nothing
-about the emulator changed; only the yardstick.
-
-Two more traps in the same family:
-* The reference screenshots are antialiased window grabs (585x481 for a
-  256x240 screen). De-scale by CENTRE-SAMPLING each destination pixel and then
-  snapping to the top-N colours -- and use N=32, not 16: these menus use four
-  palette banks and genuinely exceed 16 colours. Snapping to 16 destroys the
-  image and produced zero ROM tile matches.
-* Read register shadows by SYMBOL, never by guessing addresses adjacent to a
-  known one. vt_reg_2010 is in one BSS group and vt_chr_reg_2018/201A/4100 in
-  another entirely. Reading the bytes after vt_reg_2010 returned $2018=$19,
-  $201A=$29, $4100=$0B -- all garbage from unrelated variables -- and sent me
-  hunting a bank-composition bug that did not exist. The true values are all
-  $00 on both VG screens.
-
-## 29. Confirming a bank formula against ROM contents (method)
-
-When a screen looks wrong and you suspect banking, do not guess formulas --
-find where the correct tiles actually live:
-
-1. Dump the live nametable and page_bank from the emulator.
-2. Recover the capture at native resolution (section 28).
-3. For each candidate bank B, decode the ROM tiles at B*2048 + (name&63)*32
-   and compare them to the capture's 8x8 blocks using a PALETTE-INDEPENDENT
-   signature -- whether each pixel equals its right and lower neighbour
-   (112 booleans per tile). Sum over ~48 structurally rich cells.
-4. The true bank stands out sharply: for the VG category menu, bank 204 scored
-   84.5% while every other candidate, including our then-current effective
-   bank, sat at the 52-59% noise floor.
-
-Applied here it PROVED the bank composition was already correct (true bank =
-inner bank = page_bank value, with $201A/$2018/$4100 all zero), and it
-independently re-confirmed the 16-bit bus layout: the same search under the
-8-bit layout peaked at only 61-68%.
-
-## 30. VG Pocket status after s21b22
-
-Title screen: structural 100.0%, exact-pixel 90.7% against vg.png.
-Category menu: structural 85.8%, exact-pixel 63.8%.
-Star Ally and Lonely Island byte-identical throughout.
-
-Remaining on these screens is palette, not structure. The sentinel calibration
-(section 26) now runs against the true geometry, and most indices verify as
-already-correct at 100% confidence.
-
-ONE UNRESOLVED SIGNAL WORTH CHASING: index $08 calibrates to brown (17,11,0)
-on the title screen and to white (31,31,31) on the category menu, each at 100%
-confidence over hundreds of pixels. A fixed DAC cannot produce two colours for
-one index, so our palette-INDEX attribution must be wrong on one of those
-screens -- most likely the scatter that forms the index (plane bits, the
-BKEXTEN-dependent attribute contribution, or the bg/spr bit). That is a real
-emulation bug, not a calibration choice, and it is the highest-value thread
-left on this cart. Index $19 differs only slightly between captures
-((3,18,0) vs (6,18,0)) and is consistent with capture gamma, not a bug.
-
-## 29. Scoring a screen against a capture (tools/, use these -- do not re-derive)
-
-tools/capture_screen.c + tools/score_vs_reference.py are the corrected-geometry
-harness. Build: gcc -O2 tools/capture_screen.c -o cap -lmgba. Usage:
-`cap <rom> <sa150|sa700|vgtitle|vgcat> <_dma0buff addr> <out-prefix>` writes
-<prefix>_fb.raw and <prefix>_geom.txt, then
-`python3 tools/score_vs_reference.py <fb> <geom> <reference.png> <label>`.
-
-THE GEOMETRY IS NOT (y*3)/2 FROM ROW 0. Our 240x160 frame starts partway down
-the NES field and drops lines unevenly. Read it from the emulator, never assume:
-    nes_row[y] = y + (int16)(dma0buff[y] >> 16)        HOFS -> nes_x = x + 8
-Getting this wrong cost a whole line of investigation -- it made correct screens
-look structurally broken, and NO small dx/dy search recovers it (the offset is
-~16 rows). Fixing only the yardstick moved the VG category menu from 63.5% to
-85.8% structural with zero code change.
-
-De-scaling a window-grab capture: resize to 256x240 nearest, then snap every
-pixel to the top-32 colours. Snapping to 16 destroys these menus -- they use
-four palette banks and legitimately exceed 16 colours on screen.
-
-Baseline scores to regress against (s21b22 core):
-    VG title     exact 90.7%  structural 99.6%
-    VG category  exact 61.9%  structural 86.5%
-    SA menu      exact 68.2%  structural 99.1%
-    SA gameplay  exact 89.8%  structural 90.6%   <- NOISY, see below
-SA gameplay's exact score is not a reliable discriminator: any change in
-per-frame host work shifts SA's RNG and object positions. Judge model changes on
-the three STATIC screens.
-
-## 30. The BG palette index: three models tested, the plane-scatter wins
-
-vt_build_16color_palette maps (attr, 4bpp value) -> a VT palette-RAM address.
-What the hardware does is not obvious and the datasheet text alone is
-misleading, so here is the evidence.
-
-WHAT THE GAMES ACTUALLY WRITE (dump vt_palette_ram; this is the key datum):
-both VG Pocket screens fill the whole 128-byte palette with $0E and then write
-only FOUR entries per 32-colour palette -- at $3F00-03, $3F20-23, $3F40-43,
-$3F60-63. That matches the datasheet's four 32-colour palettes at
-$3F00/$3F20/$3F40/$3F60 (p.22), with four colours used in each.
-
-MODEL A (shipped, plane-scatter):
-    idx = p0 | p1<<1 | (BKEXTEN ? 0 : attr)<<2 | p2<<5 | p3<<6
-With BKEXTEN=1 this reads exactly the 16 written entries -- the upper two plane
-bits select the 32-colour palette. That is why the VG title scores 90.7%.
-
-MODEL B (datasheet p.22 read literally -- "palette selected by BG7-6, colours
-within by SB5 and BG4-1"):  idx = attr<<5 | bgspr<<4 | value.
-    VG title 62.3% (-28.4), VG category 37.2% (-24.7), SA menu 67.7%.
-    REJECTED. SA gameplay rose to 91.9% but that screen's score is noise (above).
-    A sprites-only variant of B left VG untouched and made SA gameplay WORSE
-    (88.1%), proving the SA movement came from the BG term, not the sprite term.
-
-MODEL J (unify: low two planes index within a group, a 2-bit BANK selector picks
-the palette -- attr normally, upper two planes when BKEXTEN steals attr):
-    idx = p0 | p1<<1 | (BKEXTEN ? (p2|p3<<1) : attr)<<5
-    Identical to A when BKEXTEN=1; VG category fell to 35.5%. REJECTED.
-
-So model A stands. The remaining VG category error (61.9% exact / 86.5%
-structural) is NOT explained by any of these, and the two rejected models both
-made it worse -- do not re-try them.
-
-Note on the "$08 conflict": colour number $08 calibrating to brown on the title
-and white on the category menu does NOT by itself prove an index-attribution
-bug. Both screens legitimately contain $08 (title $3F20, category $3F42), and a
-calibration taken from a screen that is only ~62% correct is unreliable. Treat
-it as a symptom of the category error, not as independent evidence.
-
-## 31. The VALUE-sentinel: calibrating the DAC without guessing indices (s21b24)
-
-Section 26's index sentinel answers "which palette-RAM entry did this pixel
-use". The VALUE sentinel answers the more useful question directly: set
-gba_bg[group*16 + v] = v (encode the 4bpp value as the colour), render, and
-every pixel's colour IS its 4bpp value. Join that with the capture and you get
-value -> true colour at ~100% confidence. The game's own palette RAM then gives
-value -> colour index, so you can read off index -> true colour with no
-inversion and no ambiguity, and simultaneously CHECK the index model: if every
-value lands on an entry the game actually wrote, the model is right.
-
-That check is what finally validated model A (section 30) on the VG category
-screen: values 0,1,4,6,9,10,13 mapped to $3F00,$3F01,$3F20,$3F22,$3F41,$3F42,
-$3F61 -- all written entries, all with sensible colours.
-
-It also killed the last two "conflicts" cheaply:
-* Every visible cell on that screen has ATTRIBUTE 0, so the unwritten $3F04-0B
-  entries our model reaches for attr != 0 are never read. Dump the attribute
-  table before theorising about attribute handling.
-* ci $19 reads (3,18,0) on vg.png and (6,18,0) on the category grab. That is
-  capture gamma, not a hardware conflict: vg.png is a native 256x240 capture,
-  the menu shots are rescaled window grabs.
-
-PREFER THE NATIVE CAPTURE when two disagree. Applying the title-derived values
-($08 -> 0x0171, $19 -> 0x0243) moved the VG title from 90.7% to 97.1% exact.
-The category screen's exact score drops (61.9 -> 45.5) purely because its own
-capture's gamma no longer matches: at +/-4 per-channel tolerance the two builds
-are within 2.4 points on the category (82.9 vs 80.5) while the title is 98.8 vs
-94.5, and the category's STRUCTURAL score is unchanged at 86.5% -- nothing
-renders differently. A native-resolution capture of the category menu would
-settle the remaining few counts.
-
-## 32. The blank VG Pocket games: vt_prg_banks was 8 bits wide (FIXED s21b26)
-
-Both games that booted to a black screen were crashes, and both had ONE cause:
-the PRG bank number is `inner | middle | (outer << 8)`, so any cart using a
-non-zero OUTER bank produces a bank >= 256 -- and `vt_prg_banks[4]` was a **u8
-array**, written through explicit `(u8)` casts and read back with `ldrb` in
-vt_apply_prg_banks. The outer bank was silently discarded: entry 0's bank 0x11C
-became 0x1C, mapping the game to the wrong 2 MB half of the image, and the CPU
-ran off into fill bytes.
-
-The two failures looked different only because the two wrong regions had
-different fill: one is 0x00 (the CPU executes BRK forever, PC pinned at guest
-$0000, stack filling with BRK pushes), the other is 0xFF (the CPU sprays $FF
-into every register -- nametable and CHR all zero, guest palette all $3F,
-$2000/$2001 = $3F, and $4100 itself ends up $FF, which is a SYMPTOM and not the
-cause; do not chase it).
-
-HOW IT WAS FOUND -- the clean discriminator: capture the bank registers at the
-frame the launcher writes them, not later. Entries 0 and 1 turned out to have
-IDENTICAL registers except $4100 (0x10 vs 0x00). Entry 1, outer bank 0, worked.
-Entry 0, outer bank 1, crashed. Same for entry 4. "Outer bank 0 works, outer
-bank 1 crashes" points straight at the outer term being lost.
-
-The fix is the width: u16 in vt_regs.c and vt_regs.h, (u16) casts, and ldrh at
-offsets 0/2/4/6 in mapVT.s. Nothing else needed -- map89_/mapAB_/mapCD_/mapEF_
-already accept 9-bit banks (they mask with rommask>>13, i.e. 511 for a 4 MB
-image).
-
-RESULT: all five reachable VG Pocket games now render (entry 0: 0 -> 36186 lit
-pixels, entry 4: 0 -> 37288). Star Ally menu and gameplay and Lonely Island are
-BYTE-IDENTICAL, and the VG title and category scores are unchanged -- as
-expected, since SA and LI never set a non-zero PRG outer bank.
-
-This is worth remembering for any future multicart: a game that boots black
-while its neighbours work is a banking-width question first, and the register
-capture at the launch frame is the cheapest way to see it.
-
-TOOLING TRAP FOUND HERE: _m6502_pc is an ARM REGISTER (r9) spilled to memory
-only at certain boundaries. Reading it between core->step() calls returns
-garbage -- a ring buffer of "PCs" full of values like 9a4ac4de and c83f6000 is
-the tell. Frame-granular reads (after runFrame) are reliable; instruction-level
-6502 tracing needs a different mechanism.
-
-## 33. The VG Pocket has FIVE category menus, not one list (s21b28)
-
-Navigation is three levels, not two:
-  title --A--> CATEGORY menu (green bushes, 5 wooden signs: Action, Racing,
-  Shooting, Sports, Wits) --Down x C, A--> GAME LIST for that category (black
-  background, paw icons, 5 titles, first row highlighted purple)
-  --Down x G, A--> launch.
-An earlier note called the category menu "the game list"; it is not. Use
-tools/capture_screen.c screens `vgcat` and `vglist`.
-
-PALETTES (calibrated with the section 31 value sentinel against Michael's two
-menu captures):
-  VG title     97.1% exact / 99.6% structural   (95.0% with the $19 choice below)
-  VG category  61.9% exact / 86.5% structural
-  VG game list 79.2% exact / 92.1% structural   <- first ever measurement
-The list screen is BLACK in hardware. Entries $0E/$1D/$23 must be black and
-$2D is the purple highlight; $23 was coloured here, which is exactly why that
-screen rendered green.
-
-THE $19 TRADE-OFF, measured across all three screens (it is used by both the
-title and the category background, and the two captures disagree by 3/31 in
-red):
-  $19 = 0x0243 (title/vg.png):  title 97.1, category 45.5, list 79.2
-  $19 = 0x0246 (category grab): title 95.0, category 61.9, list 79.2
-Shipped 0x0246 -- the category screen is a large flat area where the error is
-obvious, and it gains 16.4 points for 2.1 lost on the title.
-
-SPRITE CAVEAT for the value sentinel: it instruments only gba_bg, so any pixel
-covered by a SPRITE in the reference mis-attributes. That is the whole story
-behind the "$08 conflict" -- the category menu's sign text is sprite-drawn, so
-45 pixels claimed $08 was white while the title's 766 pixels said brown. Weigh
-by vote count and prefer the native capture.
-
-## 34. OPEN: the solid-colour VG Pocket game (category 0, entry 2)
-
-Mechanism located precisely; the fix is NOT yet decidable. Symptoms next to its
-working neighbour (category 0, entry 3):
-
-  broken  $2010=$06  832/960 nametable names   CHR words in VRAM:   1/1024
-  working $2010=$16  819/960 names             CHR words in VRAM: 773/1024
-
-So the game loads a full screen of names and we assemble no tiles for it -- the
-screen fills with one colour. Its CHR page banks are 160-163 with $4100=$10,
-$201A=$00, $2018=$00. In 4bpp a bank is 2 KiB, so bank 160 is ROM 0x50000 --
-and that region is 63 of 64 tiles BLANK, which is exactly the 1/1024 we see.
-
-Our CHR banking matches the wiki article: outer = $4100 bits 0-3 (VA21-24) with
-`OuterBank << 11`, intermediate = $2018 bits 4-6, the $201A mask table, and
-"1 KiB (2 KiB in 4bpp modes)" units. $4100=$10 therefore gives CHR outer 0 even
-though the PRG outer (bits 4-7) is 1 -- this game's CODE is in the upper 2 MB
-while we fetch its GRAPHICS from the lower 2 MB.
-
-Candidate offsets that DO contain data: bank160 x 2 KiB + 2 MB, and
-bank160 x 1 KiB (with or without +2 MB). DO NOT guess between them. An offline
-tile-coherence test was tried to pick a winner and FAILED ITS CONTROL -- a
-known-good game's CHR scored 1.01/8 on the same metric, i.e. the metric does not
-separate art from noise for these carts. (Same failure mode as the offline BG
-renderer in section 28: always run the control first.)
-
-What would settle it: a capture of that game running on hardware. That is
-exactly how vg.png settled the title screen. Until then, changing CHR outer
-handling risks the games that currently work, which is the b10/b14 mistake.
-
-Worth noting for future work: the VG Pocket GAMES run with $2010 D6 CLEAR
-($06, $16, $46, $56 seen), unlike its MENUS ($4E, $5E). So the games use the
-8-bit CHR bus layout and the SA/LI palette table, while the menus use the 16-bit
-layout and the VG table. Decode with the right layout when analysing them -- a
-coherence test run with the wrong one is meaningless.
-
-## 35. The first game ("Right Spot"): structure CONFIRMED, palette DISPUTED
-
-Reference 1.png is the first game, reached by three A taps (title -> category ->
-game list -> launch; category 0, entry 0). Michael notes it is a VARIANT capture
--- it carries "Right Spot" and "PRESS START" logos that the VG Pocket's copy
-does not -- so treat it as authoritative for SHAPE and provisional for COLOUR.
-
-GOOD NEWS, and the point worth keeping: our render scores **94.8% structural**
-against it. So for a game in PRG outer bank 1 with $2010 = $56 (D6 set), the CHR
-banking, geometry and tile assembly are all essentially correct. Whatever ails
-the other games, it is not a general failure of the game path.
-
-THE PALETTE CONFLICT (unresolved -- do not "fix" it by picking a side):
-The value sentinel calibrated all 16 of that screen's values at 88-100%
-confidence. Applying them:
-    Right Spot game   5.4% -> 89.8% exact   (+84.4)
-    VG title         95.0% -> 81.6%         (-13.4)
-    VG category      61.9% -> 42.8%         (-19.1)
-    VG game list     79.2% -> 78.7%         (-0.5)
-Fifteen of sixteen entries disagree with the menu-derived values, and not by a
-little: $20 is white on the title and dark green in the game, $1A is
-blue-violet on the title and white in the game. That is not capture gamma.
-
-Reverted -- the menus were calibrated from captures of Michael's actual console,
-1.png is a different release. But note what this implies: on real silicon ONE
-DAC serves both, so a single table must satisfy both screens. It does not, which
-means our value -> palette-index attribution differs from hardware on one of
-them. The screens differ in $2010: game $56 (SPEXTEN=0, BKEXTEN=1), title $5E
-(SPEXTEN=1, BKEXTEN=1), menus $4E (SPEXTEN=1, BKEXTEN=0). Both game and title
-have BKEXTEN=1 and identical four-palettes-of-four palette RAM layouts, so model
-A should apply identically -- yet they disagree. Worth checking whether the chip
-has an old (25-colour) versus new (121-colour) palette mapping select, which
-would translate indices differently between modes.
-
-CORRECTION to an earlier note: it is NOT true that VG Pocket games all run with
-$2010 D6 clear. $06 and $16 have it clear; $46 and $56 have it SET. Check the
-bit per screen -- it selects both the CHR bus layout and which compat palette
-table is used.
-
-## 36. Four native captures reconcile the DAC (s21b30)
-
-Michael supplied native captures of all three VG Pocket menu levels plus the
-first game: vg.png (title), 1.png (category), 2.png (game list), 3.png ("Get it
-Right"). 3.png is his own console's copy -- it LACKS the "Right Spot"/"PRESS
-START" logos that the earlier variant capture carried, which is how you tell
-them apart.
-
-With four native references the DAC becomes consistent: calibrating each screen
-independently, **20 colour indices AGREE across screens and only 3 conflict**
-($14 and $19 differ by ~3/31, i.e. capture noise; $29 is a real disagreement
-between the category and game screens). That is the single-DAC coherence the
-variant capture could not give -- and it retires guide section 35's worry that
-our index attribution differed per screen. It does not; the earlier conflict was
-an artifact of comparing against a different release.
-
-RESULT (scores below): Get it Right 0.6% -> 43.6% exact with every other screen
-UNCHANGED, and Star Ally + Lonely Island byte-identical. Strict improvement.
-
-TWO MEASUREMENT TRAPS THIS TURN, both worth keeping:
-1. THE MENU CAPTURES ARE CROPPED, NOT FULL FRAMES -- 256x210 and 256x209, not
-   256x240. The reference row for our GBA row y is (y + vofs - R0), and R0 must
-   be found, not assumed: 0 for the title, ~7-10 for the menus, ~20 for the
-   game. Assuming R0=0 silently mis-scores everything.
-2. ALIGN ON A PALETTE-INDEPENDENT SIGNATURE, NOT ON COLOUR. Choosing R0 by
-   maximising exact-colour agreement picks spurious offsets (it chose R0=26 for
-   the category screen against R0=7 from the signature). tools/score_vs_reference.py
-   now searches R0 and a vertical scale by the neighbour-equality signature,
-   then reports exact match at that alignment.
-
-## 37. OPEN: the category menu is STRUCTURALLY wrong, not just mis-coloured
-
-Measured against the native 1.png with correct alignment: **structural 59.4%,
-exact 27.5%** -- while the title is 100.0/95.0, the game list 93.0/80.7 and the
-game 80.3/43.6. So screens 1, 3 and 4 are structurally sound and screen 2 is
-not. Its earlier 85.8% structural was measured against a 585x481 window grab
-resized to 256x240, which STRETCHED 210 rows to 240 and flattered the result.
-
-This is the screen that also wanted a vertical scale of 1.067 in the alignment
-search, so re-check the capture's own geometry before assuming a rendering bug.
-Then use the section 29 ROM-search (palette-independent tile signature) to find
-which bank its cells should come from, exactly as that search proved bank 204
-correct in s21b22.
-
-## 38. Category menu: the BUSHES are right, the SIGNS are not (s21b31)
-
-Narrowed considerably. The screen is completely STATIC (0 pixels change over 240
-frames), so no phase effect, and it uses ZERO sprites -- the wooden signs are
-background, not objects. Rendering it beside the capture shows the bush pattern
-matching along both edges while the five signs come out as flat bars where the
-reference has textured planks with text.
-
-The nametable explains the split: bush cells carry names $08-$33, i.e. CHR PAGE
-0, while every sign row carries $51-$D4 -- pages 1, 2 and 3. Page 0's bank was
-proven correct back in s21b22; pages 1-3 have never been verified.
-
-ROM SEARCH RESULT (section 29 method, palette-independent tile signature, 100
-cells per page):
-    page 0  best bank  204 = 0.655   2nd 0.564   floor 0.504   <- we use 204, CORRECT
-    page 1  best bank  256 = 0.584   2nd 0.577   floor 0.482   <- we use 205
-    page 2  best bank  256 = 0.577   2nd 0.576   floor 0.477   <- we use 206
-    page 3  best bank  955 = 0.594   2nd 0.583   floor 0.491   <- we use 207
-Page 0 separates cleanly; pages 1-3 have NO winner -- the top candidate is
-within noise of the second. Since the same search does find page 0, the sign
-tiles are evidently NOT plain 4bpp tiles sitting in a 2 KiB bank anywhere in the
-image. Something about how those pages are fetched differs; that is the thread
-to pull, not the bank number.
-
-ALIGNMENT, and a correction to section 36: for 1.png the true crop offset is
-**R0 = 2**, not the 7 that the neighbour-signature search reported. Pin it by
-ANCHORING ON KNOWN-GOOD DATA instead -- score page-0 cells against the proven
-bank 204 across candidate R0 and take the peak (R0=2 gives 0.666 under the
-16-bit layout, 0.637 under 8-bit, which also re-confirms the 16-bit bus for this
-screen). With R0=7 the search preferred the 8-bit layout and produced misleading
-bank rankings, so a wrong alignment does not merely lower scores, it flips
-conclusions.
-
-## 39. Why the VG palettes CANNOT be finished by calibration (s21b33)
-
-Michael's verdict after b30 was blunt and correct: none of the palettes are
-fixed. This section records why, so nobody burns another session calibrating.
-
-Two colour indices give IRRECONCILABLE readings from two native captures of the
-SAME console:
-    $19  title (3,18,0)      vs  category bushes (6,18,0)
-    $29  Get it Right (31,26,19 cream)  vs  category bushes (16,28,0 green)
-$29 is not capture noise -- green versus cream, 795 and 989 votes, both at 100%
-within-screen confidence.
-
-Everything that could explain it away has been RULED OUT by measurement:
-* Not structure. The category votes were restricted to CHR page 0 (the bushes),
-  whose bank was proven correct in s21b22; only the sign cells are wrong.
-* Not sprites. In a sentinel build a background pixel satisfies r==g and b==0,
-  so sprite-covered pixels can be excluded exactly. Zero were skipped on any of
-  the four screens -- these screens use no sprites at all.
-* Not animation. The category screen changes 0 pixels over 240 frames, and the
-  game's palette RAM is byte-identical from +80 to +560 frames.
-* Not alignment. R0 is pinned by anchoring on known-good data (section 38).
-* Not the index model. Category value 1 -> palette RAM index 1 ($29) and game
-  value 3 -> index 3 ($29) under our model, under the datasheet-literal model B
-  and under model J alike; all three agree here, so no choice among them helps.
-
-A single DAC cannot render colour number $29 as both green and cream. Therefore
-our value -> palette-RAM-index mapping is wrong on one of these screens in a way
-none of the three tested models captures, and NO table can satisfy both. Chasing
-better numbers by adjusting entries just moves the error between screens:
-
-     $19          $29           title  categ  glist  game   TOTAL
-     (3,18,0)     (31,26,19)    97.1    7.4   80.6   47.1   232.2
-     (3,18,0)     (16,28,0)     97.1   15.8   80.7   43.7   237.4
-     (6,18,0)     (31,26,19)    95.0   14.7   80.6   47.1   237.4
-     (6,18,0)     (16,28,0)     95.0   23.1   80.7   43.7   242.5   <- shipped
-
-Shipped the best total. The real work is finding what differs between a
-BKEXTEN=0 screen (category, $2010=$4E) and a BKEXTEN=1 screen (game, $56) in
-how a pixel value reaches palette RAM. Note the category ALSO has the flat-sign
-fault (section 38) whose tiles match no bank in the image -- one mechanism may
-well explain both, so treat them as one investigation, not two.
-
-## 40. The VG Pocket catalogue: 54 menu entries, not 50 (s21b34)
-
-Counted two independent ways that agree. Method that works and is fast: from a
-game list, hash the live nametable (NES_VRAM2, 960 bytes) after each Down tap
-and find where the hash cycle repeats -- no launching required. Cross-checked
-by launching each entry and comparing the PRG bank signature (vt.reg[7..0x0B]),
-which repeats on exactly the same period.
-
-    CATEGORY menu: 5 categories (entry 5 repeats entry 0)
-      category 0 (Action)    5 entries
-      category 1 (Racing)    4
-      category 2 (Shooting)  6
-      category 3 (Sports)    4
-      category 4 (Wits)     35   <- this list SCROLLS; the others fit on one page
-      TOTAL                 54
-
-So the unit advertises 50 and its menu actually offers 54 entries. Entry 35 of
-category 4 repeats entry 1, and no PRG bank signature recurs across categories,
-so these look like 54 distinct titles rather than duplicates.
-
-STATUS OF EVERY ENTRY (px = lit pixels, cols = distinct colours, after launch
-and ~420 frames):
-  RENDERS SOMETHING PLAUSIBLE  ~30 entries
-  BLANK (0 px)                 ~13: C2 G2; C3 G1, G3; C4 G4, G7, G9, G10, G16,
-                                    G19, G22, G29 (+C4 G5 at 254 px)
-  FLAT (one colour, 38400 px)    4: C0 G1; C2 G5; C3 G0, G2
-  VERY SPARSE (<6000 px)         5: C2 G4; C4 G12, G21, G27, G30
-  NOT MEASURED                   5: C4 G0, G8, G17, G26, G34 -- the harness
-                                    dropped the launch tap, NOT a game fault
-Category 3 (Sports) is the worst: all four of its entries are blank or flat.
-
-CAVEAT ON THE HARNESS: a "no-launch" row means the menu tap was missed, which
-happens every dozen or so entries with tap(8 frames on, 22 off). Confirm with
-the bank registers before recording a game as broken, and re-run those indices.
-
-## 41. Hunting unused games in the VG Pocket image (s21b35 — none confirmed)
-
-Worth doing, and the tooling is reusable, but the honest result is negative.
-
-STEP 1 -- which banks does the menu actually use? Compute each entry's $E000
-bank from its launch registers: eff = (0xFF & A) | ((pq3 | outer<<8) & ~A) with
-A = 0x3F>>ps, ps = $410B bits 0-2, pq3 = $410A, outer = $4100 bits 4-7. The 54
-entries resolve to only 39 DISTINCT banks (several share one; nine entries map
-to bank 31), so entries are not one-to-one with fixed banks.
-
-STEP 2 -- which banks look like a game? Scan all 512: NMI/RESET/IRQ all within
-$8000-$FFFF, all three distinct, RESET >= $E000 (it must live in its own fixed
-bank), and the byte at RESET a plausible opening opcode (SEI/CLD/LDX/JMP/...).
-43 banks qualify. Five are not claimed by any menu entry -- 143, 255, 319, 359,
-391 -- and each has unique 8 KiB content (its md5 matches no other bank), so
-they are not duplicate copies.
-
-STEP 3 -- BOOT THEM. Build a probe ROM that overwrites the image's BOOT bank
-with a launcher stub. The boot bank is **63 (ROM 0x7E000)**, NOT the last bank
-of the image -- putting the stub at the end does nothing and you just get the
-normal title screen, which is exactly how this first went wrong. The stub must
-copy its register writes to RAM and run them from there, because setting the
-banks pulls the fixed bank out from under itself:
-
-    $E000: SEI, CLD, LDX #$FF, TXS, LDX #len-1,
-           LDA $E100,X / STA $0200,X / DEX / BPL, JMP $0200
-    $E100: LDA #ps  STA $410B ; LDA #pq3 STA $410A ; LDA #outer<<4 STA $4100
-           LDA #0   STA $4107 ; LDA #1   STA $4108 ; JMP ($FFFC)
-    vectors at $FFFA all point to $E000
-
-Choose ps as the smallest value with (target & A) == A, then pq3 = target & ~A
-and outer = target >> 8. ALWAYS include a control: bank 207 is a reachable
-game and boots to ~36.8K lit pixels / 16 colours, which proves the stub works.
-
-RESULT: 143, 255 and 319 boot BLANK; 391 fills the screen with one colour; 359
-produces a real screen (36947 px, 26 colours, $2010 = $5E) -- but that closely
-matches menu entry C4 G35 (37294 px, 26 colours, $5E), so bank 359 is very
-likely already reachable and step 1 simply missed it. Step 1's bank numbers come
-from registers read AFTER launch, which the game itself may have rewritten, so
-treat that "used" set as approximate.
-
-NO hidden game is confirmed. Two caveats before anyone concludes there are none:
-the stub sets only ps/$410A/$4100/$4107/$4108, while the real launcher may also
-set $4109, mirroring or $2010 -- so a blank probe does not prove "not a game";
-and the launcher's per-game table was NOT found (searching all 22 known
-$4107..$410B signatures as contiguous bytes gives zero hits, so it is
-column-major or encoded). Finding that table is the clean way to settle this.
-
-## 42. The reference captures are SCALED, not cropped — and that changes conclusions (s21b36)
-
-Michael's menu/game captures are 256x210, 256x209 and 256x210. Sections 36 and
-38 treated the missing 30 rows as a CROP and searched for an offset R0. That was
-wrong: they are a vertical SCALE of the full 240-row frame. The correct mapping
-is
-
-    reference_row = int( (y + vofs) * H / 240 )        vofs from _dma0buff
-    reference_col = x + 8
-
-PROOF, and it is decisive. Take the three CHR pages the category menu uses and
-score each against the bank our emulator assigns it, sweeping scale and offset:
-at scale 0.875 (= 210/240) and offset 0, ALL THREE pages agree with their
-assigned banks -- page 0 vs bank 204 = 0.704, page 1 vs 205 = 0.682, page 2 vs
-206 = 0.648, against a ~0.50 noise floor. Under the crop model no single offset
-did that; page 0 wanted offset 2 and page 1 wanted 10, an 8-pixel disagreement
-that looked like a one-cell displacement of the signs.
-
-WHAT THIS RETRACTS:
-* Section 38's headline -- "the sign tiles are NOT plain 4bpp tiles in any 2 KiB
-  bank" -- is WRONG. Banks 204/205/206 are correct for pages 0/1/2. There is no
-  missing fetch mechanism to find.
-* Every category-menu score taken with the crop model is void. With the scale
-  model the same build scores 46.3% exact / 71.8% structural, not 23.1 / 55.8.
-* The palette calibration for that screen sampled reference pixels through the
-  wrong mapping, so the $19 and $29 "irreconcilable" readings in section 39 are
-  suspect and must be re-derived before anyone concludes the index model is
-  broken.
-
-The lesson is the one from section 38 restated more strongly: a wrong geometry
-does not merely lower scores, it manufactures phantom bugs. Fit scale AND offset
-by the palette-independent signature, and sanity-check by scoring known-good
-banks -- if a bank you have already proven correct does not come out on top, the
-geometry is wrong, not the emulator.
-
-TOOL NOTE: tools/capture_screen.c had lost its `vglist` and `vggame` routes (they
-were only ever patched into a /tmp copy), so those names silently fell through to
-the vgcat branch and produced identical captures. Both routes and the palette-RAM
-dump are now in the tree copy. If two screens score identically, check you are
-actually capturing two screens.
-
-## 43. Palettes recalibrated on the corrected geometry (s21b37)
-
-Redoing section 31's value-sentinel calibration with the SCALE mapping from
-section 42 instead of the crop mapping. Two rules made the difference:
-
-1. **A screen may only vote on colour once its STRUCTURE is right.** Fit each
-   capture's scale and offset first, then rank the screens by that structural
-   fit and let the best-fitting screen own each index:
-       title 1.000 > game list 0.961 > Get it Right 0.885 > category 0.707
-   The title supplies 12 indices, the list 3, the game 9, the category 2.
-2. **Settle genuine disputes by measuring, not by vote count.** $19 and $29 are
-   claimed by both the title/game and the category. Scoring all four
-   resolutions across all four screens offline (synthesise the frame from the
-   sentinel VALUE render plus the game's own palette RAM -- no rebuild needed):
-       priority, game $29        268.1 total
-       category $29              278.2
-       category $29 + $19        290.3   <- shipped
-       category $19 only         280.2
-
-RESULT, verified on a real build against the four native captures:
-       title       95.0% exact / 100.0% structural
-       category    46.3 / 71.8
-       game list   86.5 / 95.8      (was 80.7 under the crop mapping)
-       Get it Right 62.0 / 86.8     (was 43.6)
-Star Ally's menu is 68.6% vs 11.png (baseline 68.2, i.e. unchanged within
-noise) and Lonely Island is identical on every measure -- 32278 lit pixels,
-19 colours, dominant 0x8400 -- as expected, since neither ever sets $2010 D6
-and so neither reads the VG table.
-
-The category menu remains the weakest at 71.8% structural. That is now known
-NOT to be a banking fault (section 42 proved banks 204/205/206 correct), so the
-residue is either its own capture's geometry -- it is the only screen whose
-offset search does not reach a sharp optimum -- or something specific to
-BKEXTEN=0 rendering. Chase the geometry first; a screen that will not align
-cleanly is usually telling you about the capture, not the emulator.
-
-## 44. The captures are INTERPOLATED — quantise before comparing (s21b38)
-
-vg.png is a clean framebuffer dump: 256x240, exactly **16 distinct colours**.
-The menu and game captures are not. Scaling them introduced blending:
-
-    1.png (category)    4873 distinct colours, top-16 cover only 49% of pixels
-    3.png (Get it Right) 4826 distinct colours, top-16 cover 76%
-    2.png (game list)   1055 distinct colours, top-16 cover 92%
-
-Half the category capture is blend pixels, which no emulator can ever match.
-That was depressing both metrics uniformly and, worse, diluting the calibration
-votes. ALWAYS snap a reference to its dominant colours before scoring or
-calibrating: take the top 16 by area and map every pixel to the nearest.
-
-Effect of quantising alone, same build, no code change:
-    category    46.3 exact / 71.8 structural  ->  52.4 / 80.1
-    Get it Right 62.0 / 86.8                  ->  68.8 / 93.1
-    title and game list unchanged (they were barely blended)
-
-Recalibrating on the quantised references then lifted the usable index count
-from 26 to 30 and improved the table again. Final, verified on a real build:
-
-    title        95.0% exact / 100.0% structural
-    category     52.4 / 80.1
-    game list    86.7 / 96.1
-    Get it Right 70.7 / 93.3      (was 43.6 exact three builds ago)
-    SA menu      68.6 / 99.5      (unchanged -- control)
-    Lonely Island identical: 32278 lit pixels, 19 colours (control)
-
-DIAGNOSTIC WORTH REUSING: when a screen scores badly, split the comparison by
-CHR page using the live nametable. On the category menu all four pages scored
-alike (66-76% structural) INCLUDING page 0, whose bank is proven correct -- a
-uniform deficit across a screen means the yardstick, not the renderer. A
-page-specific deficit would have meant the opposite. That is what pointed at the
-capture rather than at another phantom banking bug.
-
-## 45. The VG palette is at its measurable limit — the residue is the DOWNSCALE (s21b39)
-
-Michael: "the palettes still aren't fixed... the second screen is almost there,
-but still not precisely." He is right that it is not precise, and here is why,
-with the evidence, so nobody spends another session recalibrating.
-
-FIRST, two hypotheses killed cheaply:
-* The VG DAC is NOT a standard NES palette. Substituting the 2C02 table scores
-  130.1 total against the fitted table's 305.5, and the captures' own colours
-  sit 10-24 units (RGB555) away from their nearest NES colour. Empirical
-  fitting is necessary.
-* Every remaining disputed index was tested INDIVIDUALLY against all four
-  references. Only $0C improved anything (+2.1). $27, $20, $11 and $08 each
-  made the total WORSE by 1.4-7.2. The title-derived values are right; the
-  category's disagreements are attribution noise, not colour errors.
-
-SECOND, and this is the actual answer: measure exact match against a 3x3
-tolerance -- "does our colour appear anywhere in the reference's neighbourhood".
-
-    title        95.0% exact -> 95.0% within-3x3   (+0.0)
-    category     54.5       -> 80.5               (+26.0)
-    game list    86.7       -> 91.9               (+5.2)
-    Get it Right 70.7       -> 75.0               (+4.3)
-
-The title gains NOTHING from the tolerance because it is large flat shapes, and
-it is already at 95%. The category gains 26 POINTS, because it is dense foliage
-and our 240x160 output drops one scanline in four (section 16). Its colours are
-substantially correct; its pixels simply land on different rows than the
-console's. No palette entry can fix that -- only reducing the vertical
-decimation can, which is the section 16 scaling work.
-
-So: the category menu's palette is close to correct and further calibration will
-not move it. If it still looks off on hardware, the thing to fix is the
-256x240 -> 240x160 mapping, not the table.
+## 74. Housekeeping: retired docs, and the open items they carried (repo cleanup after s21b62)
+
+No emulator change. The tree was tidied for git: reference/ (NESdev XML
+exports, NintendulatorNRS sources) and testroms/ are local-only and
+gitignored, as are ROMs, PNG captures and build output. The shipping core is
+byte-identical before and after this cleanup (checked with both build_pvt.sh
+and the devkitARM Docker build). builder.py now exits non-zero when it
+injected no ROMs (the section 2 / CLAUDE.md trap), and tools/restage.sh,
+score_5bit.sh, vtref.py and vtview.py take paths from the environment
+instead of the old /home/claude and /mnt/user-data layout.
+
+Docs removed, and where their still-true content went:
+
+* ROADMAP.md (session-10 Lonely Island plan; it already deferred to this
+  guide) -> LI facts into section 10, vtref.py notes into section 3. Its
+  milestones M1-M2.5 are done (sections 6-8b); M3 (audio by ear) and M4 (full
+  playthrough) were never formally closed.
+* FIX_4BPP_DESIGN.md (the session 3-5 4bpp design) -> its verified results
+  are in sections 13 and 66a. The one lesson not recorded elsewhere: the
+  first per-bit 4bpp assembler was too slow for the vblank IRQ and crashed
+  with LR=0 in its inner loop. Enlarging the IRQ stack did NOT help; the fix
+  was the 256-entry `vt_spread` table (plane byte -> GBA nibble order,
+  0-mismatch vs the per-bit method). Adding its EWRAM globals then shifted
+  the fixed-address layout and hung boot. Hence "time, not stack" and the
+  EWRAM_BSS rule in section 5.
+* CODE_AUDIT.md: the first half (the "garbled from boot" hunt that led to
+  the 4bpp path) is obsolete. Its four register verdicts moved to
+  DATASHEET_DIGEST.md appendix B.
+* FINDINGS_vt_opcodes.md -> DATASHEET_DIGEST.md appendix A.
+* README_pocketnes.md -> README.md (Heritage).
+* IMPLEMENTATION_NOTES.md (v0.2-era) -> the durable parts are below. Its
+  "submapper byte-mangling" item is DONE (section 70a).
+
+Durable facts from IMPLEMENTATION_NOTES.md:
+
+* `vt_active` (vt_regs.c) gates the PPU $2008+ divert: cart.s loadcart_asm
+  clears it before any mapper init and mapVTinit sets it, so non-VT mappers
+  keep NES $2000-$2007 mirroring.
+* loadcart.c remaps NES 2.0 mapper 256/405 to internal 253 and stores the
+  submapper in `vt.submapper`; bit 7 of it marks "mapper 405".
+* 6502_vt.s hardcodes VTState offsets 0x20-0x22 (encryption fields); the
+  `_Static_assert`s at the top of vt_regs.c fail the build if they drift.
+
+Open items those docs carried, still unimplemented:
+
+* **Mapper 405 zero-vector boot.** VT168 carts such as Space_War have
+  all-zero vectors; the real chip's boot ROM reads a jump table at PRG
+  offset $10 (Space_War: $8057,$80AE,$8008,$805F,$80B6,$8017,$806E,$80C5,
+  stored high byte first) and jumps to one entry. The first ($8057) is the
+  safe default. Suggested shape: a 4 KB EWRAM copy of the last PRG 4 KB with
+  a `JMP $8057` stub and a patched reset vector, installed as memmap_F.
+  Loadcart already sets the vt.submapper bit-7 marker.
+* **VT369 ADPCM.** vt_regs.c uses the standard 89-step IMA table. Real VT369
+  uses a 16x16 step table with four prediction modes chosen by lead-byte
+  bits 5:4 (Furbtendulator ADPCM_VT369.cpp):
+  `index = lead - (pos>=24 && lead&0x40) + 2*(pos>=24 && lead&0x80);
+  step = stepTable[index&15][nibble&15]`. It plays, but not bit-exact.
+* **OAM-extension 16x8 sprites (vt_oam_ext).** ppu_vt.c stores the
+  extension table but nothing reads it. Design: with `vt_ppumode & 0x04`,
+  each OAM entry's tile is the left half and `vt_oam_ext[i*2]` the right
+  half, so each VT sprite emits two GBA OBJs. This is separate from the
+  PIX16EN path (sections 8/8b), which is done. No test cart needs it yet.
+* **$2000 D7 NMI polarity** and the **VT02 low-luminance palette corner**
+  are spec-vs-code notes, not bugs. See DATASHEET_DIGEST.md appendix B
+  before "fixing" either.
