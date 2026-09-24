@@ -3462,3 +3462,49 @@ same row on 63. That is consistent with scale75 dropping the edge row on some
 lines, but a real 1-row vertical offset in gameplay (NES scroll Y = 2 there) is
 not ruled out -- worth one look with the VALUE_SENTINEL build. Scramble also diverges in game state by ~f850 (the reference's ship dies, ours
 does not) -- expected over long runs, so compare early frames.
+
+## 76. furb_cli: the rest of the GUI's features, headless (after s21b62)
+
+No emulator change. furb_cli now covers what the GUI does, not just "run a
+.nes and dump frames": the FDS, NSF and VS mapper packs; settings through
+Furbtendulator's own registry loader (.reg exports or Name=value files,
+--set, --save-config); every controller type on every port including Four
+Score, the Famicom 4-player adapters, Zapper, keyboards, mice and the
+microphones; WAV and AVI capture of the real mixer output; savestates,
+movies (through the GUI's own movie dialogs), cheats, DIP switches, custom
+palettes, header patching, CPU trace, battery saves; FDS disk and tape
+commands. tools/furb_cli/README.md lists the options;
+tools/furb_cli/selftest.py checks each one (0 failures at this commit).
+
+How: the shim is no longer all-inert. The registry is a map; a dialog script
+registered for a template ID runs the real dialog procedure against fake
+controls; file pickers are answered from a queue; DirectSound captures the
+samples Sound.cpp writes. The packs reach those host functions through one
+exported symbol (furb_host_lookup, -Wl,--dynamic-list), because each .so
+links its own static copy of compat.cpp built with -DFURB_PACK.
+
+Traps, so nobody re-debugs them:
+(1) GetModuleFileName must be real. A stub made ProgPath empty, which
+    silently broke BIOS/, cheats.cfg, dip.cfg and samples/ loading.
+(2) MSVC's "rt,ccs=UTF-16LE" fopen mode. The cfg files are UTF-16 and read
+    with fgetwc; glibc ignores ccs=, the text came out garbled and a
+    syntax-error message overflowed a buffer and crashed. open_ccs_read
+    decodes the file (BOM detection) into a real temporary UTF-8 file and
+    reopens it. Writing into tmpfile() does not work (the stream is already
+    byte-oriented, fgetwc returns WEOF) and fmemopen crashes in getwc.
+(3) NSF does not play on load, in the GUI either: CPU::Reset clears the INIT
+    IRQ after the mapper reset, so the player waits for Play. --nsf-song N
+    moves the song slider, sends WM_HSCROLL, and clicks Play.
+(4) NES::OpenFile sets NES::Running for NSFs regardless of AutoRun. There is
+    no emulation thread here, so furb_cli clears it after loading.
+(5) Pad buttons must not share code space with keyboards: keyboard devices
+    read KeyState by DIK code, so pads are mapped to virtual joysticks
+    (device 2+port, code (dev<<16)|button).
+(6) Frame hashes changed at this commit (RGB byte order), so compare hashes
+    only within one furb_cli build. The frames themselves are unchanged: 48
+    dumped frames over 3 ROMs are byte-identical to the previous build.
+
+Unverified: real FDS disks (dummy BIOS only), the keyboards, mice, Arkanoid,
+tablet and data recorder (plumbing exercised, no test ROM reads them), and
+the VT369 hi-res dump path -- Lucky Lawn Mower VT369 (supplied this session,
+in the gitignored testroms/) runs as console VT369 but never sets $201C bit 2.

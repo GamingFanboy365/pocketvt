@@ -456,9 +456,8 @@ DWORD GetTickCount(void);
 inline DWORD timeGetTime(void) { return GetTickCount(); }
 inline BOOL QueryPerformanceCounter(LARGE_INTEGER *v) { v->QuadPart = GetTickCount(); return TRUE; }
 inline BOOL QueryPerformanceFrequency(LARGE_INTEGER *v) { v->QuadPart = 1000; return TRUE; }
-inline DWORD GetModuleFileName(HMODULE, wchar_t *buf, DWORD n) { if (n) buf[0] = 0; return 0; }
+DWORD GetModuleFileName(HMODULE, wchar_t *buf, DWORD n);	// the executable, with '\\' separators
 inline DWORD GetCurrentDirectory(DWORD n, wchar_t *buf) { if (n) buf[0] = 0; return 0; }
-inline DWORD GetFileAttributes(const wchar_t *) { return (DWORD)-1; }
 inline void OutputDebugString(const wchar_t *) {}
 inline void OutputDebugStringA(const char *) {}
 #define InterlockedIncrement(p) (++*(p))
@@ -495,19 +494,19 @@ inline int WideCharToMultiByte(UINT, DWORD, const wchar_t *w, int n, char *s, in
 
 // ---------------------------------------------------------------- stubbed API
 // Window / menu / dialog / GDI / registry / shell / DLL: all inert.
-WINSTUB(MessageBox) WINSTUB(MessageBoxA) WINSTUB(MessageBoxW)
+WINSTUB(MessageBoxA) 
 WINSTUB(EnableMenuItem) WINSTUB(CheckMenuItem) WINSTUB(CheckMenuRadioItem) WINSTUB(GetMenu)
 WINSTUB(SetMenu) WINSTUB(GetSubMenu) WINSTUB(DrawMenuBar) WINSTUB(ModifyMenu) WINSTUB(InsertMenu)
 WINSTUB(AppendMenu) WINSTUB(DeleteMenu) WINSTUB(RemoveMenu) WINSTUB(CreatePopupMenu) WINSTUB(CreateMenu)
 WINSTUB(GetMenuItemCount) WINSTUB(TrackPopupMenu) WINSTUB(DestroyMenu) WINSTUB(GetMenuState) WINSTUB(LoadMenu)
-WINSTUB(GetDlgItem) WINSTUB(DialogBox) WINSTUB(DialogBoxParam) WINSTUB(CreateDialog) WINSTUB(CreateDialogParam)
-WINSTUB(EndDialog) WINSTUB(SetDlgItemText) WINSTUB(GetDlgItemText) WINSTUB(SetDlgItemInt) WINSTUB(GetDlgItemInt)
-WINSTUB(CheckDlgButton) WINSTUB(IsDlgButtonChecked) WINSTUB(SendDlgItemMessage) WINSTUB(CheckRadioButton)
-WINSTUB(SendMessage) WINSTUB(PostMessage) WINSTUB(PeekMessage) WINSTUB(GetMessage) WINSTUB(TranslateMessage)
+
+
+
+WINSTUB(PostMessage) WINSTUB(PeekMessage) WINSTUB(GetMessage) WINSTUB(TranslateMessage)
 WINSTUB(DispatchMessage) WINSTUB(TranslateAccelerator) WINSTUB(IsDialogMessage) WINSTUB(PostQuitMessage)
 WINSTUB(DefWindowProc) WINSTUB(CallWindowProc) WINSTUB(RegisterClassEx) WINSTUB(RegisterClass) WINSTUB(CreateWindow)
 WINSTUB(CreateWindowEx) WINSTUB(DestroyWindow) WINSTUB(ShowWindow) WINSTUB(UpdateWindow) WINSTUB(SetWindowPos)
-WINSTUB(MoveWindow) WINSTUB(GetWindowRect) WINSTUB(GetClientRect) WINSTUB(ClientToScreen) WINSTUB(ScreenToClient)
+WINSTUB(MoveWindow) WINSTUB(GetWindowRect) 
 WINSTUB(AdjustWindowRect) WINSTUB(AdjustWindowRectEx) WINSTUB(SetWindowText) WINSTUB(GetWindowText)
 WINSTUB(SetWindowLong) WINSTUB(GetWindowLong) WINSTUB(SetWindowLongPtr) WINSTUB(GetWindowLongPtr)
 WINSTUB(InvalidateRect) WINSTUB(RedrawWindow) WINSTUB(IsWindow) WINSTUB(IsWindowVisible) WINSTUB(IsIconic) WINSTUB(IsZoomed)
@@ -527,16 +526,23 @@ WINSTUB(FrameRect) WINSTUB(CreateSolidBrush) WINSTUB(CreatePen) WINSTUB(CreateFo
 WINSTUB(GetSysColor) WINSTUB(GetSysColorBrush) WINSTUB(SetTextColor) WINSTUB(SetBkColor) WINSTUB(SetBkMode)
 WINSTUB(TextOut) WINSTUB(DrawText) WINSTUB(GetTextExtentPoint32) WINSTUB(Rectangle) WINSTUB(MoveToEx) WINSTUB(LineTo)
 WINSTUB(SetPixel) WINSTUB(GetPixel) WINSTUB(SetStretchBltMode) WINSTUB(GetDeviceCaps) WINSTUB(GetObject)
-// Registry: always "not found", so every setting keeps its compiled-in default
-// (code tests these with == ERROR_SUCCESS, which a zero stub would satisfy).
+// Registry: one flat key (SOFTWARE\Nintendulator), held in memory by the
+// executable and filled from --config (a regedit .reg export or key=value
+// file) and --set.  A value that is not there answers "not found", so its
+// setting keeps the compiled-in default.
 #define ERROR_FILE_NOT_FOUND 2L
+#define ERROR_MORE_DATA 234L
+LONG RegOpenKeyEx(HKEY, LPCTSTR, DWORD, DWORD, HKEY *out);
+LONG RegCreateKeyEx(HKEY, LPCTSTR, DWORD, LPTSTR, DWORD, DWORD, void *, HKEY *out, DWORD *);
+LONG RegCloseKey(HKEY);
+LONG RegQueryValueEx(HKEY, LPCTSTR name, DWORD *, DWORD *type, BYTE *data, DWORD *size);
+LONG RegSetValueEx(HKEY, LPCTSTR name, DWORD, DWORD type, const BYTE *data, DWORD size);
 #define REGSTUB(name) template <class... A> inline LONG name(A&&...) { return ERROR_FILE_NOT_FOUND; }
-REGSTUB(RegOpenKeyEx) REGSTUB(RegCreateKeyEx) REGSTUB(RegCloseKey) REGSTUB(RegQueryValueEx) REGSTUB(RegSetValueEx)
 REGSTUB(RegDeleteValue) REGSTUB(RegDeleteKey) REGSTUB(RegEnumValue) REGSTUB(RegEnumKeyEx)
-WINSTUB(GetOpenFileName) WINSTUB(GetSaveFileName) WINSTUB(SHGetFolderPath) WINSTUB(SHGetSpecialFolderPath)
+WINSTUB(SHGetFolderPath) WINSTUB(SHGetSpecialFolderPath)
 WINSTUB(SHCreateDirectoryEx) WINSTUB(SHBrowseForFolder) WINSTUB(SHGetPathFromIDList) WINSTUB(CoTaskMemFree)
-WINSTUB(ShellExecute) WINSTUB(DragAcceptFiles) WINSTUB(DragQueryFile) WINSTUB(DragFinish) WINSTUB(CreateDirectory)
-WINSTUB(PathRemoveFileSpec) WINSTUB(PathFileExists) WINSTUB(PathAppend) WINSTUB(PathCombine) WINSTUB(PathFindExtension)
+WINSTUB(ShellExecute) WINSTUB(DragAcceptFiles) WINSTUB(DragQueryFile) WINSTUB(DragFinish) 
+WINSTUB(PathRemoveFileSpec) WINSTUB(PathCombine) WINSTUB(PathFindExtension)
 WINSTUB(PathFindFileName) WINSTUB(PathRemoveExtension) WINSTUB(PathIsDirectory)
 WINSTUB(LoadLibraryA) WINSTUB(GetModuleHandle)
 WINSTUB(CreateThread) WINSTUB(SetThreadPriority) WINSTUB(GetCurrentThread) WINSTUB(WaitForSingleObject)
@@ -546,7 +552,7 @@ WINSTUB(InitCommonControls) WINSTUB(InitCommonControlsEx) WINSTUB(ImageList_Crea
 WINSTUB(CloseClipboard) WINSTUB(EmptyClipboard) WINSTUB(SetClipboardData) WINSTUB(GetClipboardData)
 WINSTUB(GlobalAlloc) WINSTUB(GlobalLock) WINSTUB(GlobalUnlock) WINSTUB(GlobalFree) WINSTUB(Beep) WINSTUB(MessageBeep)
 WINSTUB(CoInitialize) WINSTUB(CoInitializeEx) WINSTUB(CoUninitialize) WINSTUB(CoCreateInstance)
-WINSTUB(DirectDrawCreateEx) WINSTUB(DirectSoundCreate) WINSTUB(DirectSoundCreate8) WINSTUB(DirectInput8Create)
+WINSTUB(DirectDrawCreateEx) WINSTUB(DirectSoundCreate8) WINSTUB(DirectInput8Create)
 WINSTUB(AVIFileInit) WINSTUB(AVIFileExit) WINSTUB(AVIFileOpen) WINSTUB(AVIFileRelease) WINSTUB(AVIFileCreateStream)
 WINSTUB(AVIStreamRelease) WINSTUB(AVIStreamWrite) WINSTUB(AVIStreamSetFormat) WINSTUB(AVIMakeCompressedStream)
 WINSTUB(AVISaveOptions) WINSTUB(AVISaveOptionsFree) WINSTUB(acmStreamOpen) WINSTUB(acmStreamClose)
@@ -616,10 +622,54 @@ BOOL FindClose(HANDLE h);
 HMODULE LoadLibrary(const wchar_t *name);
 void *GetProcAddress(HMODULE h, const char *name);
 BOOL FreeLibrary(HMODULE h);
-WINSTUB(CommDlgExtendedError) WINSTUB(DestroyCursor) WINSTUB(DialogBoxIndirect) WINSTUB(DialogBoxIndirectParam)
-WINSTUB(ExitThread) WINSTUB(TerminateThread) WINSTUB(GetCurrentObject) WINSTUB(GetCursorPos) WINSTUB(SetCursorPos)
-WINSTUB(GetWindowTextLength) WINSTUB(RegisterHotKey) WINSTUB(UnregisterHotKey) WINSTUB(SetFileAttributes)
-WINSTUB(CreateDialogIndirect) WINSTUB(CreateDialogIndirectParam)
+WINSTUB(CommDlgExtendedError) WINSTUB(DestroyCursor) 
+WINSTUB(ExitThread) WINSTUB(TerminateThread) WINSTUB(GetCurrentObject) 
+WINSTUB(RegisterHotKey) WINSTUB(UnregisterHotKey) WINSTUB(SetFileAttributes)
+
+
+// ---------------------------------------------------------------- host services
+// Implemented by furb_cli (compat.cpp in the executable); the mapper packs
+// reach the same implementations through dlsym, so there is one set of
+// dialog / cursor / file-picker state.  Dialogs are "headless": a dialog the
+// CLI has a script for runs its real dialog procedure against a fake dialog
+// (control text, check state, trackbar positions); any other modal dialog is
+// cancelled, exactly as if the user had pressed Cancel.
+int MessageBox(HWND, LPCTSTR text, LPCTSTR caption, UINT type);
+#define MessageBoxW MessageBox
+INT_PTR DialogBoxParam(HINSTANCE, LPCTSTR tmpl, HWND parent, DLGPROC proc, LPARAM lp);
+INT_PTR DialogBoxIndirectParam(HINSTANCE, LPCDLGTEMPLATE tmpl, HWND parent, DLGPROC proc, LPARAM lp);
+HWND CreateDialogParam(HINSTANCE, LPCTSTR tmpl, HWND parent, DLGPROC proc, LPARAM lp);
+HWND CreateDialogIndirectParam(HINSTANCE, LPCDLGTEMPLATE tmpl, HWND parent, DLGPROC proc, LPARAM lp);
+inline INT_PTR DialogBox(HINSTANCE h, LPCTSTR t, HWND p, DLGPROC f) { return DialogBoxParam(h, t, p, f, 0); }
+inline INT_PTR DialogBoxIndirect(HINSTANCE h, LPCDLGTEMPLATE t, HWND p, DLGPROC f) { return DialogBoxIndirectParam(h, t, p, f, 0); }
+inline HWND CreateDialog(HINSTANCE h, LPCTSTR t, HWND p, DLGPROC f) { return CreateDialogParam(h, t, p, f, 0); }
+inline HWND CreateDialogIndirect(HINSTANCE h, LPCDLGTEMPLATE t, HWND p, DLGPROC f) { return CreateDialogIndirectParam(h, t, p, f, 0); }
+BOOL EndDialog(HWND, INT_PTR);
+HWND GetDlgItem(HWND, int);
+BOOL SetDlgItemText(HWND, int, LPCTSTR);
+UINT GetDlgItemText(HWND, int, LPTSTR, int);
+BOOL SetDlgItemInt(HWND, int, UINT, BOOL);
+UINT GetDlgItemInt(HWND, int, BOOL *, BOOL);
+BOOL CheckDlgButton(HWND, int, UINT);
+UINT IsDlgButtonChecked(HWND, int);
+BOOL CheckRadioButton(HWND, int, int, int);
+LRESULT SendDlgItemMessage(HWND, int, UINT, WPARAM, LPARAM);
+LRESULT SendMessage(HWND, UINT, WPARAM, LPARAM);
+int GetWindowTextLength(HWND);
+BOOL GetOpenFileName(OPENFILENAME *);
+BOOL GetSaveFileName(OPENFILENAME *);
+BOOL GetCursorPos(POINT *);
+BOOL SetCursorPos(int, int);
+BOOL GetClientRect(HWND, RECT *);
+BOOL ScreenToClient(HWND, POINT *);
+BOOL ClientToScreen(HWND, POINT *);
+float furb_mic_level(void);
+// Real file-system helpers (paths use '\\' in the sources; see compat.cpp)
+DWORD GetFileAttributes(LPCTSTR);
+BOOL CreateDirectory(LPCTSTR, void *);
+BOOL PathAppend(LPTSTR, LPCTSTR);
+BOOL PathFileExists(LPCTSTR);
+enum { TBM_SETRANGEMIN = 0x407, TBM_SETRANGEMAX = 0x408, TBM_GETRANGEMIN = 0x401, TBM_GETRANGEMAX = 0x402 };
 
 #endif // __cplusplus
 #endif // FURB_COMPAT_WINDOWS_H

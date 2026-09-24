@@ -44,6 +44,9 @@ offset, undecided), Push the Ball 97.5%, Add 'em Up 81.8% with the top strip
 flagged (open item 1).
 furb_cli alone dumps PPM + raw palette indices + $2000/$4100 registers + palette
 RAM + CPU RAM per frame. Games can diverge over long runs; compare early frames.
+It also does what the GUI does (s.76): FDS/NSF/VS, any setting (--set/--config),
+any controller (--device, p1..p4:, key:, mouse:, trigger), WAV/AVI, savestates,
+movies, cheats, DIP, --trace. `python3 tools/furb_cli/selftest.py` checks them.
 
 ## THE TRAP THAT HAS BITTEN SIX TIMES
 `build_pvt.sh` **rm -rf's the build directory**, deleting builder.py, every .nes

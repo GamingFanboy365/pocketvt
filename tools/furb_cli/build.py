@@ -9,13 +9,13 @@ VT/OneBus emulator) for comparing against PocketVT.
          gitignored reference/Furbtendulator-main/src)
 --build  output dir (default: tools/furb_cli/build, gitignored)
 
-Produces BUILD/furb_cli and BUILD/Mappers/iNES.so (the iNES mapper pack,
-loaded at run time exactly like Furbtendulator loads Mappers/iNES.dll).
+Produces BUILD/furb_cli and BUILD/Mappers/{iNES,FDS,NSF,VS}.so (the mapper packs,
+loaded at run time exactly like Furbtendulator loads Mappers\*.dll).
 The source file lists come from Furbtendulator's own Visual Studio projects.
 Needs g++ with 32-bit multilib (apt install g++-multilib): the code assumes
 Win32's 32-bit long.  Incremental: only changed sources are recompiled.
 """
-import argparse, os, re, subprocess, sys
+import argparse, os, re, shutil, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -69,15 +69,20 @@ def vcx_sources(proj, subdir):
     return out
 
 main_srcs = vcx_sources(os.path.join(args.furb, 'src-main', 'msvc100', 'Nintendulator.vcxproj'), 'src-main')
-ines_srcs = vcx_sources(os.path.join(args.furb, 'src-mappers', 'msvc100', 'INES.vcxproj'), 'src-mappers')
+# the four mapper packs, each its own shared library like the Windows DLLs
+PACKS = [('iNES', 'INES.vcxproj', 'INES_EXPORTS'), ('FDS', 'FDS.vcxproj', 'FDS_EXPORTS'),
+         ('NSF', 'NSF.vcxproj', 'NSF_EXPORTS'), ('VS', 'VS.vcxproj', 'VS_EXPORTS')]
+pack_srcs = {name: vcx_sources(os.path.join(args.furb, 'src-mappers', 'msvc100', proj), 'src-mappers')
+             for name, proj, _ in PACKS}
 
 COMPAT = os.path.join(HERE, 'compat')
 CXX = ['g++', '-m32', '-msse2', '-mfpmath=sse', '-O2', '-std=gnu++17', '-fpermissive', '-w', '-fno-operator-names',
        '-fwrapv', '-fno-strict-aliasing', '-I' + COMPAT, '-DUNICODE', '-D_UNICODE',
-       '-DWIN32', '-D_WINDOWS', '-DNDEBUG', '-include', 'stdexcept', '-include', 'cstring']
+       '-DWIN32', '-D_WINDOWS', '-DNDEBUG', '-include', 'stdexcept', '-include', 'cstring',
+       '-include', 'locale', '-include', 'codecvt']	# MSVC's headers pull these in implicitly
 # keep-inline: MSVC emits 'inline' members that other files call (PPU IncrementH)
 MAIN_INC = ['-I' + os.path.join(SRC, 'src-main', 'src'), '-fkeep-inline-functions']
-DLL_FLAGS = ['-fPIC', '-fvisibility=hidden', '-D_USRDLL', '-DINES_EXPORTS']
+DLL_FLAGS = ['-fPIC', '-fvisibility=hidden', '-D_USRDLL', '-DFURB_PACK']
 
 def obj_for(src, tag):
     rel = os.path.relpath(src, SRC).replace('/', '__').replace(' ', '_')
@@ -88,11 +93,14 @@ for s in main_srcs:
     jobs.append((s, obj_for(s, 'main'), CXX + MAIN_INC))
 jobs.append((os.path.join(HERE, 'furb_cli.cpp'), os.path.join(OBJ, 'main', 'furb_cli.o'), CXX + MAIN_INC))
 jobs.append((os.path.join(COMPAT, 'compat.cpp'), os.path.join(OBJ, 'main', 'compat.o'), CXX))
-for s in ines_srcs:
-    jobs.append((s, obj_for(s, 'ines'), CXX + DLL_FLAGS))
-jobs.append((os.path.join(COMPAT, 'compat.cpp'), os.path.join(OBJ, 'ines', 'compat.o'), CXX + DLL_FLAGS))
+for name, _, define in PACKS:
+    flags = CXX + DLL_FLAGS + ['-D' + define]
+    for s in pack_srcs[name]:
+        jobs.append((s, obj_for(s, name), flags))
+    jobs.append((os.path.join(COMPAT, 'compat.cpp'), os.path.join(OBJ, name, 'compat.o'), flags))
 
 hdr_time = max(os.path.getmtime(os.path.join(COMPAT, f)) for f in os.listdir(COMPAT))
+# (furb_cli.cpp also depends on the headers; handled by the same rule)
 
 def compile_one(job):
     src, obj, flags = job
@@ -112,9 +120,7 @@ if errors:
         print(e, file=sys.stderr)
     sys.exit('build.py: %d file(s) failed to compile' % len(errors))
 
-main_objs = [j[1] for j in jobs if os.sep + 'main' + os.sep in j[1]]
-ines_objs = [j[1] for j in jobs if os.sep + 'ines' + os.sep in j[1]]
-so = os.path.join(B, 'Mappers', 'iNES.so')
+objs_of = lambda tag: [j[1] for j in jobs if os.sep + tag + os.sep in j[1]]
 exe = os.path.join(B, 'furb_cli')
 def link(what, cmd):
     print('linking %s ...' % what)
@@ -124,6 +130,28 @@ def link(what, cmd):
         sys.exit('build.py: linking %s failed\n%s' % (what, '\n'.join(undef) or r.stderr[-4000:]))
 
 # -z defs: the pack must be self-contained, like a DLL (fail at build, not dlopen)
-link('Mappers/iNES.so', ['g++', '-m32', '-shared', '-static-libstdc++', '-static-libgcc', '-Wl,--exclude-libs,ALL', '-fvisibility=hidden', '-Wl,-z,defs', '-o', so] + ines_objs + ['-ldl'])
-link('furb_cli', ['g++', '-m32', '-static-libstdc++', '-static-libgcc', '-o', exe] + main_objs + ['-ldl'])
+for name, _, _ in PACKS:
+    link('Mappers/%s.so' % name, ['g++', '-m32', '-shared', '-static-libstdc++', '-static-libgcc',
+         '-Wl,--exclude-libs,ALL', '-fvisibility=hidden', '-Wl,-z,defs',
+         '-o', os.path.join(B, 'Mappers', name + '.so')] + objs_of(name) + ['-ldl'])
+# export exactly one symbol, furb_host_lookup, through which the packs reach
+# the executable's dialogs / cursor / file pickers (compat.cpp)
+link('furb_cli', ['g++', '-m32', '-static-libstdc++', '-static-libgcc',
+     '-Wl,--dynamic-list=' + os.path.join(HERE, 'exports.list'), '-o', exe] + objs_of('main') + ['-ldl'])
+
+# Furbtendulator's data files belong next to the program, as on Windows:
+# cheats.cfg (cheat database), dip.cfg (DIP switch definitions), fastload.cfg,
+# and the BIOS/ and samples/ folders (their dir.txt lists what goes there).
+for data in (os.path.join(os.path.dirname(args.furb), 'bin'), os.path.join(args.furb, 'bin-data')):
+    if os.path.isdir(data):
+        for f in os.listdir(data):
+            src = os.path.join(data, f)
+            if f.endswith('.cfg'):
+                shutil.copy(src, os.path.join(B, f))
+            elif f in ('BIOS', 'samples') and os.path.isdir(src):
+                os.makedirs(os.path.join(B, f), exist_ok=True)
+                for g in os.listdir(src):
+                    if not os.path.exists(os.path.join(B, f, g)):
+                        shutil.copy(os.path.join(src, g), os.path.join(B, f, g))
+        break
 print('built %s' % exe)
