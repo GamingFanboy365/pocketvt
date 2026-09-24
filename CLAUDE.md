@@ -1,12 +1,12 @@
 # PocketVT -- handoff for Claude Code
 
 PocketVT is a fork of PocketNES (GBA NES emulator) extended to run VT02/VT03/VT09
-"OneBus" famiclone ROMs (NES 2.0 mapper 256 and friends). Owner: Michael.
+"OneBus" famiclone ROMs (NES 2.0 mapper 256 and friends).
 **Read MAINTAINERS_GUIDE.md sections 60-73 before touching the PPU**: they record
 what is proven, what was disproved, and why. Sections are numbered; newest last.
 
-## Working agreement (from Michael)
-- Do not ask Michael to test or debug. Verify in-sandbox, ship complete trees.
+## Working agreement
+- Do not ask to test or debug. Verify in-sandbox, ship complete trees.
 - Honest tone: say what is unverified; correct earlier claims explicitly.
 - Every session: ship playable .gba files plus the source tree.
 
@@ -89,6 +89,6 @@ See MAINTAINERS_GUIDE.md s.73 for detail.
 - DATASHEET_DIGEST*.md: VT02/VT03 datasheet notes. Bit numbering there is
   1-INDEXED; the code is 0-indexed.
 - IMPLEMENTATION_NOTES.md, ROADMAP.md, MAINTAINERS_GUIDE.md.
-- Reference screenshots Michael supplied (NOT in the tree; ask for them):
+- Reference screenshots supplied (NOT in the tree; ask for them):
   gg.png / 1.png (LLM opening), lawn.png (LLM gameplay), vgp.png / vgp2.png
   (VG menus), aero.png, hex.png, add.png, add2.png, bug.png, shot.png.
