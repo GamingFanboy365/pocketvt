@@ -7,10 +7,11 @@ audio -- the point is to observe the game's STATE MACHINE under
 known-correct register semantics (NESdev VT02+ pages) and diff it against
 PocketVT's behavior.
 """
-import sys
+import os, sys
 from py65.devices.mpu6502 import MPU
 
-PRG = open('/home/claude/li_prg.bin', 'rb').read()
+# Lonely Island PRG image (the .nes minus its 16-byte header).
+PRG = open(os.environ.get('VTREF_PRG', 'li_prg.bin'), 'rb').read()
 PRG_8K_MASK = (len(PRG) // 0x2000) - 1        # 128KB -> 16 banks -> 0x0F
 
 def dec56(b):

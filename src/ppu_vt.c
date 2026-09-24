@@ -442,7 +442,7 @@ void vt_oam_ext_write(u8 offset, u8 val)
     // TODO: set a dirty flag so the sprite renderer re-fetches OAM extension
     // data for the affected sprite on the next visible scanline.
     // The actual 16x8 rendering path needs to be added to ppu.s (or a new
-    // ppu_vt_sprites.s) -- see IMPLEMENTATION_NOTES.md for the design.
+    // ppu_vt_sprites.s) -- see MAINTAINERS_GUIDE.md s.74 for the design.
 }
 
 #endif // VT_HICOLOR_SPRITES
@@ -1060,7 +1060,7 @@ static void vt_spread_init(void)
 // is exact, not an approximation.
 // EWRAM_BSS: plain static .bss lands in IWRAM and shifts the fixed-address
 // layout, tripping the boot canary alarm (known fragility; see the
-// vt_spread history in FIX_4BPP_DESIGN.md).
+// vt_spread history in MAINTAINERS_GUIDE.md s.74).
 EWRAM_BSS static u16 vt_chr4_sigoff[8];
 
 // Tight, fast 4bpp tile assembler using the spread table.

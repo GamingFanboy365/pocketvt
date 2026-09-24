@@ -184,8 +184,9 @@ A5). The register bits themselves are identical; only the documented
     $4119 W : RS232 register. D5=B8EN (0=10-bit,1=11-bit frame), D0=T8B (TX bit8)
 
 *** [MATCH-VT03 -> confirms encryption finding] $410F on VT02 is ALSO I/O
-port 2,3 output data (GPIO), NOT an encryption control. The PocketVT
-README's "$410F encryption gate" association is wrong on BOTH chips. ***
+port 2,3 output data (GPIO), NOT an encryption control. The old PocketVT
+README's "$410F encryption gate" association is wrong on BOTH chips
+(resolved: it is a VT09-class overload; DATASHEET_DIGEST.md appendix B, finding 4). ***
 Note: RS232 register is already at $4119 in VT02 (rev A5, 2005). VT03's
 revision history says RS232 moved from $4109 to $4119 in VT03 rev A2 -- so
 both chips' current docs agree on $4119; only very old VT03 pre-A2 docs
@@ -618,7 +619,7 @@ NTSC palette caveat, PCM/RS232) matches VT03.
 VT02's opcode matrix is the stock NMOS 6502 set, identical fill pattern to
 VT03. Columns 3/7/B/F and the cells 0x5A/0x7A/0xC2/0xD2/0x3C/0xA7/0xBF are
 ALL BLANK -- no TAD/TDA/PHX/PHY/PLX/PLY/ADX/LDAXD/LDAD.
-*** [MATCH-VT03 -> confirms FINDINGS_vt_opcodes.md on BOTH chips] Neither
+*** [MATCH-VT03 -> confirms DATASHEET_DIGEST.md appendix A on BOTH chips] Neither
 VT02 nor VT03 has the "VT extra opcodes." They belong to the VT369-era
 sound coprocessor only. PocketVT must not patch them onto the main CPU. ***
 [VT02 vs NES] Same 6502 ISA as the NES's 2A03 (minus the 2A03's missing

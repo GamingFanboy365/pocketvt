@@ -1,6 +1,12 @@
 # PocketVT Changelog
 
-## 0.5.2 (this release) — strip mapVTinit down to the bare minimum
+Covers the early numbered releases, 0.1.0 to 0.5.2. After that the project
+moved to per-session work, recorded in MAINTAINERS_GUIDE.md: section 15 is
+the one-page summary and the numbered sections follow in order. Files named
+below (IMPLEMENTATION_NOTES.md and others) have since been retired; see
+MAINTAINERS_GUIDE.md section 74 for where their content went.
+
+## 0.5.2 — strip mapVTinit down to the bare minimum
 
 ### What the video showed
 
@@ -603,7 +609,7 @@ this release.
   failed at link time with `undefined reference to `_6C``.  Added
   `global_func _6C` alongside `_4C`.
 
-## 0.2.0 (this release)
+## 0.2.0
 
 ### Fixed
 - **Build failure.**  Plain `make` previously failed at link time with
