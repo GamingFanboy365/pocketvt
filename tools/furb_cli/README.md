@@ -88,7 +88,8 @@ arguments for the option list.
 For each dumped frame it writes `PREFIX_fNNNN.ppm` (exactly the region
 Furbtendulator's own screenshot saves), `.idx` (the PPU's raw uint16 palette
 indices), `.txt` (`$2000-$20FF`, `$4100-$41FF` and palette RAM; the full
-1024-entry palette on VT369) and `.ram` (CPU RAM). On VT369 in hi-res mode
+1024-entry palette on VT369), `.ram` (CPU RAM) and `.nt` (PPU $2000-$2FFF as the PPU
+maps it: the four 1K nametable pages, 4 KB). On VT369 in hi-res mode
 (`$201C` bit 2) the `.idx` interleaves the even/odd half-pixel arrays, as the
 GUI does. `--every K` dumps every Kth frame, `--hashes` prints one hash per
 frame for frame-set tests, `--info` prints the ROM, its DIP switch and cheat
@@ -214,3 +215,13 @@ keyboard devices, which read real key codes, never collide with them.
 `prep_src.py` fixes `#include` case and backslashes for Linux and patches the
 copy for three MSVC-only constructs g++ rejects (listed in the file; each
 patch must match exactly once, so an upstream change fails loudly).
+
+### PocketVT side: memory dumps and the real BIOS
+
+`pvt_run` (and so `compare_furb.py`) reads two environment variables.
+`PVT_DUMP="ADDR:LEN,..."` (hex) writes each GBA bus range at every target to
+`OUT/raw/pv_tNNNN_ADDR.bin` (use `--keep`); with the nametable in `.nt` that is
+how guide s.79 found Table Soccer's missing pitch. `PVT_BIOS=path`, or
+`compare_furb.py --bios reference/gba_bios.bin`, boots PocketVT through a real
+GBA BIOS instead of mGBA's HLE one: the intro, the header check (a bad header
+is reported, since hardware would not boot it) and the real SWI routines.

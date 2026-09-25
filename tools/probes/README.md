@@ -24,8 +24,11 @@ S(){ arm-none-eabi-nm pocketvt.elf | awk -v s=$1 '$3==s{print $1}'; }
 | `lbwatch` | Single-steps and reports every `lastbank` change. It stops at the first jump into NES RAM (host 0x03000000), with the preceding steps. |
 | `memwatch` | Single-steps and reports every change of one word, with ARM pc, r0, r1 and lr, plus the first 8 `instant_prg_banks` entries. Use it to find who writes a memmap entry. |
 | `bpcount` | How often given code addresses execute over N steps. Use it to check that a function runs at all. |
-| `cycprof` | A cycle-weighted profile per function: each step is charged its real GBA cycles, so EWRAM and ROM wait states count. `FT=<frametotal> ABS=1` reports cycles per NES frame, for diffing two cores. `RANGE=lo-hi` lists 16-byte bins for addr2line; `BINS=1` lists the top bins. |
-| `ftwatch` | Input keyed to NES frames, like `pvt_run`. From NES frame T0 to T1 it logs every change of one word with the writer's pc and lr. Use it to find who (never) updates a VRAM tile or variable. |
+| `cycprof` | A cycle-weighted profile per function: each step is charged its real GBA cycles, so EWRAM and ROM wait states count. `FT=<frametotal> ABS=1` reports cycles per NES frame, for diffing two cores. `RANGE=lo-hi` lists 16-byte bins for addr2line; `BINS=1` lists the top bins. `FT=... WARMFT=<nes frame> KEYS="320-330:1,800-810:1"` warms up to that NES frame with input, to profile a scene past the title. |
+| `ftwatch` | Input keyed to NES frames, like `pvt_run` (any number of `FROM TO MASK` key spans). From NES frame T0 to T1 it logs every change of one word with the writer's pc and lr. Use it to find who (never) updates a VRAM tile or variable. The address must be word-aligned: mGBA rotates an unaligned 32-bit read. |
+| `peek` | Every K GBA frames, prints words (or `ADDR:n` byte strings) at the given addresses. The quickest way to watch a few counters. |
+| `memdump` | After N GBA frames, writes each `ADDR:LEN` range to a file. For NES-frame-keyed dumps use `PVT_DUMP` with pvt_run / compare_furb instead (tools/furb_cli/README.md). |
+| `biosboot` | Boots a play ROM through the REAL GBA BIOS (`reference/gba_bios.bin`, never committed): reports when the ARM leaves the BIOS and `frametotal` every 60 frames. A cart with a bad header never leaves it on hardware; mGBA silently skips the BIOS instead (guide s.79). |
 | `spmin` | The lowest SP reached in each CPU mode. Mode 0x1F is the user stack. Compare it with `__bss_end__`: below that means stack overflow into .bss. |
 
 MAINTAINERS_GUIDE s.77 shows them used together to find the raster-split

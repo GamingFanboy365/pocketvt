@@ -394,7 +394,16 @@ static void dump_frame(const std::string &prefix, int frame, const std::vector<u
 	f = fopen(name, "wb");
 	fwrite(NES::CPU_RAM, 1, sizeof(NES::CPU_RAM), f);
 	fclose(f);
-	if (!quiet) fprintf(stderr, "furb_cli: dumped frame %d -> %s_f%04d.{ppm,idx,txt,ram}\n", frame, prefix.c_str(), frame);
+	// .nt: PPU $2000-$2FFF as the PPU sees it (the four mapped 1K nametable pages)
+	snprintf(name, sizeof name, "%s_f%04d.nt", prefix.c_str(), frame);
+	f = fopen(name, "wb");
+	for (int i = 8; i < 12; i++) {
+		static const unsigned char zero[0x400] = {0};
+		const unsigned char *pg = PPU::PPU[0]->CHRPointer[i];
+		fwrite(pg ? pg : zero, 1, 0x400, f);
+	}
+	fclose(f);
+	if (!quiet) fprintf(stderr, "furb_cli: dumped frame %d -> %s_f%04d.{ppm,idx,txt,ram,nt}\n", frame, prefix.c_str(), frame);
 }
 
 // ============================================================== info

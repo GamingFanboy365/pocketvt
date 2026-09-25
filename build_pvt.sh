@@ -49,7 +49,10 @@ arm-none-eabi-gcc -g -mthumb -mthumb-interwork -Wl,-Map,pocketvt.map -Wl,-z,muld
   -T $SRC/gba_cart_my.ld -nostartfiles $OFILES gba_crt0_my.o \
   -L$LIBGBA/lib -lm -o pocketvt.elf
 arm-none-eabi-objcopy -O binary pocketvt.elf pocketvt.gba
-/opt/devkitpro/tools/bin/gbafix pocketvt.gba 2>/dev/null || true
+# A bootable header (logo + complement).  The devkitARM gbafix is usually not
+# installed on this path; tools/gbafix.py does the same (guide s.79).
+if [ -x /opt/devkitpro/tools/bin/gbafix ]; then /opt/devkitpro/tools/bin/gbafix pocketvt.gba -cPNES -tPocketNES
+else python3 "$HERE/tools/gbafix.py" pocketvt.gba; fi
 echo "link done: $(stat -c%s pocketvt.gba) bytes"
 
 # Post-link: the globals block and equates.h offset table must agree.  See

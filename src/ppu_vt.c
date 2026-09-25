@@ -416,12 +416,10 @@ void vt_palette_rebuild_gba(void)
         }
     }
 
-    // Also refresh the 512-entry conversion table used by future
-    // 8bpp / scanline-select rendering paths.  Cheap and keeps
-    // downstream work composable.
-    for (int i = 0; i < VT_PALETTE_SIZE; i++) {
-        vt_palette_to_gba[i] = vt_colour_to_gba(vt_palette_ram[i]);
-    }
+    /* s.79: this used to re-derive all 512 vt_palette_to_gba[] entries every
+     * frame "for future rendering paths".  Nothing reads that table, and
+     * vt_palette_write keeps it current per write anyway; the loop was 5.5%
+     * of Table Soccer's match frame, and ran on every VT cart. */
 
     vt_palette_dirty = false;
 }
@@ -1138,11 +1136,14 @@ static void vt_chr4_assemble(void)
 // 0xFFFF have no high-plane bits at all, so their 2bpp and 4bpp conversions
 // are identical and they never need copying.  Steady state: 8 word compares
 // instead of 4096 word copies.
+extern volatile u8 vt_blk_lent;
 __attribute__((target("arm"), noinline))
 static void vt_chr4_copy_to_vram(void)
 {
     if (vt_bkexten_live) return;   // BG char VRAM is slot-managed (session 18)
+    const u32 skip = (u32)vt_blk_lent - 1u;   // a half lent to split slot 2 (s.79); ~0 = none
     for (int p = 0; p < 8; p++) {
+        if ((u32)(p >> 2) == skip) continue;
         const u32 *s = (const u32*)(vt_chr4_buf + (u32)p * 2048u);
         // Tiles p*64 .. p*64+63; ppu.s puts tiles >= 256 an extra 0x2000 up.
         u32 addr = 0x06000000u + (u32)p * 2048u + ((p >= 4) ? 0x2000u : 0u);
@@ -1175,7 +1176,9 @@ static void vt_chr4_copy_to_vram_all(void)
 {
     if (vt_bkexten_live) return;   // BG char VRAM is slot-managed (session 18)
     const u32 *s = (const u32*)vt_chr4_buf;
+    const u32 skip = (u32)vt_blk_lent - 1u;   // a half lent to split slot 2 (s.79); ~0 = none
     for (int tile = 0; tile < 512; tile++, s += 8) {
+        if ((u32)(tile >> 8) == skip) continue;
         u32 addr = 0x06000000u + (u32)tile * 32u;
         if (tile & 0x100) addr += 0x2000u;          // matches ppu.s tst #0x100
         volatile u32 *d = (volatile u32*)addr;
@@ -1277,6 +1280,7 @@ void vt_chr4_rebuild_if_dirty(void)
 // else.
 static void vt_obj4_overlay(void);
 static void vt_spr_eva_update(void);
+static int vt_prg_evict_obj(void);
 
 // Debug input-injection byte for io.s (see no4scr hook).
 EWRAM_BSS u8 vt_dbg_pad_or;
@@ -1309,6 +1313,7 @@ EWRAM_BSS u8 vt_pix16_active;          // read by update_sprites in ppu.s (s20b4
 EWRAM_BSS static u16 vt_eva_key[VT_EVA_SLOTS];   // (page<<3)|eva, +1;  0 = empty
 EWRAM_BSS static u32 vt_eva_age[VT_EVA_SLOTS];
 EWRAM_BSS static u32 vt_eva_clock;
+EWRAM_BSS static u16 vt_eva_bank[VT_EVA_SLOTS];  // plain16 mode: page bank the slot holds
 
 // Assemble one 1KB CHR page (64 tiles) straight into an OBJ VRAM slot as GBA
 // 4bpp tiles.  Same pixel math as vt_chr4_assemble, no intermediate buffer.
@@ -1484,6 +1489,34 @@ static void vt_assemble_page_pix16_to(u32 dest, u32 phys_bank)
             u32 hi = src_base + r + 16;
             *d++ = vt_spread[cbase[hi & mask]]
                  | (vt_spread[cbase[(hi + 8) & mask]] << 1);
+        }
+    }
+}
+
+// PIX16EN without SPEXTEN (Table Soccer VT03, $2010=$87, guide s.79): the
+// same pair format, but the page is addressed like a plain 4bpp page -- the
+// decode vt_chr4_assemble_page_vram uses (bank number from the $2012-$2015
+// registers, V16BEN-aware plane offsets), not the extension formula above.
+// Furbtendulator OneBus.cpp PPU_OneBus::Run: with PIX16EN the low planes
+// are pixels 0-7 and the high planes pixels 8-15, each a 2-bit value.
+__attribute__((target("arm"), noinline))
+static void vt_assemble_page_pix16_plain(u32 dest, u32 bank)
+{
+    if (!vt_spread_ready) vt_spread_init();
+    u32 mask = vt_chr_mask_get(); const u8 *cbase = vt_chr_base();
+    const int wide16 = (vt_reg_2010 & 0x40) != 0;
+    const u32 o1 = wide16 ? 16u : 8u, o2 = wide16 ? 1u : 16u;
+    const u32 o3 = wide16 ? 17u : 24u, rs = wide16 ? 2u : 1u;
+    u32 src_base = (vt_chr_bank_byte_offset_n(bank, 1) >> 10) * 2048u;
+    u32 *d = (u32*)dest;
+    for (int t = 0; t < 64; t++, src_base += 32) {
+        for (int r = 0; r < 8; r++) {              // LEFT half: planes 0/1
+            const u32 a = src_base + r * rs;
+            *d++ = vt_spread[cbase[a & mask]] | (vt_spread[cbase[(a + o1) & mask]] << 1);
+        }
+        for (int r = 0; r < 8; r++) {              // RIGHT half: planes 2/3
+            const u32 a = src_base + r * rs;
+            *d++ = vt_spread[cbase[(a + o2) & mask]] | (vt_spread[cbase[(a + o3) & mask]] << 1);
         }
     }
 }
@@ -1888,7 +1921,13 @@ static void vt_spr_eva_update(void)
     // change to already-good output (this is what sank the s20b4 prototype).
     // vt_spr16_active therefore carries a MODE, not a boolean: 0 = off,
     // 1 = redirect every sprite, 2 = redirect only sprites with EVA != 0.
-    if (!vt_active || !(vt_reg_2010 & 0x08) || (vt_reg_2010 & 0x80)) {
+    /* s.79: PIX16EN sprites WITHOUT SPEXTEN (Table Soccer VT03, $2010=$87:
+     * COLCOMP|SP16EN|BK16EN|PIX16EN) take this path too, with EVA forced to
+     * 0 and plain page addressing.  Before, they fell to vt_obj4_overlay's
+     * 8-wide 4bpp decode: every menu letter an opaque block. */
+    const int spext = (vt_reg_2010 & 0x08) != 0;
+    const int plain16 = !spext && (vt_reg_2010 & 0x05) == 0x05;
+    if (!vt_active || (!spext && !plain16) || (spext && (vt_reg_2010 & 0x80))) {
         vt_spr16_active = 0;
         vt_pix16_active = 0;
         return;
@@ -1905,7 +1944,7 @@ static void vt_spr_eva_update(void)
     {
         // Slot contents differ per format (2bpp / 4bpp / pix16 pair-format),
         // so invalidate every slot on ANY format flip, not just a pix16 flip.
-        u8 fmt = (u8)(pix16 ? 2 : (sp16 ? 1 : 0));
+        u8 fmt = (u8)(plain16 ? 3 : pix16 ? 2 : (sp16 ? 1 : 0));
         static u8 last_fmt = 0xFF;
         if (fmt != last_fmt) {
             for (int s = 0; s < VT_EVA_SLOTS; s++) vt_eva_key[s] = 0;
@@ -1914,11 +1953,12 @@ static void vt_spr_eva_update(void)
     }
 
     int assembled = 0;                       // at most one new page per vblank
+    u32 seen[2] = {0, 0};                    // (page<<3|eva) keys handled this call
     for (int i = 0; i < 256; i += 4) {
         u8 y = oam[i];
         if (y >= 0xEF) continue;             // hidden
         u8 tile = oam[i + 1];
-        u8 eva  = (oam[i + 2] >> 2) & 7;
+        u8 eva  = spext ? (u8)((oam[i + 2] >> 2) & 7) : 0;
         // SESSION 21b6: eva==0 sprites are redirected too.  s21b3 left them on
         // the stock bankbuffer path because guide 8b assumed that path already
         // fetched them correctly -- it does not.  Extension addressing applies
@@ -1932,23 +1972,37 @@ static void vt_spr_eva_update(void)
         // This mirrors update_sprites' own index arithmetic exactly.
         u32 page = (u32)((tile & 1) << 2) | ((tile >> 6) & 3);
         u16 key  = (u16)((page << 3) | eva) + 1u;
+        {   /* s.79: each (page, EVA) once per call -- 64 sprites usually
+             * share a handful of pages, and the slot search + publish per
+             * sprite was 8.5% of Table Soccer's match frame. */
+            const u32 bit = 1u << ((key - 1u) & 31), w = (key - 1u) >> 5;
+            if (seen[w] & bit) continue;
+            seen[w] |= bit;
+        }
 
+        /* Plain addressing: the slot must also match the page's CURRENT bank
+         * (the extension path keys on page+EVA alone, unchanged). */
+        const u16 pbank = plain16 ? (u16)vt_chr4_page_bank[page] : 0;
         int slot = -1, victim = 0;
         for (int s = 0; s < VT_EVA_SLOTS; s++) {
-            if (vt_eva_key[s] == key) { slot = s; break; }
+            if (vt_eva_key[s] == key && (!plain16 || vt_eva_bank[s] == pbank)) { slot = s; break; }
             if (vt_eva_age[s] < vt_eva_age[victim]) victim = s;
         }
         if (slot < 0) {
             if (assembled) continue;         // spread the work across frames
+            if (!vt_prg_evict_obj()) continue;   // PRG page 0 still in these slots (s.79)
             slot = victim;
             u32 bank = (vt_chr4_page_bank[page] << 3) | eva;
-            if (pix16)
+            if (plain16)
+                vt_assemble_page_pix16_plain(0x06010000u + (u32)slot * 4096u, pbank);
+            else if (pix16)
                 vt_assemble_page_pix16_to(0x06010000u + (u32)slot * 4096u, bank);
             else if (sp16)
                 vt_eva_assemble(slot, bank);
             else
                 vt_assemble_page_2bpp_to(0x06010000u + (u32)slot * 2048u, bank);
             vt_eva_key[slot] = key;
+            vt_eva_bank[slot] = pbank;
             assembled = 1;
         }
         vt_eva_age[slot] = ++vt_eva_clock;
@@ -1957,6 +2011,9 @@ static void vt_spr_eva_update(void)
         // In PIX16 mode publish slot*2: update_sprites' existing slot<<6
         // tile math then lands on tiles slot*128 = the 4KB pair slots, with
         // no change to the asm base arithmetic.
+        if (plain16) {   /* ppu.s adds OAM byte2 bits 2-4 regardless: cover all 8 */
+            for (int e = 0; e < 8; e++) spr_cache_map[64u + (page << 3) + e] = (u8)(slot * 2);
+        } else
         spr_cache_map[64u + (page << 3) + eva] = (u8)(pix16 ? slot * 2 : slot);
     }
     vt_spr16_active = 1;                    // redirect every sprite (see above)
@@ -2333,15 +2390,23 @@ EWRAM_BSS u8  vt_nband;
 EWRAM_BSS u8  vt_band_fresh;          /* frame_end ran; next-frame band 0 open */
 EWRAM_BSS u8  vt_split_frame;         /* last completed frame had >1 band */
 EWRAM_BSS u8  vt_frame_reg[6];        /* its primary (last-band) registers */
-EWRAM_BSS u32 vt_split_key[2][4];     /* 1K banks held by slots 2 and 3 */
-EWRAM_BSS u32 vt_split_mode[2];       /* bus width / mode they were built in */
-EWRAM_BSS u16 vt_split_sig[2][4];     /* per-page stomp-check word offsets */
+/* Slots 0/1 are char blocks 2/3.  Slot 2 is the primary's OTHER pattern half
+ * (char block 0 or 1), borrowed only for a frame that needs three extra bands
+ * and never shows that half (Table Soccer's title: four 64-line bands, guide
+ * s.79).  vt_blk_lent is that block + 1, 0 when none (BSS-zero safe). */
+#define VT_NSLOT 3
+EWRAM_BSS u32 vt_split_key[VT_NSLOT][4];     /* 1K banks each slot holds */
+EWRAM_BSS u32 vt_split_mode[VT_NSLOT];       /* bus width / mode they were built in */
+EWRAM_BSS u16 vt_split_sig[VT_NSLOT][4];     /* per-page stomp-check word offsets */
 #if VT_SPLIT_SLOTS
-EWRAM_BSS volatile u8 vt_split_valid[2];   /* volatile: read by the vblank IRQ (vt_split_repair) mid-build */
+EWRAM_BSS volatile u8 vt_split_valid[VT_NSLOT];   /* volatile: read by the vblank IRQ (vt_split_repair) mid-build */
 #else
-EWRAM_BSS u8  vt_split_valid[2];
+EWRAM_BSS u8  vt_split_valid[VT_NSLOT];
 #endif
-EWRAM_BSS u8  vt_split_lru;
+EWRAM_BSS u8  vt_split_age[VT_NSLOT];        /* last frame stamp each slot was used */
+EWRAM_BSS u8  vt_split_stamp;
+EWRAM_BSS u8  vt_split_used;                 /* slots used by the frame being tagged */
+EWRAM_BSS volatile u8 vt_blk_lent;          /* block+1 lent to slot 2, 0 = none */
 EWRAM_BSS u32 vt_split_assemblies;    /* diagnostic: cache misses */
 
 static int vt_regs_same(const u8 *a, const u8 *b)
@@ -2412,9 +2477,14 @@ static u32 vt_split_mode_word(void)
          | ((u32)vt_chr_reg_201A << 16) | ((u32)vt_chr_outer_4100 << 24);
 }
 
+static inline u32 vt_split_cbase(int s)   /* BG char base slot s lives in */
+{
+    return s < 2 ? (u32)(2 + s) : (u32)vt_blk_lent - 1u;
+}
+
 static void vt_split_build(int s, const u32 k[4])
 {
-    volatile u32 *base = (volatile u32 *)(0x06000000u + (u32)(2 + s) * 0x4000u);
+    volatile u32 *base = (volatile u32 *)(0x06000000u + vt_split_cbase(s) * 0x4000u);
     /* Invalid while half-written: the vblank IRQ's vt_split_repair can land
      * mid-build, take the unfinished page for a stomp and rebuild it with the
      * OLD key; this build then resumes and leaves a mixed page (Aero title,
@@ -2438,6 +2508,50 @@ static void vt_split_build(int s, const u32 k[4])
 EWRAM_BSS u32 vt_ewram_stack[768] __attribute__((aligned(8)));
 asm(".global vt_ewram_stack_top\n.set vt_ewram_stack_top, vt_ewram_stack + 3072");
 
+/* Guide s.79.  loadcart.c's USE_ACCELERATION also puts PRG 16K page 0 in OBJ
+ * VRAM 0x06010000-0x06013FFF -- exactly where the extended sprite slots
+ * (vt_spr_eva_update: EVA 2KB slots, PIX16 4KB slots) are written.  Every
+ * read of page 0 after the first slot write returned sprite pixels: Table
+ * Soccer's pitch nametable, DMA'd from $B800 (PRG $1800), came out as empty
+ * tiles.  Same cure as s.77: before any slot is written, repoint the page-0
+ * banks at their identical twin (vt_prg_page0: cart ROM, or EWRAM when the
+ * PRG was decompressed/cached) and flag timeout.s to rebuild the memmap.
+ * The slots stay unwritten until that has happened (pending cleared). */
+EWRAM_BSS u8 vt_prg_evict_pending;     /* timeout.s: re-run vt_apply_prg_banks */
+EWRAM_BSS const u8 *vt_prg_page0;      /* page-0 twin, NULL = none (loadcart.c) */
+EWRAM_BSS u8 vt_prg_obj_evicted;
+extern const u8 *_speedhack_pc, *_speedhack_pc2;
+
+static const u8 *vt_prg_reloc_obj(const u8 *p)
+{
+    const u32 a = (u32)p;
+    if (a >= 0x06010000u && a < 0x06014000u) return vt_prg_page0 + (a - 0x06010000u);
+    return p;
+}
+
+/* 1 when OBJ VRAM 0x06010000-0x06013FFF may be written.  No twin (a state
+ * load that skipped decompression): keep the old behaviour and write anyway. */
+static int vt_prg_evict_obj(void)
+{
+    if (vt_prg_obj_evicted) return !vt_prg_evict_pending;
+    if (!vt_prg_page0) return 1;
+    const int n = rompages * PRG_16;
+    for (int b = 0; b < n; b++)
+        instant_prg_banks[b] = (u8 *)vt_prg_reloc_obj(instant_prg_banks[b]);
+    for (int i = 0; i < 4; i++)
+        speedhacks[i].hack_pc = vt_prg_reloc_obj(speedhacks[i].hack_pc);
+    _speedhack_pc  = vt_prg_reloc_obj(_speedhack_pc);
+    _speedhack_pc2 = vt_prg_reloc_obj(_speedhack_pc2);
+    vt_prg_obj_evicted = 1;
+    vt_prg_evict_pending = 1;
+    return 0;                              /* not until timeout.s applied it */
+}
+
+void vt_prg_obj_reset(void)
+{
+    vt_prg_obj_evicted = 0;
+}
+
 #if VT_SPLIT_SLOTS
 /* Guide s.77.  Char blocks 2/3 (0x06008000-0x0600FFFF) are not free on VT
  * carts: loadcart.c's USE_ACCELERATION puts the last 32K of PRG there and
@@ -2450,11 +2564,9 @@ asm(".global vt_ewram_stack_top\n.set vt_ewram_stack_top, vt_ewram_stack + 3072"
  * the new memmap before another instruction executes.  The CPU is paused
  * while this runs, so the slot tiles can be written straight away. */
 EWRAM_BSS u8 *vt_prg_shadow;
-EWRAM_BSS u8 vt_prg_evict_pending;
 EWRAM_BSS u8 vt_prg_evicted;
 EWRAM_BSS u16 *vt_tag_buf[2];               /* the bg0cntbuff pair ... */
 EWRAM_BSS u8 vt_tag_lo[2], vt_tag_hi[2];    /* ... and the lines tagged in each */
-extern const u8 *_speedhack_pc, *_speedhack_pc2;
 
 static const u8 *vt_prg_reloc(const u8 *p)
 {
@@ -2481,38 +2593,65 @@ static int vt_prg_evict(void)
 
 void vt_split_reset(void)
 {
-    vt_split_valid[0] = vt_split_valid[1] = 0;
-    vt_split_lru = 0;
+    vt_split_valid[0] = vt_split_valid[1] = vt_split_valid[2] = 0;
+    vt_blk_lent = 0;
     vt_prg_evicted = 0;
     vt_prg_evict_pending = 0;
     vt_tag_buf[0] = vt_tag_buf[1] = 0;      /* first use scans all 240 lines */
 }
 #endif
 
-static int vt_split_slot_get(const u32 k[4])
+/* The slot (0-2) holding bank set k, building it on a miss; -1 if every
+ * usable slot is already showing another band of this frame.  A slot used
+ * earlier in the same frame is never evicted: with two slots and three
+ * bands, plain LRU rebuilt a slot every band and the first band showed the
+ * third band's tiles.  nslot is 3 only while vt_blk_lent is set. */
+static int vt_split_slot_get(const u32 k[4], int nslot)
 {
     const u32 mode = vt_split_mode_word();
-    for (int s = 0; s < 2; s++) {
+    for (int s = 0; s < nslot; s++) {
         if (!vt_split_valid[s] || vt_split_mode[s] != mode) continue;
         if (vt_split_key[s][0] == k[0] && vt_split_key[s][1] == k[1] &&
             vt_split_key[s][2] == k[2] && vt_split_key[s][3] == k[3]) {
-            vt_split_lru = (u8)(s ^ 1);        /* the other one is older */
-            return 2 + s;
+            vt_split_used |= (u8)(1u << s);
+            vt_split_age[s] = vt_split_stamp;
+            return s;
         }
     }
-    int s = vt_split_lru;
-    vt_split_lru = (u8)(s ^ 1);
-    vt_split_build(s, k);
-    return 2 + s;
+    int best = -1;
+    for (int s = 0; s < nslot; s++) {
+        if (vt_split_used & (1u << s)) continue;
+        if (!vt_split_valid[s]) { best = s; break; }
+        if (best < 0 || (u8)(vt_split_stamp - vt_split_age[s]) > (u8)(vt_split_stamp - vt_split_age[best])) best = s;
+    }
+    if (best < 0) return -1;
+    vt_split_build(best, k);
+    vt_split_used |= (u8)(1u << best);
+    vt_split_age[best] = vt_split_stamp;
+    return best;
+}
+
+/* May the primary's other pattern half be borrowed as slot 2 this frame?
+ * Only if no line of this frame's bg0cntbuff (tagged lines: their original
+ * base, bits 4-5) shows it. */
+static int vt_blk_free(const u16 *b, u32 blk)
+{
+    for (int l = 0; l < 240; l++) {
+        u32 v = b[l];
+        u32 base = (v & 0x40u) ? ((v >> 4) & 3u) : ((v >> 2) & 3u);
+        if (base == blk) return 0;
+    }
+    return 1;
 }
 
 /* Called each GBA frame from vt_chr4_rebuild_if_dirty: re-decode a split slot
  * only if something overwrote it (one word compare per page). */
 static void vt_split_repair(void)
 {
-    for (int s = 0; s < 2; s++) {
+    for (int s = 0; s < VT_NSLOT; s++) {
         if (!vt_split_valid[s]) continue;
-        const volatile u32 *base = (const volatile u32 *)(0x06000000u + (u32)(2 + s) * 0x4000u);
+        if (s == 2 && !vt_blk_lent) continue;
+        const volatile u32 *base = (const volatile u32 *)(0x06000000u + vt_split_cbase(s) * 0x4000u);
         for (int p = 0; p < 4; p++) {
             u16 off = vt_split_sig[s][p];
             if (off == 0xFFFF) continue;
@@ -2526,29 +2665,32 @@ static void vt_split_repair(void)
 #if VT_SPLIT_SLOTS
 /* bg0cntbuff line tagging, two lines per 32-bit word (the per-line loops cost
  * ~40k cycles per NES frame on Aero's title).  A band line holds the slot's
- * char base (2/3: bit 3 set) in bits 2-3 and its original char base (0/1) in
- * bits 4-5, which BGCNT ignores.  Both helpers are branchless per line. */
+ * char base in bits 2-3, its original char base in bits 4-5 (which BGCNT
+ * ignores) and the tag mark in bit 6 (mosaic: no effect, PocketVT never
+ * writes REG_MOSAIC).  The mark used to be "char base 2/3" (bit 3); slot 2
+ * can live in block 0 or 1 (guide s.79), so it is explicit now.  Both
+ * helpers are branchless per line. */
 static inline __attribute__((always_inline)) u32 vt_line_orig2(u32 v)   /* original char base in bits 2-3 */
 {
-    const u32 m = ((v >> 3) & 0x00010001u) * 0x000Cu;         /* tagged halves */
+    const u32 m = ((v >> 6) & 0x00010001u) * 0x000Cu;         /* tagged halves */
     return (v & 0x000C000Cu & ~m) | ((v >> 2) & m);
 }
 static void vt_lines_restore(u16 *b, int lo, int hi)
 {
     if (lo >= hi) return;
-    if (((u32)(b + lo)) & 2) { u32 v = b[lo]; b[lo] = (u16)((v & ~0x003Cu) | vt_line_orig2(v)); lo++; }
+    if (((u32)(b + lo)) & 2) { u32 v = b[lo]; b[lo] = (u16)((v & ~0x007Cu) | vt_line_orig2(v)); lo++; }
     u32 *w = (u32 *)(b + lo);
-    for (int n = (hi - lo) >> 1; n > 0; n--, w++) { u32 v = *w; *w = (v & ~0x003C003Cu) | vt_line_orig2(v); }
-    if ((hi - lo) & 1) { u32 v = b[hi - 1]; b[hi - 1] = (u16)((v & ~0x003Cu) | vt_line_orig2(v)); }
+    for (int n = (hi - lo) >> 1; n > 0; n--, w++) { u32 v = *w; *w = (v & ~0x007C007Cu) | vt_line_orig2(v); }
+    if ((hi - lo) & 1) { u32 v = b[hi - 1]; b[hi - 1] = (u16)((v & ~0x007Cu) | vt_line_orig2(v)); }
 }
-static void vt_lines_tag(u16 *b, int lo, int hi, u32 slot)
+static void vt_lines_tag(u16 *b, int lo, int hi, u32 cbase)
 {
     if (lo >= hi) return;
-    const u32 s1 = slot << 2, s2 = s1 * 0x00010001u;
-    if (((u32)(b + lo)) & 2) { u32 v = b[lo]; b[lo] = (u16)((v & ~0x003Cu) | (vt_line_orig2(v) << 2) | s1); lo++; }
+    const u32 s1 = (cbase << 2) | 0x40u, s2 = s1 * 0x00010001u;
+    if (((u32)(b + lo)) & 2) { u32 v = b[lo]; b[lo] = (u16)((v & ~0x007Cu) | (vt_line_orig2(v) << 2) | s1); lo++; }
     u32 *w = (u32 *)(b + lo);
-    for (int n = (hi - lo) >> 1; n > 0; n--, w++) { u32 v = *w; *w = (v & ~0x003C003Cu) | (vt_line_orig2(v) << 2) | s2; }
-    if ((hi - lo) & 1) { u32 v = b[hi - 1]; b[hi - 1] = (u16)((v & ~0x003Cu) | (vt_line_orig2(v) << 2) | s1); }
+    for (int n = (hi - lo) >> 1; n > 0; n--, w++) { u32 v = *w; *w = (v & ~0x007C007Cu) | (vt_line_orig2(v) << 2) | s2; }
+    if ((hi - lo) & 1) { u32 v = b[hi - 1]; b[hi - 1] = (u16)((v & ~0x007Cu) | (vt_line_orig2(v) << 2) | s1); }
 }
 #endif
 
@@ -2589,7 +2731,22 @@ void vt_bands_frame_end(void)
         const int half = (_ppuctrl0 & 0x10) ? 1 : 0;
         u32 pk[4]; vt_band_key(preg, half, pk);
         u16 *buf = (u16 *)_bg0cntbuff;
+        vt_split_used = 0; vt_split_stamp++;
+        int nslot = vt_blk_lent ? 3 : 2;
+        /* Tallest bands first: with more bands than slots (Table Soccer's
+         * formation screen has six, s.79) the slots go to the bands that
+         * cover the most lines, and only the thin strips fall back to the
+         * primary's tiles.  Insertion sort, n <= VT_MAXB. */
+        u8 order[VT_MAXB];
         for (int i = 0; i < n - 1; i++) {
+            int h = (int)vt_band[i + 1].line - (int)vt_band[i].line, j = i;
+            while (j > 0 && ((int)vt_band[order[j - 1] + 1].line - (int)vt_band[order[j - 1]].line) < h) {
+                order[j] = order[j - 1]; j--;
+            }
+            order[j] = (u8)i;
+        }
+        for (int oi = 0; oi < n - 1; oi++) {
+            const int i = order[oi];
             u32 k[4]; vt_band_key(vt_band[i].reg, half, k);
             if (k[0] == pk[0] && k[1] == pk[1] && k[2] == pk[2] && k[3] == pk[3]) continue;
 #if !VT_SPLIT_SLOTS
@@ -2597,7 +2754,17 @@ void vt_bands_frame_end(void)
 #else
             if (!vt_prg_evict()) continue;     /* blocks 2/3 still hold PRG (s.77) */
 #endif
-            const int slot = vt_split_slot_get(k);
+            int s = vt_split_slot_get(k, nslot);
+#if VT_SPLIT_SLOTS
+            if (s < 0 && nslot == 2 && vt_blk_free(buf, (u32)(half ^ 1))) {
+                vt_blk_lent = (u8)((half ^ 1) + 1);   /* vt_chr4_copy_to_vram* keep off it now */
+                vt_split_valid[2] = 0;
+                nslot = 3;
+                s = vt_split_slot_get(k, nslot);
+            }
+#endif
+            if (s < 0) continue;                 /* no slot: the band shows the primary's tiles */
+            const int slot = (int)vt_split_cbase(s);
             int l0 = vt_band[i].line, l1 = vt_band[i + 1].line;
             if (l1 > 240) l1 = 240;
 #if VT_SPLIT_SLOTS
@@ -2614,6 +2781,13 @@ void vt_bands_frame_end(void)
     } else {
         if (vt_split_frame) vt_chr_sync_from_prg();   /* back to the live registers */
         vt_split_frame = 0;
+        vt_split_used = 0;
+    }
+    if (vt_blk_lent && !(vt_split_used & 4)) {
+        /* Hand the half back; vt_chr4_copy_to_vram's stomp check restores
+         * its 4bpp pages on the next rebuild. */
+        vt_split_valid[2] = 0;
+        vt_blk_lent = 0;
     }
 #if VT_SPLIT_SLOTS
     vt_tag_lo[side] = (u8)tag_lo; vt_tag_hi[side] = (u8)tag_hi;

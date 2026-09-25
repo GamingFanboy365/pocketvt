@@ -444,10 +444,11 @@ vblank_handler_0:
 	bl_long newframe_nes_vblank
 #endif
 	ldmfd sp!,{r0-r12}
-#if VT_SPLIT_SLOTS
-	@ guide s.77: vt_prg_evict (ppu_vt.c) just moved the VRAM-hosted PRG
-	@ banks to EWRAM.  Rebuild the memmap; map*_ end in flush, which
-	@ re-encodes the 6502 PC before it executes another instruction.
+#if VT_MODE
+	@ guide s.77/s.79: vt_prg_evict / vt_prg_evict_obj (ppu_vt.c) just moved
+	@ VRAM-hosted PRG banks to their EWRAM/ROM twins.  Rebuild the memmap;
+	@ map*_ end in flush, which re-encodes the 6502 PC before it executes
+	@ another instruction.
 	ldr r0,=vt_prg_evict_pending
 	ldrb r1,[r0]
 	cmp r1,#0

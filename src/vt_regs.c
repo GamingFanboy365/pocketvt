@@ -188,6 +188,100 @@ void vt_timer_tick_frame(void)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Mapper 419 (Taikee TK-8007 MCU, Table Soccer VT03): the 3-bit ADPCM chip's
+// handshake.  NintendulatorNRS mapper419.cpp / Hardware/Sound/s_ADPCM3Bit.cpp:
+// $4016 bit 2 is the data clock (rising edge latches the high nibble, falling
+// edge the low one), $410F bits 0-3 the data nibble, and $4017 reads return
+// bit 4 = READY (frame buffer not full) and bit 3 = NOT clock.  The game
+// spins on AND #$18 of $4017 before every byte (F5FC-F606), so without these
+// bits it never leaves its first command: black screen.  Only the protocol and
+// the 12-frame buffer are modelled; the decoded samples are NOT played.
+// ---------------------------------------------------------------------------
+u8 vt_tk8007;                  // 1 = mapper 419 (read by mapVT.s hook install)
+u8 vt_tk_4017;                 // bits 3-4 ORed into $4017 reads (mapVT.s)
+u8 vt_tk_data;                 // $410F data nibble, stored by mapVT.s write_tk4xxx
+static struct {
+    u8  clock, latch, command, bytes_left, ready, frames, nin;
+    u8  in[2];
+    u16 period;
+    u32 ft, acc;
+} tk;
+
+static inline void tk_status(void)
+{
+    vt_tk_4017 = (u8)((tk.ready ? 0x10 : 0) | (tk.clock ? 0 : 0x08));
+}
+
+static void tk_reset(void)
+{
+    memset(&tk, 0, sizeof tk);
+    tk.command = 0xFF;
+    tk.period  = 512;
+    tk.ready   = 1;
+    tk.ft      = frametotal;
+    vt_tk_data = 0;
+    tk_status();
+}
+
+/* Frames play out at period*21 chip clocks each; the chip runs at 4.09 MHz,
+ * about 68057 clocks per NES frame.  Drained lazily from frametotal: nothing
+ * reads the buffer depth except the next 0x06 command. */
+static void tk_drain(void)
+{
+    u32 now = frametotal, n = now - tk.ft;
+    tk.ft = now;
+    if (!tk.frames) { tk.acc = 0; return; }
+    if (n > 8) n = 8;
+    tk.acc += n * 68057u;
+    u32 per = (u32)(tk.period ? tk.period : 1) * 21u;
+    while (tk.frames && tk.acc >= per) { tk.acc -= per; tk.frames--; }
+    if (!tk.frames) tk.acc = 0;
+}
+
+
+void vt_tk_write4016(u8 val)
+{
+    u8 clk = (val >> 2) & 1;
+    if (!tk.clock && clk) {
+        tk.latch = (u8)(vt_tk_data << 4);
+    } else if (tk.clock && !clk) {
+        tk.latch |= vt_tk_data;
+        if (tk.command == 0x55 && tk.latch == 0xAA) {
+            tk_reset();
+        } else {
+            if (tk.bytes_left) {
+                if (tk.nin < 2) tk.in[tk.nin] = tk.latch;
+                tk.nin++;
+                tk.bytes_left--;
+            } else {
+                tk_drain();
+                switch (tk.latch) {
+                case 0x03: tk.bytes_left = 2; break;
+                case 0x04: tk.frames = 0; tk.bytes_left = 96; break;
+                case 0x06: if (tk.frames < 12) { tk.ready = 1; tk.bytes_left = 8; } break;
+                case 0x07: tk.frames = 0; break;
+                default:   break;
+                }
+                tk.command = tk.latch;
+            }
+            if (!tk.bytes_left) {
+                if (tk.command == 0x03 && tk.nin >= 2) {
+                    tk.period = (u16)(tk.in[0] | (tk.in[1] << 8));
+                } else if (tk.command == 0x06 && tk.nin) {
+                    tk_drain();
+                    tk.frames++;
+                    if (tk.frames >= 12) tk.ready = 0;
+                    else tk.bytes_left = 8;
+                }
+                tk.nin = 0;
+            }
+        }
+    }
+    tk.clock = clk;
+    tk_status();
+}
+
 void vt_reset(void)
 {
     // Preserve submapper across reset -- loadcart.c sets it from the iNES
@@ -196,6 +290,9 @@ void vt_reset(void)
 
     memset(&vt, 0, sizeof(VTState));
     vt.submapper = saved_submapper;
+
+    vt_tk8007 = (vt.submapper & 0x40) ? 1 : 0;
+    tk_reset();
 
     vt_timer_render_seen = 0;
     vt_timer_armed       = 0;
@@ -248,8 +345,10 @@ void vt_reset(void)
     vt_chr_outer_4100 = 0x00;
 
     // OneBus mapper-256 opcode encryption.
-    vt.encryption_mode    = vt.submapper;   // 0 if pre-NES2.0
-    vt.encryption_active  = (vt.submapper >= 12);
+    /* low nibble only: bits 6/7 tag mappers 419/405 (loadcart.c).  The 405 tag
+     * used to make every mapper-405 cart run with opcode encryption on. */
+    vt.encryption_mode    = vt.submapper & 0x0F;   // 0 if pre-NES2.0
+    vt.encryption_active  = (vt.encryption_mode >= 12);
     vt.encryption_pending = false;
     vt.encryption_next    = false;
 
@@ -624,7 +723,7 @@ void vt_reg_write(u8 addr_lo, u8 val)
 {
     /* s21b59: mapper 256 submapper 2 swaps $4107/$4108 (NintendulatorNRS
      * mapper256.cpp write4, cpuMangle[][]); identity for all others. */
-    if (addr_lo >= 0x07 && addr_lo <= 0x0A && (vt.submapper & 0x0F) == 2 && addr_lo <= 0x08)
+    if (addr_lo >= 0x07 && addr_lo <= 0x08 && (vt.submapper & 0x4F) == 2)   /* not 419 (tag 0x40): it has no cpuMangle */
         addr_lo ^= 0x0F;   /* 0x07 <-> 0x08 */
     extern void vt_timer_install_now(void);
     if (!vt_timer_armed) {          /* first $41xx touch: start the free-run count */
@@ -720,6 +819,7 @@ void vt_reg_write(u8 addr_lo, u8 val)
 #if VT09_ENCRYPTION
             case VT_REG_SECURITY:
                 // $410F: schedule encryption state change
+                if (vt_tk8007) { vt_tk_data = val & 0x0F; break; }   /* 419: ADPCM data nibble (mapVT.s normally takes it) */
                 vt09_set_encryption(val == 0x00);
                 break;
 #endif

@@ -14,10 +14,18 @@
  *   OUTPREFIX_tNNNN.geom  160 lines "hofs vofs" from dma0buff (row mapping)
  * SCRIPT: file of lines "FIRST LAST KEYMASK" (NES frames, GBA key bits:
  *   A=1 B=2 Select=4 Start=8 Right=16 Left=32 Up=64 Down=128).
- * Also writes OUTPREFIX_timeline.txt: "gba_frame nes_frames" per GBA frame. */
+ * Also writes OUTPREFIX_timeline.txt: "gba_frame nes_frames" per GBA frame.
+ * Env PVT_DUMP="ADDR:LEN,..." (hex): at each target also write the GBA bus
+ * range to OUTPREFIX_tNNNN_ADDR.bin (VRAM, OAM, EWRAM state for diagnosis).
+ * Env PVT_BIOS=path: boot through that real GBA BIOS (full intro, header
+ * check, real SWIs) instead of mGBA's HLE BIOS.  NES-frame keying is
+ * unaffected; the intro only costs GBA frames (MAXGBA grows by 400). */
 #include <mgba/core/core.h>
 #include <mgba/gba/core.h>
 #include <mgba/core/log.h>
+#include <mgba/core/config.h>
+#include <mgba-util/vfs.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,6 +65,14 @@ int main(int argc, char **argv) {
 	c->init(c);
 	mCoreInitConfig(c, NULL);
 	if (!mCoreLoadFile(c, argv[1])) { fprintf(stderr, "pvt_run: cannot load %s\n", argv[1]); return 1; }
+	const char *bios = getenv("PVT_BIOS");
+	if (bios && *bios) {
+		struct VFile *bvf = VFileOpen(bios, O_RDONLY);
+		if (!bvf || !c->loadBIOS(c, bvf, 0)) { fprintf(stderr, "pvt_run: cannot load BIOS %s\n", bios); return 1; }
+		c->opts.useBios = true;
+		c->opts.skipBios = false;
+		maxgba += 400;
+	}
 	unsigned w, h;
 	c->desiredVideoDimensions(c, &w, &h);
 	uint32_t *v = malloc(w * h * 4);
@@ -92,6 +108,16 @@ int main(int argc, char **argv) {
 				fprintf(f, "%d %d\n", (int)(short)(e & 0xFFFF), (int)(short)(e >> 16));
 			}
 			fclose(f);
+			const char *dl = getenv("PVT_DUMP");
+			for (char *q = (char *)dl; q && *q;) {
+				unsigned a = strtoul(q, &q, 16), len = 4;
+				if (*q == ':') len = strtoul(q + 1, &q, 16);
+				if (*q == ',') q++;
+				snprintf(name, sizeof name, "%s_t%04u_%08X.bin", out, targets[i], a);
+				f = fopen(name, "wb");
+				for (unsigned k = 0; k < len; k++) fputc(c->busRead8(c, a + k), f);
+				fclose(f);
+			}
 		}
 	}
 	fclose(tl);

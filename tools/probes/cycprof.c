@@ -1,6 +1,8 @@
 /* cycprof PLAY.gba ELF_NM_FILE WARMUP_FRAMES NSTEPS -- cycle-weighted profile by function.
  * ELF_NM_FILE: output of `arm-none-eabi-nm -n pocketvt.elf` (sorted).  Each step is charged
- * the GBA cycles it took (mTimingGlobalTime delta), so EWRAM/ROM wait states count. */
+ * the GBA cycles it took (mTimingGlobalTime delta), so EWRAM/ROM wait states count.
+ * WARMFT=<nes frame> (needs FT=) warms up until frametotal reaches it instead of WARMUP_FRAMES,
+ * pressing KEYS="first-last:mask,..." (NES frames, GBA key bits A=1 Start=8) on the way. */
 #include <mgba/core/core.h>
 #include <mgba/core/timing.h>
 #include <mgba/gba/core.h>
@@ -33,9 +35,23 @@ int main(int argc, char **argv) {
 	static unsigned buf[256*256]; c->setVideoBuffer(c, (void*)buf, w);
 	c->reset(c);
 	int warm = atoi(argv[3]); long N = atol(argv[4]);
+	unsigned FTA = getenv("FT") ? strtoul(getenv("FT"), 0, 16) : 0;
+	if (FTA && getenv("WARMFT")) {
+		unsigned target = strtoul(getenv("WARMFT"), 0, 10), kf[64], kt[64], km[64], nk = 0;
+		for (const char *p = getenv("KEYS"); p && *p && nk < 64; nk++) {
+			char *e; kf[nk] = strtoul(p, &e, 10); kt[nk] = strtoul(e + 1, &e, 10); km[nk] = strtoul(e + 1, &e, 10);
+			p = *e ? e + 1 : e;
+		}
+		for (int i = 0; i < 200000 && c->busRead32(c, FTA) < target; i++) {
+			unsigned ft = c->busRead32(c, FTA), m = 0;
+			for (unsigned j = 0; j < nk; j++) if (ft >= kf[j] && ft <= kt[j]) m |= km[j];
+			c->setKeys(c, m); c->runFrame(c);
+		}
+	} else
 	for (int i = 0; i < warm; i++) { c->setKeys(c, 0); c->runFrame(c); }
+	c->setKeys(c, 0);
 	struct ARMCore *cpu = c->cpu;
-	unsigned FTA = getenv("FT") ? strtoul(getenv("FT"), 0, 16) : 0; unsigned ft0 = FTA ? c->busRead32(c, FTA) : 0;
+	unsigned ft0 = FTA ? c->busRead32(c, FTA) : 0;
 	unsigned long long other = 0, total = 0; uint64_t t0 = mTimingGlobalTime(c->timing);
 	for (long i = 0; i < N; i++) {
 		unsigned pc = (cpu->gprs[15] - (cpu->cpsr.t ? 4 : 8)) & ~1u;

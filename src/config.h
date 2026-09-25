@@ -35,6 +35,14 @@
 #define VT_SPLIT_SLOTS 1
 #endif
 
+// VT timer ($4101-$4104) period model (guide s.79): free-running N+1 lines,
+// a rephase inside the picture N+2, an arm from vblank N -- calibrated
+// against Furbtendulator's reload-then-count scanline counter.  Build with
+// -DVT_TIMER_NPLUS1=0 for the old plain N-line period.
+#ifndef VT_TIMER_NPLUS1
+#define VT_TIMER_NPLUS1 1
+#endif
+
 // VT09 alias kept for backward compatibility; the build is identical.
 #if defined(VT09) && !defined(VT03)
   #define VT03 1

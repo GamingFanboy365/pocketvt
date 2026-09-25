@@ -198,6 +198,10 @@ mapVTinit:
 
     @ Install the $4100-$41FF write hook ------------------------------
     adr     r1, write_vt4xxx
+    ldr     r2, =vt_tk8007          @ mapper 419: $4016 also clocks the ADPCM MCU
+    ldrb    r2, [r2]
+    cmp     r2, #0
+    adrne   r1, write_tk4xxx
     str_    r1, writemem_4
 
     @ Install the $4000-$40FF / $4100-$41FF READ hook -----------------
@@ -207,6 +211,10 @@ mapVTinit:
     @ comment in vt_reg_read() -- and would break any VT title that probes
     @ its hardware.
     adr     r1, read_vt4xxx
+    ldr     r2, =vt_tk8007
+    ldrb    r2, [r2]
+    cmp     r2, #0
+    adrne   r1, read_tk4xxx
     str_    r1, readmem_4
 
     @ --- VT extra opcode handlers were installed at the top of this
@@ -307,6 +315,44 @@ read_vt4xxx:
     moveq   pc, lr
     ldr     pc, =IO_R               @ tail-jump; lr still points at the core
 
+
+@ ============================================================================
+@ read_tk4xxx / write_tk4xxx -- mapper 419 (Taikee TK-8007 MCU) only.
+@ $4017 reads carry the ADPCM chip's READY (bit 4) and NOT-clock (bit 3), and
+@ $4016 bit 2 clocks the chip (vt_tk_write4016 in vt_regs.c).  Installed in
+@ place of read_vt4xxx / write_vt4xxx so no other cart pays for them.
+@ The read side is joy1_R (io.s) without the VS dip bits: no stack, no C.
+@ ============================================================================
+read_tk4xxx:
+    ldr     r1, =0x4017
+    cmp     r12, r1
+    bne     read_vt4xxx
+    ldr_    r0, joy1serial
+    mov     r1, r0, asr #1
+    and     r0, r0, #1
+    ldrb_   r2, joystrobe
+    movs    r2, r2
+    streq_  r1, joy1serial
+    ldr     r1, =vt_tk_4017
+    ldrb    r1, [r1]
+    orr     r0, r0, r1
+    mov     pc, lr
+
+write_tk4xxx:
+    ldr     r1, =0x410F              @ ADPCM data nibble: the game streams it
+    cmp     r12, r1                  @ twice per byte, so skip vt_reg_write
+    andeq   r0, r0, #0x0F
+    ldreq   r1, =vt_tk_data
+    streqb  r0, [r1]
+    moveq   pc, lr
+    ldr     r1, =0x4016
+    cmp     r12, r1
+    bne     write_vt4xxx
+    stmfd   sp!, {r0, r12, lr}
+    bl      vt_tk_write4016          @ r0 = value
+    ldmfd   sp!, {r0, r12, lr}
+    ldr     pc, =IO_W                @ then the stock joypad strobe
+    .ltorg
 
 write_vt4xxx:
     @ Session-13 perf: dispatch BEFORE building a frame.  This hook sees every

@@ -25,6 +25,7 @@ mapper-256 sub-15 (Jungletac) ROM still announces itself to the loader.
 import os
 import struct
 import sys
+import zlib
 
 EMU_FILE = "pocketvt.gba"
 OUT_FILE = "play_me.gba"
@@ -93,6 +94,17 @@ def main():
             success_count += 1
 
     print(f"\nSuccessfully compiled {success_count} game(s) into {OUT_FILE}!")
+
+    # A real GBA's BIOS will not start a cart without the Nintendo logo and a
+    # correct header complement (guide s.79).  Appending games never changes
+    # the header, so this only catches a core built without gbafix.
+    with open(OUT_FILE, "rb") as f:
+        h = f.read(0xC0)
+    comp = (-(sum(h[0xA0:0xBD]) + 0x19)) & 0xFF
+    if (zlib.crc32(h[4:0xA0]) & 0xFFFFFFFF) != 0xD0BEB55E or h[0xBD] != comp:
+        print(f"WARNING: {OUT_FILE} has no valid GBA header -- it runs in most "
+              f"emulators but a real GBA will not boot it.  Fix the core with "
+              f"tools/gbafix.py.", file=sys.stderr)
 
     # build_pvt.sh rm -rf's its build dir, so a missing .nes here is the
     # usual cause of a ROM-less, core-only play_me.gba.  Fail loudly.

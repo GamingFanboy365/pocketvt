@@ -48,6 +48,7 @@ ap.add_argument('--furb-arg', action='append', default=[], help='extra furb_cli 
 ap.add_argument('--furb', default=os.path.join(FB, 'build', 'furb_cli'))
 ap.add_argument('--out', default='furbcmp')
 ap.add_argument('--keep', action='store_true', help='keep raw captures/dumps in OUT/raw')
+ap.add_argument('--bios', help='boot PocketVT through this real GBA BIOS (gba_bios.bin) instead of mGBA HLE')
 a = ap.parse_args()
 
 targets = sorted({int(t) for t in a.at.split(',') if t.strip()})
@@ -101,9 +102,19 @@ for s in ('frametotal', '_dma0buff'):
     if s not in syms:
         sys.exit('compare_furb: symbol %s not in %s' % (s, elf))
 pv = os.path.join(tmp, 'pv')
+env = dict(os.environ)
+if a.bios:
+    # A real BIOS will not start a cart with a bad logo/complement -- that IS
+    # the hardware result, so report it instead of quietly skipping the BIOS
+    # the way mGBA does (guide s.79).
+    if subprocess.run([sys.executable, os.path.join(REPO, 'tools', 'gbafix.py'), '--check', play],
+                      stdout=subprocess.DEVNULL).returncode:
+        sys.exit('compare_furb: %s has an invalid GBA header; the real BIOS would not boot it '
+                 '(fix the core with tools/gbafix.py)' % a.core)
+    env['PVT_BIOS'] = os.path.abspath(a.bios)
 r = subprocess.run([harness, play, syms['frametotal'], syms['_dma0buff'], pv,
                     ','.join(map(str, targets)), os.path.join(tmp, 'keys.txt')],
-                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
 if r.returncode:
     sys.exit('compare_furb: pvt_run failed:\n' + r.stderr[-2000:])
 timeline = [tuple(map(int, l.split())) for l in open(pv + '_timeline.txt')]
