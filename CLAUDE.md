@@ -69,9 +69,9 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
    subset of the old core's. Any code-cost change re-times Star Ally (a blink
    shifts phase), so "differs at f700" alone is NOT a regression if every frame
    it renders was rendered before.
-3. `tools/score_5bit.sh <builddir>` for Lucky Lawn Mower vs gg.png / lawn.png
-   (currently ~96.5% opening, ~97.1% gameplay). Compare pixels in 5-BIT space
-   (`>>3` both sides) -- mgba expands 5->8 bit differently from references.
+3. Colours: compare_furb's `exact5` against Furbtendulator is the reference
+   now (the user retired the gg.png/lawn.png photo checks, s.79h). Compare in
+   5-BIT space (`>>3` both sides) -- mgba expands 5->8 bit differently.
 4. `tools/compare_furb.py` on each testrom at a few frames: `struct` must not drop.
 5. **Emulation speed = NMIs per 60 frames.** nmi_handler (timeout.s) increments
    a debug byte at 0x020007DF; read it before/after 60 runFrame calls.
@@ -117,9 +117,9 @@ states, sound) and s.77-78 (raster-split slots, speed).
   the 3K EWRAM stack. Measure with tools/probes/spmin from power-on.
 
 ## Open work, in priority order
-1. VT369 platform port (s.47): Lucky Lawn Mower VT369 (black). Table Soccer
-   VT369 also needs VT369-00.BIN (the console's 4K internal ROM; Furbtendulator
-   will not run it without) -- ask the user for it.
+1. VT369 platform port (s.47): Lucky Lawn Mower VT369 and Table Soccer VT369
+   (both black in PocketVT). Both run in furb_cli (Table Soccer VT369 only
+   warns that VT369-00.BIN is missing; guide s.79h), so compare_furb works.
 2. Sound (s.79d): VT ADPCM $4120-$412F only mixes while NES DMC plays; the
    TK-8007 voice (Table Soccer) is not played; second APU $4020-$402F and the
    VT369 sound CPU are absent. Measure with tools/probes/pvtwav + wavcmp.py.
@@ -127,9 +127,7 @@ states, sound) and s.77-78 (raster-split slots, speed).
    tiles in a few VG games that moves with timing (nametables match exactly).
 4. Aero/Hex title speed 41-42/60 (s.78d); profile with cycprof.
 5. Table Soccer formation screen: two 6-line strips need a sixth char block.
-6. Lucky Lawn Mower VT09 now uses Furbtendulator's colours via the VG table;
-   re-check against gg.png/lawn.png when available (ask for them).
-7. Scramble's shot (s.70c): one-pixel sprite on texture row 7 dropped by the
+6. Scramble's shot (s.70c): one-pixel sprite on texture row 7 dropped by the
    sprite affine matrix.
 
 ## Reference material

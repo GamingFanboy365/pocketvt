@@ -3933,3 +3933,20 @@ commented out), so changing a #define in config.h does NOT rebuild the .s files
 that test it. Clean first (`rm -rf build`) whenever a config.h default or an
 asm-visible define changes. The shipping core here was built both clean and
 incrementally, and the two are byte-identical.
+
+### 79h. Two corrections after s.79
+
+Table Soccer VT369 does NOT need VT369-00.BIN to run in Furbtendulator. The
+emulator prints "Plug-through device: File ...VT369-00.BIN not found" and
+carries on. An earlier s.79 run looked like a failure only because furb_cli's
+output was piped into `head -2`, and the SIGPIPE killed it after two lines.
+Both VT369 carts run in furb_cli from power-on. Table Soccer VT369 reaches its
+team select with the Chilean club teams. The user's standalone furb_cli
+repository (GUI plus native 64-bit builds) gives byte-identical frames to
+tools/furb_cli, because its Furbtendulator source is the same. Lesson: never
+pipe furb_cli (or any run whose output files you then check) into `head`.
+
+The user retired the LLM photo references (gg.png, lawn.png): Furbtendulator,
+through compare_furb, is the colour reference from now on. The VG table
+change in 79b therefore stands for Lucky Lawn Mower VT09 as well (exact5
+99.7%).
