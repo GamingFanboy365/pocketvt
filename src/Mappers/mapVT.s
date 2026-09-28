@@ -310,8 +310,40 @@ vt_apply_prg_banks:
     .global read_vt4xxx
 read_vt4xxx:
     sub     r1, r12, #0x4100        @ r1 = low byte for $41xx, huge otherwise
+    cmp     r1, #0x100              @ $40xx (joypad, $4015): straight to the
+    ldrhs   pc, =IO_R               @ stock handler, no extra compares (s.80)
     cmp     r1, #0x19
-    moveq   r0, #0x18               @ XPORN | XF5OR6
+    bne     2f
+    ldr     r0, =vt_console         @ VT369 reports no TV-system bits (NRS
+    ldrb    r0, [r0]                @ APU_VT369::IntRead $4119 = 0)
+    cmp     r0, #0x0A
+    moveq   r0, #0
+    movne   r0, #0x18               @ XPORN | XF5OR6
+    mov     pc, lr
+2:
+    @ guide s.80: VT32/VT369 multiply/divide results, $4130-$413D
+    sub     r2, r1, #0x30
+    cmp     r2, #0x0E
+    bhs     3f
+    ldr     r0, =vt_alu_on
+    ldrb    r0, [r0]
+    cmp     r0, #0
+    ldrne   r0, =vt_alu_rd
+    ldrneb  r0, [r0, r2]
+    movne   pc, lr
+3:
+    @ guide s.80: fixed answers NintendulatorNRS h_OneBus.cpp readAPU gives
+    @ every OneBus console ("various games, unknown purpose").  Lucky Lawn
+    @ Mower VT369 spins at $E882 until $41B7 bit 2 is set.
+    cmp     r1, #0x5C
+    moveq   r0, #0x10
+    moveq   pc, lr
+    cmp     r1, #0x8A
+    cmpne   r1, #0xB7
+    moveq   r0, #0x04
+    moveq   pc, lr
+    cmp     r1, #0xB9
+    moveq   r0, #0x80
     moveq   pc, lr
     ldr     pc, =IO_R               @ tail-jump; lr still points at the core
 

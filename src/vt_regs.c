@@ -472,6 +472,13 @@ static u8 vt_mmc3_cmd;
 // style mid-frame CHR switches, e.g. a VG Pocket racer's dashboard, were lost).
 EWRAM_BSS u8 vt_mmc3_chr_touched;
 
+// VT32/VT369 multiply/divide unit ($4130-$4137, guide s.80).
+EWRAM_BSS u8  vt_alu_on;        /* console type VT32/VT369 (loadcart.c) */
+EWRAM_BSS u8  vt_console;       /* NES 2.0 extended console type, 0 if none */
+EWRAM_BSS u8  vt_alu_rd[16];    /* read-back for $4130-$413D (mapVT.s) */
+EWRAM_BSS u32 vt_alu14;
+EWRAM_BSS u16 vt_alu56, vt_alu67;
+
 static void vt_mmc3_reset(void)
 {
     vt_mmc3_cmd = 0;
@@ -831,6 +838,38 @@ void vt_reg_write(u8 addr_lo, u8 val)
             default:
                 break;
         }
+        return;
+    }
+
+    // $4130-$4137: VT32/VT369 hardware multiply/divide (guide s.80;
+    // NintendulatorNRS OneBus_VT369.cpp APU_VT369::IntWrite/IntRead).
+    if (addr_lo >= 0x30 && addr_lo <= 0x37 && vt_alu_on) {
+        switch (addr_lo) {
+        case 0x30: vt_alu14 = (vt_alu14 & 0xFFFFFF00u) | ((u32)val <<  0); break;
+        case 0x31: vt_alu14 = (vt_alu14 & 0xFFFF00FFu) | ((u32)val <<  8); break;
+        case 0x32: vt_alu14 = (vt_alu14 & 0xFF00FFFFu) | ((u32)val << 16); break;
+        case 0x33: vt_alu14 = (vt_alu14 & 0x00FFFFFFu) | ((u32)val << 24); break;
+        case 0x34: vt_alu56 = (u16)((vt_alu56 & 0xFF00) | val); break;
+        case 0x35: vt_alu56 = (u16)((vt_alu56 & 0x00FF) | (val << 8));
+                   vt_alu14 = (vt_alu14 & 0xFFFFu) * (u32)vt_alu56;        /* multiply */
+                   break;
+        case 0x36: vt_alu67 = (u16)((vt_alu67 & 0xFF00) | val); break;
+        case 0x37: vt_alu67 = (u16)((vt_alu67 & 0x00FF) | (val << 8));
+                   if (vt_alu67) {                                          /* divide */
+                       u32 q = vt_alu14 / vt_alu67;
+                       vt_alu56 = (u16)(vt_alu14 % vt_alu67);
+                       vt_alu14 = q;
+                   }
+                   break;
+        }
+        /* read-back table for mapVT.s read_vt4xxx ($4130-$413D; $4138-$413D
+         * mirror $4130-$4135).  $4136 is the busy count: the result is
+         * ready at once here, so it always reads 0. */
+        for (int i = 0; i < 4; i++) vt_alu_rd[i] = vt_alu_rd[8 + i] = (u8)(vt_alu14 >> (8 * i));
+        vt_alu_rd[4] = vt_alu_rd[12] = (u8)vt_alu56;
+        vt_alu_rd[5] = vt_alu_rd[13] = (u8)(vt_alu56 >> 8);
+        vt_alu_rd[6] = 0;
+        vt_alu_rd[7] = 0;
         return;
     }
 

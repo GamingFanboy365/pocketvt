@@ -173,6 +173,12 @@ static void read_rom_header(u8 *nesheader)
 	 * PocketVT uses that reserved nibble to name the console's colour DAC.
 	 * 0 = auto, so every image already wrapped keeps its current colours.
 	 * See MAINTAINERS_GUIDE section 57 and tools/rewrap_onebus.py. */
+	{	/* guide s.80: the console type picks VT32/VT369-only hardware */
+		extern u8 vt_alu_on, vt_console;
+		u8 ct = (is_nes20 && (nesheader[7] & 0x03) == 0x03) ? (nesheader[13] & 0x0F) : 0;
+		vt_console = ct;
+		vt_alu_on = (ct == 0x09 || ct == 0x0A);
+	}
 	vt_dac_variant = VT_DAC_AUTO;
 	if (is_nes20 && (nesheader[7] & 0x03) == 0x03)
 		vt_dac_variant = (u8)((nesheader[13] >> 4) & 0x0F);
