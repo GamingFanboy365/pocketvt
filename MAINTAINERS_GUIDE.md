@@ -3950,3 +3950,65 @@ The user retired the LLM photo references (gg.png, lawn.png): Furbtendulator,
 through compare_furb, is the colour reference from now on. The VG table
 change in 79b therefore stands for Lucky Lawn Mower VT09 as well (exact5
 99.7%).
+
+## 80. VT369, part 1: the CPU side runs; the enhanced renderer is next
+
+Both VT369 carts ran NES frames but sat in polling loops forever. Lucky Lawn
+Mower VT369 waited at $E882 for $41B7 bit 2. NintendulatorNRS answers four
+$41xx reads with constants on every OneBus console ("various games, unknown
+purpose"): $415C = $10, $418A = $04, $41B7 = $04, $41B9 = $80. read_vt4xxx in
+mapVT.s now returns them. Next it waited at $C1BD for $4136 to reach 0. That
+is the busy count of the VT32/VT369 multiply/divide unit, which PocketVT did
+not have (vt_regs.h described an incorrect register layout for it). Writing
+$4135 multiplies the low 16 bits of $4130-$4133 by $4134-$4135. Writing $4137
+divides $4130-$4133 by $4136-$4137, leaving the quotient in $4130-$4133 and the
+remainder in $4134-$4135. $4130-$413D read the results, $4138-$413D mirroring
+$4130-$4135. vt_reg_write computes the result at write time and fills
+vt_alu_rd[], which the asm read hook returns without a C call, and $4136 reads
+0 (ready at once). It is enabled for console types VT32 and VT369 only
+(vt_alu_on, from the NES 2.0 header in loadcart.c). $4119 now reads 0 on
+VT369, as in APU_VT369::IntRead. After this both carts run game logic.
+Lucky Lawn Mower VT369 executes its gameplay code, including code in PRG page
+0, but both screens are still black.
+
+The black screen is the renderer, not the CPU. Everything below is from
+OneBus_VT369.cpp and NES.cpp. With $201E != 0 (Lucky Lawn Mower VT369 has
+$0F) the PPU runs RunNoSkipEnhanced. BG tiles are packed 4bpp, eight
+four-byte rows with the LOW nibble the left pixel, which is the GBA's own
+4bpp tile format, so they can go from PRG to VRAM with no conversion. The
+pattern address is (tile << 4 | fineY*2) << ($201C & 3), plus
+vt369bgData = ($2020 | $2021 << 8) << 13 when $201E bit 0 is set. $201C bit 3
+clear adds the attribute bits as tile-number bits 8-9. $201C & 3 == 2 selects
+8bpp. Colours are 16-bit pairs from a 1024-byte palette,
+Palette[TC << 1] | Palette[TC << 1 | 1] << 8, into the PALETTE_VT369 colour
+table. The CPU writes that palette through $5000-$5FFF
+(writeVT369Palette: Palette[addr & ($201E ? 0x3FF : 0xFF)]). Sprites have an
+enhanced OAM layout when $201E bit 2 is set, and $201C bit 2 is a hi-res
+mode. The platform also maps the 4 KB embedded ROM (NES 2.0 misc ROM) at
+$1000-$1FFF and VRAM into CPU space at $3000-$3FFF.
+
+Plan, in order, each step checkable with compare_furb:
+1. $5000-$5FFF palette writes and the 16-bit colour conversion (dump
+   PALETTE_VT369 with furb_cli --dump-palette, extended for it).
+2. Enhanced BG: map entries get 10-bit tile numbers from the attribute bits;
+   tiles are DMA'd from PRG into a BG char block as they are (4bpp). Reuse the
+   BKEXTEN slot machinery (vt_bk_*) for tile-bank caching.
+3. Enhanced sprites and OAM.
+4. $1000-$1FFF embedded ROM and $3000-$3FFF VRAM access, if the carts use
+   them (trace first).
+5. The sound CPU: HLE only, later (Settings::VT369SoundHLE is the reference's
+   own shortcut).
+
+Cost check. The first version put the new compares in front of every
+$4000-$41FF read, joypad included, and Aero and Hex titles fell from 41-42 to
+35-36 NES fps. read_vt4xxx now sends $40xx straight to IO_R with a single
+unsigned compare, which made those titles faster than before (43/44). Every
+other test ROM scores the same (Star Ally passes the frame-set test: all 32
+distinct frames over 800 were rendered by the old core). Aero's title drops
+from 100% to 99.17% at frames 140-200, because its small planet sprite rests
+at another spot, and 6 of its 28 distinct frames are new. Aero reads no $41xx
+register at all (traced over frames 0-150). Its NES RAM differs from the old
+core only in the interrupted stack bytes and $0050, and the new core is
+slightly CLOSER to Furbtendulator's RAM there (5 differing bytes against 6).
+So this is display timing from the speed change, not a state fault. It is
+recorded here rather than left silent.
