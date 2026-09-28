@@ -10,26 +10,62 @@ some carts a per-submapper opcode bit-permutation ("encryption"). The main
 CPU is a stock 6502. The so-called "VT extra opcodes" belong to the VT369
 sound coprocessor and are not emulated; see DATASHEET_DIGEST.md appendix A.
 
-Carts are recognised from their NES 2.0 header: mappers 256 and 405 are
+Carts are recognised from their NES 2.0 header: mappers 256, 405 and 419 are
 routed to the VT core (internally mapper 253, `mapVTinit`), and the
-submapper selects encryption and register mangling at runtime. Other
-mappers still go through the inherited PocketNES mapper library.
+submapper selects encryption and register mangling at runtime. The header's
+extended console type (VT03, VT09, VT32, VT369) switches on console-specific
+hardware such as the VT32/VT369 multiply/divide unit, and a header nibble can
+name the console's colour DAC. Other mappers still go through the inherited
+PocketNES mapper library.
 
 ## Status
 
+Every figure below comes from `tools/compare_furb.py`, which runs the same ROM
+with the same input through PocketVT and through Furbtendulator (the reference
+emulator) and scores the pictures frame by frame. "Picture" is the
+palette-independent structural match; speed is NES frames emulated per 60 GBA
+frames.
+
 | Cart | State |
 |------|-------|
-| Star Ally, Lonely Island, Scramble | working (regression controls) |
-| Lucky Lawn Mower (VT09) | working, ~96.5% / 97.1% pixel match vs reference |
-| VG Pocket 50-in-1 (VT09) | all 50 games run |
-| Push the Ball, Time Pilot | working |
-| Add 'em Up | working, full speed |
-| Aero Gyrodine, Hex City X | gameplay works; titles are raster-split and slow |
-| Table Soccer (mapper 419) | not supported |
+| Star Ally, Lonely Island, Scramble | working (regression controls); 97-99% picture |
+| Lucky Lawn Mower (VT09) | working; 99.7% picture, colours match the reference exactly |
+| VG Pocket 50-in-1 (VT09) | all 50 games run; mean exact-colour match 98.3% across all 50 |
+| Push the Ball, Time Pilot | working; 97-100% picture |
+| Add 'em Up | working, full speed; 98-99.9% picture |
+| Aero Gyrodine, Hex City X | working; raster-split titles 99.99%, 42-43 NES fps, gameplay full speed |
+| Table Soccer (VT03, mapper 419) | working; menus and match 96-99%, about 43 NES fps; no voice samples |
+| Lucky Lawn Mower VT369, Table Soccer VT369 | CPU side runs, screen still black (the VT369 renderer is in progress) |
 | Mapper 405 (VT168, zero-vector boot) | does not boot yet |
+
+Raster splits (a game switching CHR banks partway down the screen from a
+timer IRQ) are drawn by giving each band its own GBA character block, up to
+three extra bands per frame, in both 4bpp and 2bpp modes. The VT timer is
+modelled after the reference's scanline counter, so split lines land on the
+same scanlines as in Furbtendulator.
+
+Sound: the standard 2A03 channels play, and match the reference where a game
+runs at full speed. The VT-specific PCM hardware is incomplete. The VT02+
+ADPCM channels (`$4120-$412F`) are only mixed while NES DMC audio happens to
+be playing, the Table Soccer TK-8007 voice chip is answered but not played,
+and the second APU (`$4020-$402F`) and the VT369 sound CPU are not emulated.
 
 Open work, in priority order, is listed in CLAUDE.md. The detailed record
 is MAINTAINERS_GUIDE.md.
+
+## Real hardware
+
+Cores built either way get a valid GBA header (Nintendo logo and complement
+check), which a real GBA's BIOS requires before it will start a cart; the
+Docker build runs devkitARM's `gbafix`, and `build_pvt.sh` runs
+`tools/gbafix.py`, which copies the logo from the committed core. `builder.py`
+warns if a play ROM's header would not boot. Every test ROM has been booted
+through a real GBA BIOS dump in mGBA (`compare_furb.py --bios`), including the
+BIOS intro and header check, and renders the same as under mGBA's built-in
+BIOS. At start-up the core sets the cartridge wait states to 3/1 with the
+prefetch buffer (`WAITCNT = 0x4317`, the setting retail games use), which is
+worth up to 70% speed on some carts. None of this has been tried on a
+physical GBA yet.
 
 ## Building
 
@@ -73,11 +109,16 @@ file is always larger than the ~107 KB core.
 
 ## Local test material (not in git)
 
+No ROMs are ever committed: not test carts, not packaged play ROMs. The only
+ROM-like files in git are the core itself, `pocketvt.gba` and `pocketvt.elf`.
+`.gitignore` enforces this for `*.nes`, `*.fds`, `*.unf` and the other NES
+formats, every `*.gba` except the core, `testroms/` and `reference/`.
+
 `testroms/` (ROMs) and `reference/` (NESdev wiki XML exports, the
-NintendulatorNRS OneBus sources in `reference/nrs/`, and the full
-Furbtendulator source in `reference/Furbtendulator-main/`) live in the working
-tree but are gitignored, as are all `*.nes`, captures (`*.png`) and build
-output. Keep them locally and never commit them.
+NintendulatorNRS OneBus sources in `reference/nrs/`, the full Furbtendulator
+source in `reference/Furbtendulator-main/`, and a GBA BIOS dump for real-BIOS
+testing) live in the working tree but are gitignored, as are captures
+(`*.png`) and build output. Keep them locally and never commit them.
 
 ## Checking against the reference emulator
 
@@ -89,7 +130,13 @@ same input, then writes side-by-side images and scores. See
 ```bash
 python3 tools/furb_cli/build.py
 python3 tools/compare_furb.py testroms/Scramble.nes --at 300,700 --input "320-325:Start"
+python3 tools/compare_furb.py testroms/Scramble.nes --at 300 --bios reference/gba_bios.bin
 ```
+
+`tools/probes/` holds small single-question mGBA harnesses: speed, frame
+hashes, memory dumps, watchpoints, stack depth, a cycle-weighted profiler,
+real-BIOS boot (`biosboot`) and audio capture (`pvtwav`, compared against
+`furb_cli --wav` by `wavcmp.py`). Its README lists them.
 
 ## Repository layout
 
@@ -97,7 +144,8 @@ python3 tools/compare_furb.py testroms/Scramble.nes --at 300,700 --input "320-32
 |------|------|
 | `src/` | the emulator: PocketNES core (ARM asm + C) plus the VT additions |
 | `src/vt_regs.c`, `src/ppu_vt.c`, `src/Mappers/mapVT.s`, `src/6502_vt.s` | VT registers, VT video, VT mapper hooks, encryption wrappers |
-| `tools/` | test harnesses (libmgba), scoring and helper scripts |
+| `tools/` | test harnesses (libmgba), scoring and helper scripts, `gbafix.py` |
+| `tools/probes/` | single-question mGBA probes (see its README) |
 | `tools/furb_cli/`, `tools/compare_furb.py` | headless Furbtendulator (reference emulator) and a one-command frame comparison against PocketVT |
 | `build_pvt.sh`, `Makefile` | toolchain-only build, devkitARM build |
 | `builder.py` | packs `.nes` files onto the core |
