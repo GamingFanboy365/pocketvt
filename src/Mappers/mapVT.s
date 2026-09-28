@@ -584,7 +584,22 @@ write_vt_rom:
     bl      vt_mmc3_forward
     
     ldmfd   sp!, {r0}
-    
+
+    @ guide s.79: a CHR bank changed -> note the raster band (vt_band_mark),
+    @ like ppu.s vt_band_hook does for $2012-$2017.  get_scanline_2 returns
+    @ the NES scanline in addy (r12, restored from the stack below).
+    ldr     r1, =vt_mmc3_chr_touched
+    ldrb    r2, [r1]
+    cmp     r2, #0
+    beq     1f
+    mov     r2, #0
+    strb    r2, [r1]
+    stmfd   sp!, {r0}
+    bl_long get_scanline_2
+    mov     r0, addy
+    bl      vt_band_mark
+    ldmfd   sp!, {r0}
+1:
     @ Did vt_mmc3_forward change the banking configuration?
     ldr     r1, =vt_prg_dirty
     ldrb    r2, [r1]

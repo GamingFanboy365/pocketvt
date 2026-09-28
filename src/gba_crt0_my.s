@@ -52,6 +52,14 @@ start_vector:
 @---------------------------------------------------------------------------------
 	mov	r0, #0x4000000			@ REG_BASE
 	str	r0, [r0, #0x208]
+#if VT_FAST_WAITCNT
+	@ guide s.79: cart ROM at 3/1 wait states with the prefetch buffer
+	@ (0x4317, what retail games set).  Power-on is 4/2 without prefetch, and
+	@ PocketVT's VT paths are Thumb C executing from ROM.
+	ldr	r1, =0x4317
+	add	r2, r0, #0x200
+	strh	r1, [r2, #4]			@ REG_WAITCNT (strh offsets are 8-bit)
+#endif
 
 	mov	r0, #0x12			@ Switch to IRQ Mode
 	msr	cpsr, r0

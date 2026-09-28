@@ -198,10 +198,10 @@ void vt_timer_tick_frame(void)
 // bits it never leaves its first command: black screen.  Only the protocol and
 // the 12-frame buffer are modelled; the decoded samples are NOT played.
 // ---------------------------------------------------------------------------
-u8 vt_tk8007;                  // 1 = mapper 419 (read by mapVT.s hook install)
-u8 vt_tk_4017;                 // bits 3-4 ORed into $4017 reads (mapVT.s)
-u8 vt_tk_data;                 // $410F data nibble, stored by mapVT.s write_tk4xxx
-static struct {
+EWRAM_BSS u8 vt_tk8007;        // 1 = mapper 419 (read by mapVT.s hook install)
+EWRAM_BSS u8 vt_tk_4017;       // bits 3-4 ORed into $4017 reads (mapVT.s)
+EWRAM_BSS u8 vt_tk_data;       // $410F data nibble, stored by mapVT.s write_tk4xxx
+EWRAM_BSS static struct {
     u8  clock, latch, command, bytes_left, ready, frames, nin;
     u8  in[2];
     u16 period;
@@ -466,6 +466,11 @@ void vt_recompute_prg_banks(void)
 
 // Last byte written to $8000 -- selects which entry $8001 modifies.
 static u8 vt_mmc3_cmd;
+// A CHR bank changed through $8001: mapVT.s write_vt_rom then records a raster
+// band at the current scanline, as ppu.s does for $2012-$2017 (guide s.79;
+// ppu_vt.c's s.73 comment claimed this call existed -- it did not, so MMC3-
+// style mid-frame CHR switches, e.g. a VG Pocket racer's dashboard, were lost).
+EWRAM_BSS u8 vt_mmc3_chr_touched;
 
 static void vt_mmc3_reset(void)
 {
@@ -504,22 +509,22 @@ void vt_mmc3_forward(u16 addr, u8 val)
             // bank cases (cmd 6 and 7).
             switch (vt_mmc3_cmd & 0x07) {
                 case 0:
-                    if (vt_chr_reg[4] != val) { vt_chr_reg[4] = val; vt_chr_sync_from_prg(); }
+                    if (vt_chr_reg[4] != val) { vt_chr_reg[4] = val; vt_chr_sync_from_prg(); vt_mmc3_chr_touched = 1; }
                     break;
                 case 1:
-                    if (vt_chr_reg[5] != val) { vt_chr_reg[5] = val; vt_chr_sync_from_prg(); }
+                    if (vt_chr_reg[5] != val) { vt_chr_reg[5] = val; vt_chr_sync_from_prg(); vt_mmc3_chr_touched = 1; }
                     break;
                 case 2:
-                    if (vt_chr_reg[0] != val) { vt_chr_reg[0] = val; vt_chr_sync_from_prg(); }
+                    if (vt_chr_reg[0] != val) { vt_chr_reg[0] = val; vt_chr_sync_from_prg(); vt_mmc3_chr_touched = 1; }
                     break;
                 case 3:
-                    if (vt_chr_reg[1] != val) { vt_chr_reg[1] = val; vt_chr_sync_from_prg(); }
+                    if (vt_chr_reg[1] != val) { vt_chr_reg[1] = val; vt_chr_sync_from_prg(); vt_mmc3_chr_touched = 1; }
                     break;
                 case 4:
-                    if (vt_chr_reg[2] != val) { vt_chr_reg[2] = val; vt_chr_sync_from_prg(); }
+                    if (vt_chr_reg[2] != val) { vt_chr_reg[2] = val; vt_chr_sync_from_prg(); vt_mmc3_chr_touched = 1; }
                     break;
                 case 5:
-                    if (vt_chr_reg[3] != val) { vt_chr_reg[3] = val; vt_chr_sync_from_prg(); }
+                    if (vt_chr_reg[3] != val) { vt_chr_reg[3] = val; vt_chr_sync_from_prg(); vt_mmc3_chr_touched = 1; }
                     break;
                 case 6:
                     vt.reg[0x07] = val;
@@ -988,36 +993,12 @@ void vt_adpcm_mix_gba(void)
     s8 * const buf  = (s8*)0x05000280;
     const int  SIZE = 128;   // PCMWAVSIZE from equates.h
 
-    // The GBA timer1interrupt fires at ~15.7kHz.
-    // 15.7kHz = 15700 ticks / sec.
-    // VT369 timer runs at CPU clock = 1.789 MHz.
-    // 1.789 MHz / 15.7 kHz = ~114 CPU cycles per GBA timer tick.
-    // This provides a hardware-synchronous clock tick for the VT Timer,
-    // avoiding massive architectural changes to PocketNES's internal queue.
-    //
-    // Per Furb h_OneBus.cpp::clockScanlineCounter:
-    //   counter = !counter ? reloadValue : --counter;
-    //   if (!counter && enableIRQ && isRendering) { fire IRQ }
-    //
-    // Key: the counter ALWAYS runs.  There is no "enable timer" bit on
-    // real silicon.  The only IRQ gate is enableIRQ (= bit 1 of our
-    // timer_ctrl shadow).  PocketVT used to gate counter on bit 0
-    // (set by $4102) but that broke games like Star Ally that never
-    // write $4102 -- they just write the period ($4101), then disable+
-    // enable IRQ ($4103+$4104), expecting the always-running counter
-    // to fire IRQs at the configured period.
-    {
-        int counter = (int)vt.timer_counter - 114;
-        while (counter <= 0) {
-            counter += vt.timer_period ? vt.timer_period : 1;
-            if (vt.timer_ctrl & 0x02) { // IRQ enabled
-                vt.want_timer_irq = 1;
-                extern u8 _wantirq;
-                _wantirq |= 0x02; // VT_IRQ_MAPPER
-            }
-        }
-        vt.timer_counter = (u16)counter;
-    }
+    /* s.79: a second copy of the VT timer used to live here -- it counted
+     * 114 CPU cycles per call against a period measured in SCANLINES, so
+     * whenever NES DMC was playing (this runs from the DMC refill interrupt)
+     * and a game had its timer IRQ enabled, it raised IRQ_MAPPER on every
+     * refill.  The real timer is the timeout-scheduled one in sound.s
+     * (vt_timer_handler); this copy is gone. */
 
     for (int s = 0; s < SIZE; s++) {
         s32 mixed = 0;

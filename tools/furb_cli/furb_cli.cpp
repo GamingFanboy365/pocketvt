@@ -451,6 +451,7 @@ static void usage(void) {
 	fprintf(stderr,
 "usage: furb_cli ROM [options]      (ROM: .nes .unf .fds .nsf ...)\n"
 "run      --frames N  --dump F,F,..  --every K  --out PREFIX  --hashes  --info  --quiet  --verbose\n"
+"         --dump-palette FILE   (the active NES + VT03 colour tables, 0xRRGGBB)\n"
 "input    --input \"FRAMES:ACTION;...\" (repeatable)  --port 1|2 (default pad)\n"
 "         ACTION: [p1:..p4:|exp:]A+B+Select+Start+Up+Down+Left+Right+TurboA+TurboB+bN\n"
 "                 key:NAME+NAME   mouse:X,Y[+left][+right][+middle]   mic:LEVEL\n"
@@ -478,6 +479,7 @@ int main(int argc, char **argv) {
 	std::set<int> dumps;
 	std::string input;
 	std::vector<std::string> configs, sets, devices, cheats, headers;
+	std::string dump_palette;
 	long dip = -1;
 	int nsf_song = 0;
 	for (int i = 1; i < argc; i++) {
@@ -492,6 +494,7 @@ int main(int argc, char **argv) {
 		else if (a == "--quiet") quiet = FurbHost::quiet = true;
 		else if (a == "--verbose") FurbHost::verbose = true;
 		else if (a == "--info") info = true;
+		else if (a == "--dump-palette") dump_palette = next();
 		else if (a == "--dump") for (auto &d : split(next(), ',')) { if (!d.empty()) dumps.insert(atoi(d.c_str())); }
 		else if (a == "--config") configs.push_back(next());
 		else if (a == "--set") sets.push_back(next());
@@ -636,6 +639,15 @@ int main(int argc, char **argv) {
 		Cheats::anyCheatsActive = true;
 	}
 	if (info) { print_info(); return 0; }
+	if (!dump_palette.empty()) {
+		// The active colour tables as 0xRRGGBB: 0-63 the NES/VT01-compatible
+		// colours (emphasis 0), then the 4096 VT03 COLCOMP colours at 1536+.
+		FILE *pf = fopen(dump_palette.c_str(), "w");
+		if (!pf) { perror(dump_palette.c_str()); return 1; }
+		for (int i = 0; i < 64; i++) fprintf(pf, "nes %02X %06lX\n", i, GFX::Palette32[i] & 0xFFFFFF);
+		for (int i = 0; i < 4096; i++) fprintf(pf, "vt03 %03X %06lX\n", i, GFX::Palette32[PALETTE_VT03 + i] & 0xFFFFFF);
+		fclose(pf);
+	}
 	if (!quiet)
 		fprintf(stderr, "furb_cli: %s  mapper %d.%d  console %s  view %dx%d\n", rom.c_str(), (int)RI.INES_MapperNum,
 			(int)RI.INES2_SubMapper, RI.ConsoleType < 12 ? console_names[RI.ConsoleType] : "?", GFX::SIZEX, GFX::SIZEY);

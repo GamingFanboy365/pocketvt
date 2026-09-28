@@ -309,6 +309,7 @@ static inline u16 vt03_composite_to_gba(u8 lo, u8 hi)
     return vt03_palette_lut[lo & 0x3F];
 }
 
+void vt_mapped_rgb_fixup(void);
 __attribute__((target("arm")))
 void vt_palette_rebuild_gba(void)
 {
@@ -318,6 +319,7 @@ void vt_palette_rebuild_gba(void)
      * (guide s.73).  Called from here because the VRAM code section that holds
      * newframe_nes_vblank has no room for another call. */
     vt_bands_frame_end();
+    vt_mapped_rgb_fixup();          /* s.79: console DAC in 2bpp mode too */
 
     // ========================================================================
     // CRITICAL CORRECTNESS GATES -- if either of these is wrong, every game
@@ -788,7 +790,26 @@ extern unsigned char nes_rgb[];   // from ppu.s (now .global)
 // recorded as a "true per-console difference" -- now sits correctly in its
 // hue column.  NOT re-scored against vg.png/1.png/2.png/3.png, which are not
 // in the tree: re-score when they are.
+/* s.79: the VG Pocket's DAC, now Furbtendulator's own VT09 colours (furb_cli
+ * --dump-palette, RGB888 >> 3).  The s21b22-s21b30 table was fitted to four
+ * menu captures under earlier, since-disproved index models; entries those
+ * menus never used were guesses, and several colour numbers collapsed onto
+ * one value (/bin/bash4/9/7 all green, 8/C both light blue) -- the "wrong
+ * palettes in various games" report (Get it Right's peach face was green).
+ * The old table is kept below as vt_compat_rgb555_vg_s21 for reference. */
 static const u16 vt_compat_rgb555_vg[64] = {
+    0x294A, 0x4040, 0x4C00, 0x4406, 0x2C0B, 0x080D, 0x000C, 0x0048,
+    0x00A1, 0x00E0, 0x00E0, 0x08C0, 0x2880, 0x0000, 0x0000, 0x0000,
+    0x5294, 0x6D20, 0x7CA3, 0x742F, 0x5816, 0x2819, 0x0097, 0x0112,
+    0x01AA, 0x01E0, 0x0200, 0x1DE0, 0x4D80, 0x0000, 0x0000, 0x0000,
+    0x7FFF, 0x7EA0, 0x7E10, 0x7DBA, 0x7D7F, 0x5D9F, 0x21FF, 0x027F,
+    0x0317, 0x0349, 0x0B60, 0x4360, 0x7700, 0x2108, 0x0000, 0x0000,
+    0x7FFF, 0x7F75, 0x7F59, 0x7F1D, 0x7F1F, 0x771F, 0x5F3F, 0x4F5F,
+    0x4FBE, 0x47B8, 0x53D4, 0x67D2, 0x7BB2, 0x5AD6, 0x0000, 0x0000
+};
+
+#if 0  /* s21b30 menu-fitted table, superseded (see above) */
+static const u16 vt_compat_rgb555_vg_s21[64] = {
     0x39CE, 0x4840, 0x6400, 0x6404, 0x0390, 0x200E, 0x0000, 0x000B,
     0x0171, 0x00C0, 0x0120, 0x0140, 0x2900, 0x0000, 0x0000, 0x0000,
     0x4A52, 0x2900, 0x7CAB, 0x7C6F, 0x6457, 0x4059, 0x08B9, 0x0134,
@@ -798,6 +819,8 @@ static const u16 vt_compat_rgb555_vg[64] = {
     0x7FFF, 0x7FD7, 0x7F7B, 0x7F3F, 0x7F1F, 0x7746, 0x675F, 0x0390,
     0x439C, 0x43D9, 0x4FF7, 0x67F5, 0x7FF5, 0x673A, 0x0000, 0x0000
 };
+#endif
+
 
 static const u16 vt_compat_rgb555[64] = {
     0x35AD, 0x4840, 0x6400, 0x6404, 0x480B, 0x200E, 0x000E, 0x000B,
@@ -865,6 +888,26 @@ __attribute__((always_inline)) static inline u16 nes_index_to_bgr555(u8 idx)
     const unsigned char *p = &nes_rgb[(idx & 0x3F) * 3];
     u8 r = p[0], g = p[1], b = p[2];
     return (u16)(((b >> 3) << 10) | ((g >> 3) << 5) | (r >> 3));
+}
+
+/* guide s.79: the 2bpp path ($2010 = 0: run_palette in ppu.s) paints from
+ * MAPPED_RGB, which paletteinit derives from PocketNES's stock nes_rgb.  A VT
+ * console's DAC does not change with the video mode, and Furbtendulator uses
+ * the same colours in both, so a cart whose header names its DAC gets that
+ * table here too (VG Pocket games in 2bpp mode matched only 9-22% before).
+ * Carts with no DAC in the header keep the old colours.  Called from ARM code
+ * via bl_long, hence ARM mode. */
+extern u16 MAPPED_RGB[];
+__attribute__((target("arm")))
+void vt_mapped_rgb_fixup(void)
+{
+    if (vt_dac_variant == VT_DAC_AUTO) return;
+    const u16 *t = vt_dac_table();
+    /* paletteinit (cart load, gamma change) rewrites MAPPED_RGB from nes_rgb;
+     * called every frame from vt_palette_rebuild_gba, so re-apply on change.
+     * (A bl_long inside paletteinit overflowed its code section: s.79.) */
+    if (MAPPED_RGB[0x21] == t[0x21] && MAPPED_RGB[0x16] == t[0x16]) return;
+    for (int i = 0; i < 64; i++) MAPPED_RGB[i] = t[i];
 }
 
 __attribute__((target("arm")))
@@ -1842,6 +1885,9 @@ void vt_bk_consume(u32 cur, u32 lim)
 // path (per-$2007, video DMA, stack blast) the game used.  Cost is ~1ms of
 // the 4.9ms vblank; vt_bk_write_cell is idempotent so sweeping clean cells
 // is harmless.
+#ifndef VT_BK_SCRUB_SPLIT
+#define VT_BK_SCRUB_SPLIT 16     /* 8 (120 cells) broke Star Ally's title: s.79g */
+#endif
 EWRAM_BSS u8 vt_bk_scrub_phase;
 void vt_bk_scrub(void)
 {
@@ -1852,11 +1898,15 @@ void vt_bk_scrub(void)
     // The previous 240 cells/frame put vt_bk_write_cell at ~290 calls/frame
     // = the largest single non-CPU-core cost in the profile (~18% of host
     // time; the body executes from waitstated cart ROM).
-    u32 q = vt_bk_scrub_phase & 31;
+    /* s.79: VT_BK_SCRUB_SPLIT chunks per screen (16 = 60 cells, the s20b
+     * size).  8 (120 cells) caught up Star Ally's gameplay at 44+ NES fps
+     * but left its title permanently half-drawn (slot thrash), so 16 stays. */
+    const u32 per = 960u / VT_BK_SCRUB_SPLIT;
+    u32 q = vt_bk_scrub_phase % (2u * VT_BK_SCRUB_SPLIT);
     vt_bk_scrub_phase++;
     vt_bk_lut_refresh();
     u32 scr = (q & 1) ? 0x400u : 0u;
-    u32 lo  = (q >> 1) * 60u, hi = lo + 60u;    // 960/16 cells
+    u32 lo  = (q >> 1) * per, hi = lo + per;
     for (u32 t = lo; t < hi; t++)
         vt_bk_write_cell(scr + t);
 }
@@ -2471,9 +2521,23 @@ static u16 vt_chr4_assemble_page_vram(volatile u32 *dst, u32 bank)
     return sig;
 }
 
+/* One 2bpp page (64 tiles, 1K bank) as GBA 4bpp tiles with the high two
+ * bits zero -- exactly what PocketNES's own BG tile cache produces, decoded
+ * from the same bank address the 2bpp vt_chr_sync path copies (s.79). */
+__attribute__((target("arm"), noinline))
+static void vt_chr2_assemble_page_vram(volatile u32 *dst, u32 bank)
+{
+    if (!vt_spread_ready) vt_spread_init();
+    u32 mask = vt_chr_mask_get(); const u8 *cbase = vt_chr_base();
+    u32 src = vt_chr_bank_byte_offset(bank);
+    for (int t = 0; t < 64; t++, src += 16)
+        for (int r = 0; r < 8; r++)
+            *dst++ = vt_spread[cbase[(src + r) & mask]] | (vt_spread[cbase[(src + r + 8) & mask]] << 1);
+}
+
 static u32 vt_split_mode_word(void)
 {   /* anything besides the bank numbers that changes the decoded tiles */
-    return (u32)(vt_reg_2010 & 0x40) | ((u32)vt_chr_reg_2018 << 8)
+    return (u32)(vt_reg_2010 & 0x42) | ((u32)vt_chr_reg_2018 << 8)
          | ((u32)vt_chr_reg_201A << 16) | ((u32)vt_chr_outer_4100 << 24);
 }
 
@@ -2492,8 +2556,10 @@ static void vt_split_build(int s, const u32 k[4])
 #if VT_SPLIT_SLOTS
     vt_split_valid[s] = 0;
 #endif
+    const int bpp4 = (vt_reg_2010 & 0x02) != 0;
     for (int p = 0; p < 4; p++) {
-        vt_split_sig[s][p] = vt_chr4_assemble_page_vram(base + p * 512, k[p]);
+        if (bpp4) vt_split_sig[s][p] = vt_chr4_assemble_page_vram(base + p * 512, k[p]);
+        else { vt_chr2_assemble_page_vram(base + p * 512, k[p]); vt_split_sig[s][p] = 0xFFFF; }  /* no 4bpp stomp test */
         vt_split_key[s][p] = k[p];
     }
     vt_split_mode[s] = vt_split_mode_word();
@@ -2716,7 +2782,8 @@ void vt_bands_frame_end(void)
     int tag_lo = 240, tag_hi = 0;
 #endif
     const int n = vt_nband;
-    const int ok = vt_active && (vt_reg_2010 & 0x02) && !vt_bkexten_live;   /* 4bpp BG, non-extension */
+    /* 4bpp or (s.79) 2bpp BG, non-extension */
+    const int ok = vt_active && !vt_bkexten_live;
     if (ok && n > 1) {
         const u8 *preg = vt_band[n - 1].reg;
         /* vt_chr_sync_flush decodes from vt_frame_reg on split frames and from
@@ -2756,7 +2823,9 @@ void vt_bands_frame_end(void)
 #endif
             int s = vt_split_slot_get(k, nslot);
 #if VT_SPLIT_SLOTS
-            if (s < 0 && nslot == 2 && vt_blk_free(buf, (u32)(half ^ 1))) {
+            /* lending needs 4bpp: in 2bpp PocketNES's tile cache keeps
+             * rewriting the other half's block */
+            if (s < 0 && nslot == 2 && (vt_reg_2010 & 0x02) && vt_blk_free(buf, (u32)(half ^ 1))) {
                 vt_blk_lent = (u8)((half ^ 1) + 1);   /* vt_chr4_copy_to_vram* keep off it now */
                 vt_split_valid[2] = 0;
                 nslot = 3;

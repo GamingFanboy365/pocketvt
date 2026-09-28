@@ -43,6 +43,12 @@
 #define VT_TIMER_NPLUS1 1
 #endif
 
+// Cart wait states (guide s.79): 1 = 3/1 + prefetch (0x4317, the retail
+// setting), 0 = leave the power-on 4/2 without prefetch.
+#ifndef VT_FAST_WAITCNT
+#define VT_FAST_WAITCNT 1
+#endif
+
 // VT09 alias kept for backward compatibility; the build is identical.
 #if defined(VT09) && !defined(VT03)
   #define VT03 1

@@ -29,6 +29,7 @@ S(){ arm-none-eabi-nm pocketvt.elf | awk -v s=$1 '$3==s{print $1}'; }
 | `peek` | Every K GBA frames, prints words (or `ADDR:n` byte strings) at the given addresses. The quickest way to watch a few counters. |
 | `memdump` | After N GBA frames, writes each `ADDR:LEN` range to a file. For NES-frame-keyed dumps use `PVT_DUMP` with pvt_run / compare_furb instead (tools/furb_cli/README.md). |
 | `biosboot` | Boots a play ROM through the REAL GBA BIOS (`reference/gba_bios.bin`, never committed): reports when the ARM leaves the BIOS and `frametotal` every 60 frames. A cart with a bad header never leaves it on hardware; mGBA silently skips the BIOS instead (guide s.79). |
+| `pvtwav` | Records PocketVT's audio (mGBA's mixed output, 32768 Hz mono WAV) between two NES frames, with NES-frame-keyed input. Compare with `furb_cli --wav` using `wavcmp.py REF PVT --ref-from F0 --frames N`: envelope correlation (rhythm; unrelated music scores 0.1-0.5), per-window spectrum, level, and PocketVT's speed. Below full speed the music plays slower, so judge envelope only at 60 NES fps. |
 | `spmin` | The lowest SP reached in each CPU mode. Mode 0x1F is the user stack. Compare it with `__bss_end__`: below that means stack overflow into .bss. |
 
 MAINTAINERS_GUIDE s.77 shows them used together to find the raster-split
