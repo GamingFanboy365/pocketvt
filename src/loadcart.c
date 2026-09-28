@@ -101,7 +101,7 @@ static void read_rom_header(u8 *nesheader)
 		// PocketVT: translate NES 2.0 extended mapper numbers to internal codes
 		// Mapper 256 (NES 2.0) = VT03/VT369 OneBus -- mapped to internal 253
 		// Mapper 405 (NES 2.0) = VT168/VT09 variant -- also mapped to 253
-		if (full_mapper == 256 || full_mapper == 405) {
+		if (full_mapper == 256 || full_mapper == 405 || full_mapper == 419) {
 			mapper = 253;  // Internal VT OneBus code
 			// Capture the NES 2.0 submapper (high nibble of byte 8).
 			// Submapper 13/14/15 of mapper 256 (Cube Tech / Karaoto /
@@ -114,6 +114,13 @@ static void read_rom_header(u8 *nesheader)
 			// mapVTinit can install a synthetic reset stub.  We reuse
 			// the high bit of submapper (which mapper 256 never uses)
 			// as a "this is mapper 405" marker.
+			// Mapper 419 (Taikee TK-8007 MCU, Table Soccer) is OneBus with the same
+			// PPU/MMC3 mangle tables as 256 but no $4107/$4108 cpuMangle, plus a
+			// 3-bit ADPCM voice channel that is not emulated (reference/nrs/
+			// mapper419.cpp).  Before this it fell through to "mapper & 0xFF" = 163.
+			if (full_mapper == 419) {
+				vt.submapper |= 0x40;
+			}
 			if (full_mapper == 405) {
 				vt.submapper |= 0x80;
 			}
@@ -699,6 +706,24 @@ void init_cache(u8* nes_header, int called_from)
 		assign_chr_pages(NES_VRAM,0,8);
 	}
 	
+#if VT_MODE
+	{
+		/* a new cart: PRG page 0 is back in OBJ VRAM (guide s.79) */
+		extern const u8 *vt_prg_page0;
+		extern void vt_prg_obj_reset(void);
+		vt_prg_page0 = NULL;
+		vt_prg_obj_reset();
+	}
+#endif
+#if VT_SPLIT_SLOTS
+	{
+		/* a new cart: its PRG copy is back in VRAM blocks 2/3 */
+		extern u8 *vt_prg_shadow;
+		extern void vt_split_reset(void);
+		vt_prg_shadow = NULL;
+		vt_split_reset();
+	}
+#endif
 	//assign pages!
 	{
 		u8 *_rombase, *_vrombase;
@@ -941,6 +966,27 @@ void init_cache(u8* nes_header, int called_from)
 					
 					memcpy_if_okay(novrom_bank,_rombase+firstpage*16384,pages_to_copy*16384);
 					assign_prg_pages2(novrom_bank,firstpage*PRG_16,pages_to_copy*PRG_16);
+#if VT_SPLIT_SLOTS
+					/* guide s.77: the VT raster-split slots need BG char
+					 * blocks 2/3, which this VRAM copy occupies.  Keep an
+					 * identical EWRAM twin; the first time a slot is needed,
+					 * ppu_vt.c vt_prg_evict moves the 6502 onto it. */
+					if (mapper == 253)
+					{
+						extern u8 *vt_prg_shadow;
+						if (do_not_decompress)
+							vt_prg_shadow = NULL;
+						else if (_rombase < (u8*)0x08000000)	/* decompressed into EWRAM */
+							vt_prg_shadow = _rombase + firstpage*16384;
+						else if (rompages <= 8)		/* whole PRG copied above */
+							vt_prg_shadow = cachebase + firstpage*16384;
+						else
+						{
+							memcpy32(cachebase, _rombase + firstpage*16384, pages_to_copy*16384);
+							vt_prg_shadow = cachebase;
+						}
+					}
+#endif
 					//sprite_vram_in_use=1;
 					if (page_size!=32)
 					{
@@ -949,6 +995,23 @@ void init_cache(u8* nes_header, int called_from)
 						firstpage=0;
 						memcpy_if_okay(vrom_bank_2,_rombase+firstpage*16384,pages_to_copy*16384);
 						assign_prg_pages2(vrom_bank_2,firstpage*PRG_16,pages_to_copy*PRG_16);
+#if VT_MODE
+						/* guide s.79: PRG page 0 now lives in OBJ VRAM
+						 * 0x06010000-0x06013FFF, where the VT extended sprite
+						 * slots are written.  Remember an identical copy;
+						 * vt_prg_evict_obj moves the 6502 onto it before the
+						 * first slot is written. */
+						if (mapper == 253)
+						{
+							extern const u8 *vt_prg_page0;
+							if (do_not_decompress)
+								vt_prg_page0 = NULL;
+							else if (rompages <= 8)		/* whole PRG copied to cachebase above */
+								vt_prg_page0 = cachebase;
+							else
+								vt_prg_page0 = _rombase;	/* EWRAM if decompressed, else cart ROM */
+						}
+#endif
 					}
 				}
 				else

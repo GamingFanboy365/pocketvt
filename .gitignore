@@ -1,15 +1,33 @@
 # --- Local reference material: never commit ---
-# ROMs (test carts, controls, packaged play ROMs)
+# ROMs: test carts, controls, and everything builder.py / build_playable.sh
+# produce (play_me.gba, out/*.gba).  The ONLY ROM-like files in git are the
+# repo-root pocketvt.elf / pocketvt.gba core (re-included under Build output).
 *.nes
 *.unf
 *.unif
+*.fds
+*.qd
+*.nsf
+*.nsfe
+*.tnes
+*.mb
+*.agb
 testroms/
-# NESdev wiki XML exports and NintendulatorNRS / Furbtendulator source snippets
+out/
+# NESdev wiki exports, NintendulatorNRS snippets, and the full Furbtendulator
+# emulator source (unpacked as reference/Furbtendulator-main)
 reference/
+Furbtendulator*/
+Furbtendulator*.zip
 NESdev_Wiki-*.xml
-# Reference screenshots / captures
+# Reference screenshots / captures and harness frame dumps
 *.png
 !src/**/*.png
+*.ppm
+*.raw
+*.idx
+# compare_furb.py output
+furbcmp/
 
 # --- Build output ---
 build/

@@ -1,0 +1,29 @@
+#pragma once
+#include <mmsystem.h>
+typedef WinCOM *PAVIFILE, *PAVISTREAM;
+typedef struct { DWORD fccType, fccHandler, dwFlags, dwCaps; WORD wPriority, wLanguage; DWORD dwScale, dwRate, dwStart, dwLength,
+	dwInitialFrames, dwSuggestedBufferSize, dwQuality, dwSampleSize; RECT rcFrame; DWORD dwEditCount, dwFormatChangeCount; WCHAR szName[64]; } AVISTREAMINFO;
+typedef struct { DWORD fccType, fccHandler, dwKeyFrameEvery, dwQuality, dwBytesPerSecond, dwFlags; LPVOID lpFormat; DWORD cbFormat;
+	LPVOID lpParms; DWORD cbParms, dwInterleaveEvery; } AVICOMPRESSOPTIONS, *LPAVICOMPRESSOPTIONS;
+enum { OF_CREATE = 0x1000, OF_WRITE = 1, AVIIF_KEYFRAME = 0x10, ICMF_CHOOSE_KEYFRAME = 1, ICMF_CHOOSE_DATARATE = 2, AVIERR_OK = 0 };
+#define streamtypeVIDEO mmioFOURCC('v','i','d','s')
+#define streamtypeAUDIO mmioFOURCC('a','u','d','s')
+#define AVIERR_BADFLAGS ((HRESULT)0x80044000L)
+#define AVIERR_BADFORMAT ((HRESULT)0x80044001L)
+#define AVIERR_BADHANDLE ((HRESULT)0x80044002L)
+#define AVIERR_BADPARAM ((HRESULT)0x80044003L)
+#define AVIERR_BADSIZE ((HRESULT)0x80044004L)
+#define AVIERR_BUFFERTOOSMALL ((HRESULT)0x80044005L)
+#define AVIERR_CANTCOMPRESS ((HRESULT)0x80044006L)
+#define AVIERR_COMPRESSOR ((HRESULT)0x80044007L)
+#define AVIERR_ERROR ((HRESULT)0x80044008L)
+#define AVIERR_FILEOPEN ((HRESULT)0x80044009L)
+#define AVIERR_FILEREAD ((HRESULT)0x8004400AL)
+#define AVIERR_FILEWRITE ((HRESULT)0x8004400BL)
+#define AVIERR_INTERNAL ((HRESULT)0x8004400CL)
+#define AVIERR_MEMORY ((HRESULT)0x8004400DL)
+#define AVIERR_NOCOMPRESSOR ((HRESULT)0x8004400EL)
+#define AVIERR_NODATA ((HRESULT)0x8004400FL)
+#define AVIERR_READONLY ((HRESULT)0x80044010L)
+#define AVIERR_UNSUPPORTED ((HRESULT)0x80044011L)
+#define AVIERR_USERABORT ((HRESULT)0x80044012L)

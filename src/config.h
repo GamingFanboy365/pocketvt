@@ -27,6 +27,28 @@
 // VT support is always present in PocketVT.
 #define VT_MODE 1
 
+// Raster-split background CHR (MAINTAINERS_GUIDE s.73, s.77): bands of a frame
+// that use other $2012-$2017 banks get their own BG char blocks (2/3), with
+// the per-line BG0CNT switching to them.  Build with -DVT_SPLIT_SLOTS=0 to
+// fall back to one bank set per frame.
+#ifndef VT_SPLIT_SLOTS
+#define VT_SPLIT_SLOTS 1
+#endif
+
+// VT timer ($4101-$4104) period model (guide s.79): free-running N+1 lines,
+// a rephase inside the picture N+2, an arm from vblank N -- calibrated
+// against Furbtendulator's reload-then-count scanline counter.  Build with
+// -DVT_TIMER_NPLUS1=0 for the old plain N-line period.
+#ifndef VT_TIMER_NPLUS1
+#define VT_TIMER_NPLUS1 1
+#endif
+
+// Cart wait states (guide s.79): 1 = 3/1 + prefetch (0x4317, the retail
+// setting), 0 = leave the power-on 4/2 without prefetch.
+#ifndef VT_FAST_WAITCNT
+#define VT_FAST_WAITCNT 1
+#endif
+
 // VT09 alias kept for backward compatibility; the build is identical.
 #if defined(VT09) && !defined(VT03)
   #define VT03 1

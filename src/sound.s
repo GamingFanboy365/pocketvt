@@ -656,6 +656,14 @@ vt_timer_install_now:
 	add r0,r0,r12		@ r0 = absolute end of rendering, this frame
 	cmp r1,r0
 	bhs 1f			@ already in vblank -> resume at next frame's line 0
+#if VT_TIMER_NPLUS1
+	@ guide s.79: a rephase INSIDE the picture reloads on the next line's
+	@ clock and then counts N (h_OneBus.cpp clockScanlineCounter, clocked at
+	@ dot 256): calibrated against Furbtendulator as N+2 lines here, where
+	@ an arm from vblank stays N (its first band was already exact).
+	add r2,r2,#640
+	add r2,r2,#42		@ + 2 lines (682 is not an ARM immediate)
+#endif
 	add r1,r1,r2
 	cmp r1,r0
 	bls 2f			@ expiry lands inside the rendered area -> done
@@ -678,6 +686,9 @@ vt_timer_handler:
 	ldrh r2,[r0,#0x68]		@ vt.timer_period (0 => 256-tick wrap)
 	movs r2,r2
 	moveq r2,#256
+#if VT_TIMER_NPLUS1
+	add r2,r2,#1			@ s.79: reload-then-count, N+1 lines per period
+#endif
 	ldr r1,=341			@ dots per scanline (timestamp timebase)
 	mul r2,r1,r2
 	ldr_ r1,vt_timer_timestamp	@ our node[4] = timestamp of this expiry

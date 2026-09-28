@@ -188,6 +188,100 @@ void vt_timer_tick_frame(void)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Mapper 419 (Taikee TK-8007 MCU, Table Soccer VT03): the 3-bit ADPCM chip's
+// handshake.  NintendulatorNRS mapper419.cpp / Hardware/Sound/s_ADPCM3Bit.cpp:
+// $4016 bit 2 is the data clock (rising edge latches the high nibble, falling
+// edge the low one), $410F bits 0-3 the data nibble, and $4017 reads return
+// bit 4 = READY (frame buffer not full) and bit 3 = NOT clock.  The game
+// spins on AND #$18 of $4017 before every byte (F5FC-F606), so without these
+// bits it never leaves its first command: black screen.  Only the protocol and
+// the 12-frame buffer are modelled; the decoded samples are NOT played.
+// ---------------------------------------------------------------------------
+EWRAM_BSS u8 vt_tk8007;        // 1 = mapper 419 (read by mapVT.s hook install)
+EWRAM_BSS u8 vt_tk_4017;       // bits 3-4 ORed into $4017 reads (mapVT.s)
+EWRAM_BSS u8 vt_tk_data;       // $410F data nibble, stored by mapVT.s write_tk4xxx
+EWRAM_BSS static struct {
+    u8  clock, latch, command, bytes_left, ready, frames, nin;
+    u8  in[2];
+    u16 period;
+    u32 ft, acc;
+} tk;
+
+static inline void tk_status(void)
+{
+    vt_tk_4017 = (u8)((tk.ready ? 0x10 : 0) | (tk.clock ? 0 : 0x08));
+}
+
+static void tk_reset(void)
+{
+    memset(&tk, 0, sizeof tk);
+    tk.command = 0xFF;
+    tk.period  = 512;
+    tk.ready   = 1;
+    tk.ft      = frametotal;
+    vt_tk_data = 0;
+    tk_status();
+}
+
+/* Frames play out at period*21 chip clocks each; the chip runs at 4.09 MHz,
+ * about 68057 clocks per NES frame.  Drained lazily from frametotal: nothing
+ * reads the buffer depth except the next 0x06 command. */
+static void tk_drain(void)
+{
+    u32 now = frametotal, n = now - tk.ft;
+    tk.ft = now;
+    if (!tk.frames) { tk.acc = 0; return; }
+    if (n > 8) n = 8;
+    tk.acc += n * 68057u;
+    u32 per = (u32)(tk.period ? tk.period : 1) * 21u;
+    while (tk.frames && tk.acc >= per) { tk.acc -= per; tk.frames--; }
+    if (!tk.frames) tk.acc = 0;
+}
+
+
+void vt_tk_write4016(u8 val)
+{
+    u8 clk = (val >> 2) & 1;
+    if (!tk.clock && clk) {
+        tk.latch = (u8)(vt_tk_data << 4);
+    } else if (tk.clock && !clk) {
+        tk.latch |= vt_tk_data;
+        if (tk.command == 0x55 && tk.latch == 0xAA) {
+            tk_reset();
+        } else {
+            if (tk.bytes_left) {
+                if (tk.nin < 2) tk.in[tk.nin] = tk.latch;
+                tk.nin++;
+                tk.bytes_left--;
+            } else {
+                tk_drain();
+                switch (tk.latch) {
+                case 0x03: tk.bytes_left = 2; break;
+                case 0x04: tk.frames = 0; tk.bytes_left = 96; break;
+                case 0x06: if (tk.frames < 12) { tk.ready = 1; tk.bytes_left = 8; } break;
+                case 0x07: tk.frames = 0; break;
+                default:   break;
+                }
+                tk.command = tk.latch;
+            }
+            if (!tk.bytes_left) {
+                if (tk.command == 0x03 && tk.nin >= 2) {
+                    tk.period = (u16)(tk.in[0] | (tk.in[1] << 8));
+                } else if (tk.command == 0x06 && tk.nin) {
+                    tk_drain();
+                    tk.frames++;
+                    if (tk.frames >= 12) tk.ready = 0;
+                    else tk.bytes_left = 8;
+                }
+                tk.nin = 0;
+            }
+        }
+    }
+    tk.clock = clk;
+    tk_status();
+}
+
 void vt_reset(void)
 {
     // Preserve submapper across reset -- loadcart.c sets it from the iNES
@@ -196,6 +290,9 @@ void vt_reset(void)
 
     memset(&vt, 0, sizeof(VTState));
     vt.submapper = saved_submapper;
+
+    vt_tk8007 = (vt.submapper & 0x40) ? 1 : 0;
+    tk_reset();
 
     vt_timer_render_seen = 0;
     vt_timer_armed       = 0;
@@ -248,8 +345,10 @@ void vt_reset(void)
     vt_chr_outer_4100 = 0x00;
 
     // OneBus mapper-256 opcode encryption.
-    vt.encryption_mode    = vt.submapper;   // 0 if pre-NES2.0
-    vt.encryption_active  = (vt.submapper >= 12);
+    /* low nibble only: bits 6/7 tag mappers 419/405 (loadcart.c).  The 405 tag
+     * used to make every mapper-405 cart run with opcode encryption on. */
+    vt.encryption_mode    = vt.submapper & 0x0F;   // 0 if pre-NES2.0
+    vt.encryption_active  = (vt.encryption_mode >= 12);
     vt.encryption_pending = false;
     vt.encryption_next    = false;
 
@@ -367,6 +466,11 @@ void vt_recompute_prg_banks(void)
 
 // Last byte written to $8000 -- selects which entry $8001 modifies.
 static u8 vt_mmc3_cmd;
+// A CHR bank changed through $8001: mapVT.s write_vt_rom then records a raster
+// band at the current scanline, as ppu.s does for $2012-$2017 (guide s.79;
+// ppu_vt.c's s.73 comment claimed this call existed -- it did not, so MMC3-
+// style mid-frame CHR switches, e.g. a VG Pocket racer's dashboard, were lost).
+EWRAM_BSS u8 vt_mmc3_chr_touched;
 
 static void vt_mmc3_reset(void)
 {
@@ -405,22 +509,22 @@ void vt_mmc3_forward(u16 addr, u8 val)
             // bank cases (cmd 6 and 7).
             switch (vt_mmc3_cmd & 0x07) {
                 case 0:
-                    if (vt_chr_reg[4] != val) { vt_chr_reg[4] = val; vt_chr_sync_from_prg(); }
+                    if (vt_chr_reg[4] != val) { vt_chr_reg[4] = val; vt_chr_sync_from_prg(); vt_mmc3_chr_touched = 1; }
                     break;
                 case 1:
-                    if (vt_chr_reg[5] != val) { vt_chr_reg[5] = val; vt_chr_sync_from_prg(); }
+                    if (vt_chr_reg[5] != val) { vt_chr_reg[5] = val; vt_chr_sync_from_prg(); vt_mmc3_chr_touched = 1; }
                     break;
                 case 2:
-                    if (vt_chr_reg[0] != val) { vt_chr_reg[0] = val; vt_chr_sync_from_prg(); }
+                    if (vt_chr_reg[0] != val) { vt_chr_reg[0] = val; vt_chr_sync_from_prg(); vt_mmc3_chr_touched = 1; }
                     break;
                 case 3:
-                    if (vt_chr_reg[1] != val) { vt_chr_reg[1] = val; vt_chr_sync_from_prg(); }
+                    if (vt_chr_reg[1] != val) { vt_chr_reg[1] = val; vt_chr_sync_from_prg(); vt_mmc3_chr_touched = 1; }
                     break;
                 case 4:
-                    if (vt_chr_reg[2] != val) { vt_chr_reg[2] = val; vt_chr_sync_from_prg(); }
+                    if (vt_chr_reg[2] != val) { vt_chr_reg[2] = val; vt_chr_sync_from_prg(); vt_mmc3_chr_touched = 1; }
                     break;
                 case 5:
-                    if (vt_chr_reg[3] != val) { vt_chr_reg[3] = val; vt_chr_sync_from_prg(); }
+                    if (vt_chr_reg[3] != val) { vt_chr_reg[3] = val; vt_chr_sync_from_prg(); vt_mmc3_chr_touched = 1; }
                     break;
                 case 6:
                     vt.reg[0x07] = val;
@@ -624,7 +728,7 @@ void vt_reg_write(u8 addr_lo, u8 val)
 {
     /* s21b59: mapper 256 submapper 2 swaps $4107/$4108 (NintendulatorNRS
      * mapper256.cpp write4, cpuMangle[][]); identity for all others. */
-    if (addr_lo >= 0x07 && addr_lo <= 0x0A && (vt.submapper & 0x0F) == 2 && addr_lo <= 0x08)
+    if (addr_lo >= 0x07 && addr_lo <= 0x08 && (vt.submapper & 0x4F) == 2)   /* not 419 (tag 0x40): it has no cpuMangle */
         addr_lo ^= 0x0F;   /* 0x07 <-> 0x08 */
     extern void vt_timer_install_now(void);
     if (!vt_timer_armed) {          /* first $41xx touch: start the free-run count */
@@ -720,6 +824,7 @@ void vt_reg_write(u8 addr_lo, u8 val)
 #if VT09_ENCRYPTION
             case VT_REG_SECURITY:
                 // $410F: schedule encryption state change
+                if (vt_tk8007) { vt_tk_data = val & 0x0F; break; }   /* 419: ADPCM data nibble (mapVT.s normally takes it) */
                 vt09_set_encryption(val == 0x00);
                 break;
 #endif
@@ -888,36 +993,12 @@ void vt_adpcm_mix_gba(void)
     s8 * const buf  = (s8*)0x05000280;
     const int  SIZE = 128;   // PCMWAVSIZE from equates.h
 
-    // The GBA timer1interrupt fires at ~15.7kHz.
-    // 15.7kHz = 15700 ticks / sec.
-    // VT369 timer runs at CPU clock = 1.789 MHz.
-    // 1.789 MHz / 15.7 kHz = ~114 CPU cycles per GBA timer tick.
-    // This provides a hardware-synchronous clock tick for the VT Timer,
-    // avoiding massive architectural changes to PocketNES's internal queue.
-    //
-    // Per Furb h_OneBus.cpp::clockScanlineCounter:
-    //   counter = !counter ? reloadValue : --counter;
-    //   if (!counter && enableIRQ && isRendering) { fire IRQ }
-    //
-    // Key: the counter ALWAYS runs.  There is no "enable timer" bit on
-    // real silicon.  The only IRQ gate is enableIRQ (= bit 1 of our
-    // timer_ctrl shadow).  PocketVT used to gate counter on bit 0
-    // (set by $4102) but that broke games like Star Ally that never
-    // write $4102 -- they just write the period ($4101), then disable+
-    // enable IRQ ($4103+$4104), expecting the always-running counter
-    // to fire IRQs at the configured period.
-    {
-        int counter = (int)vt.timer_counter - 114;
-        while (counter <= 0) {
-            counter += vt.timer_period ? vt.timer_period : 1;
-            if (vt.timer_ctrl & 0x02) { // IRQ enabled
-                vt.want_timer_irq = 1;
-                extern u8 _wantirq;
-                _wantirq |= 0x02; // VT_IRQ_MAPPER
-            }
-        }
-        vt.timer_counter = (u16)counter;
-    }
+    /* s.79: a second copy of the VT timer used to live here -- it counted
+     * 114 CPU cycles per call against a period measured in SCANLINES, so
+     * whenever NES DMC was playing (this runs from the DMC refill interrupt)
+     * and a game had its timer IRQ enabled, it raised IRQ_MAPPER on every
+     * refill.  The real timer is the timeout-scheduled one in sound.s
+     * (vt_timer_handler); this copy is gone. */
 
     for (int s = 0; s < SIZE; s++) {
         s32 mixed = 0;

@@ -20,11 +20,36 @@ sudo docker run --rm -v "$PWD":/src -w /src devkitpro/devkitarm make  # devkitAR
 ```
 Toolchain: gcc-arm-none-eabi, libnewlib-arm-none-eabi, libgba headers
 (git clone https://github.com/devkitPro/libgba). Harnesses use libmgba (`libmgba-dev`).
+**Docker `make` is incremental and does not rebuild .s files when config.h
+changes** (no asm header deps): `sudo rm -rf build` first after touching any
+define (guide s.79g).
 The repo-root pocketvt.elf / pocketvt.gba are committed and come from the Docker
 build; CI (.github/workflows/build.yml) rebuilds and commits them on every PR, so
 after pushing, pull before committing again. The Docker build uses a different GCC than build_pvt.sh: its core is NOT
 byte-comparable with a build_pvt.sh core. Compare within one path only.
 `EXTRA_CFLAGS` reaches the assembler too (`.s` files use `#if`).
+
+## Reference emulator: furb_cli + compare_furb.py (USE THIS instead of asking for screenshots)
+Furbtendulator (the reference) builds as a headless Linux CLI from the gitignored
+source in reference/Furbtendulator-main (tools/furb_cli/README.md):
+```
+apt install g++-multilib libmgba-dev; pip install numpy pillow
+python3 tools/furb_cli/build.py                  # -> tools/furb_cli/build/furb_cli
+python3 tools/compare_furb.py testroms/Scramble.nes --at 300,700 --input "320-325:Start" \
+        [--core ../pvt_build/pocketvt.gba]        # -> furbcmp/cmp_t*.png + report.json
+```
+Same ROM, same input, keyed to NES frames on both sides (PocketVT's `frametotal`),
+so slow carts stay aligned. `struct` = palette-independent picture match; the
+mismatch lines list disagreeing colour pairs (black<->colour = positional,
+colour<->colour = palette). First results: Time Pilot 100%, Scramble title 99.97% / gameplay
+99.0% (residue = the 1-px terrain edge, +-1 row; decimation or a real 1-row
+offset, undecided), Push the Ball 97.5%, Add 'em Up 81.8% with the top strip
+flagged (open item 1).
+furb_cli alone dumps PPM + raw palette indices + $2000/$4100 registers + palette
+RAM + CPU RAM per frame. Games can diverge over long runs; compare early frames.
+It also does what the GUI does (s.76): FDS/NSF/VS, any setting (--set/--config),
+any controller (--device, p1..p4:, key:, mouse:, trigger), WAV/AVI, savestates,
+movies, cheats, DIP, --trace. `python3 tools/furb_cli/selftest.py` checks them.
 
 ## THE TRAP THAT HAS BITTEN SIX TIMES
 `build_pvt.sh` **rm -rf's the build directory**, deleting builder.py, every .nes
@@ -47,7 +72,8 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
 3. `tools/score_5bit.sh <builddir>` for Lucky Lawn Mower vs gg.png / lawn.png
    (currently ~96.5% opening, ~97.1% gameplay). Compare pixels in 5-BIT space
    (`>>3` both sides) -- mgba expands 5->8 bit differently from references.
-4. **Emulation speed = NMIs per 60 frames.** nmi_handler (timeout.s) increments
+4. `tools/compare_furb.py` on each testrom at a few frames: `struct` must not drop.
+5. **Emulation speed = NMIs per 60 frames.** nmi_handler (timeout.s) increments
    a debug byte at 0x020007DF; read it before/after 60 runFrame calls.
 
 ## Diagnostic habits that paid off
@@ -60,44 +86,65 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   screen cell uses independently of palette (s.68).
 - `-DFORCE_BK_REPAIR`: if a BKEXTEN screen looks scrambled, a clean result
   here means a cache stomp, not a decode fault (s.69).
+- tools/probes/: one-question mGBA harnesses (speed, frame hashes, VRAM/RAM
+  dumps, live PC/lastbank, single-step watchpoints, stack depth). README there.
 - Diagnostic hooks used this project: DMA_LOG (mapVT.s video DMA), TLOG /
   NMIDBG style counters. Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (s21b62)
-See MAINTAINERS_GUIDE.md s.73 for detail.
+## Current state (after s.79)
+See MAINTAINERS_GUIDE.md s.79 (Table Soccer, VG colours, real BIOS, wait
+states, sound) and s.77-78 (raster-split slots, speed).
 - Working: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower VT09, VG Pocket
-  (all 50), Push the Ball, Time Pilot, Add 'em Up (full speed), Aero Gyrodine
-  and Hex City X (gameplay).
-- Speed (NMIs/60): Add 'em Up 60, Aero title 39, Hex title 35, LLM 55, SA 51,
-  LI/Scramble/VG 60.
+  (all 50; colours now Furbtendulator's), Push the Ball, Time Pilot, Add 'em Up,
+  Aero Gyrodine, Hex City X, Table Soccer VT03 (mapper 419; menus/match 96-99%).
+- Raster-split slots: 3 (block 2, block 3, and the primary's unused pattern
+  half when free), tallest bands first, 4bpp and 2bpp, MMC3 CHR writes mark
+  bands too. `-DVT_SPLIT_SLOTS=0` turns them off.
+- VT timer: N+1 lines free-running, N+2 after an in-picture rephase, N from
+  vblank (`VT_TIMER_NPLUS1`); split lines match Furbtendulator exactly.
+- WAITCNT = 0x4317 at boot (`VT_FAST_WAITCNT`): 3/1 + prefetch. Speed (NES fps):
+  Time Pilot 58-60, Scramble 59-60, SA 44-56, Aero/Hex titles 41-42 then 60,
+  Table Soccer 43, LLM VT09 60, LI/VG/Add 'em Up 60.
+- PRG page 0 lives in OBJ VRAM until the first VT sprite slot is written, then
+  moves to its ROM/EWRAM twin (vt_prg_evict_obj). Never write OBJ slots 0-7
+  without it.
+- Hardware: build_pvt.sh cores now get a bootable header (tools/gbafix.py);
+  every test ROM boots through the real BIOS (`compare_furb.py --bios
+  reference/gba_bios.bin`, BIOS supplied by the user, gitignored).
+- The IWRAM user stack is ~150 bytes above .bss; ALL new C globals go in
+  EWRAM_BSS (check `__bss_end__` = 0x03007B84 after a link). Heavy VT C runs on
+  the 3K EWRAM stack. Measure with tools/probes/spmin from power-on.
 
 ## Open work, in priority order
-1. **Raster-split background CHR (s.73, WIP behind `-DVT_SPLIT_SLOTS`).**
-   Aero Gyrodine's title (3 bands), Hex City X's title and Add 'em Up's top
-   strip change $2016/$2017 mid-frame. Band recording (vt_band_mark) and
-   frame-end processing (vt_bands_frame_end) are in ppu_vt.c and ON; with
-   VT_SPLIT_SLOTS the extra bands are decoded into BG char blocks 2/3 and
-   bg0cntbuff gets their char base per scanline. That made Aero's title
-   run at 59/60 -- **but hangs Add 'em Up** (no NMIs, blank screen after
-   ~f200), so blocks 2/3 are not free on that cart (it has a separate CHR ROM).
-   Next step: find what occupies 0x06008000-0x0600DFFF on Add 'em Up
-   (VRAM inventory harness in s.72; also check PocketNES's 1K bank cache /
-   bank_search path), then either relocate or reserve.
-2. Aero/Hex titles still don't reach 60/60 without the split slots.
-3. Scramble's shot (s.70c): one-pixel sprite on texture row 7; the sprite
-   affine matrix (pd=336, 8x16 double-size) never samples rows 3/7/12. Rotate
-   dropped rows per frame like the BG's scale75.
-4. VT369 platform port (s.47); Table Soccer (mapper 419, reference in
-   reference/nrs/mapper419.cpp).
+1. VT369 platform port (s.47): Lucky Lawn Mower VT369 (black). Table Soccer
+   VT369 also needs VT369-00.BIN (the console's 4K internal ROM; Furbtendulator
+   will not run it without) -- ask the user for it.
+2. Sound (s.79d): VT ADPCM $4120-$412F only mixes while NES DMC plays; the
+   TK-8007 voice (Table Soccer) is not played; second APU $4020-$402F and the
+   VT369 sound CPU are absent. Measure with tools/probes/pvtwav + wavcmp.py.
+3. Stale BG tile cache (item 21): Push the Ball's 20 px, and a band of missing
+   tiles in a few VG games that moves with timing (nametables match exactly).
+4. Aero/Hex title speed 41-42/60 (s.78d); profile with cycprof.
+5. Table Soccer formation screen: two 6-line strips need a sixth char block.
+6. Lucky Lawn Mower VT09 now uses Furbtendulator's colours via the VG table;
+   re-check against gg.png/lawn.png when available (ask for them).
+7. Scramble's shot (s.70c): one-pixel sprite on texture row 7 dropped by the
+   sprite affine matrix.
 
 ## Reference material
 LOCAL ONLY, gitignored, never commit (the user supplies them as test.zip):
 - reference/nrs/: NintendulatorNRS OneBus sources (h_OneBus.cpp, OneBus.cpp,
   mapper256.cpp, ...). The authority on VT behaviour.
 - reference/NESdev_Wiki-*.xml: NESdev wiki exports (VT02+ pages, MMC3).
-- testroms/: Add 'em Up, Push the Ball, Scramble, Table Soccer, Time Pilot.
-  The controls (Star Ally, Lonely Island, LLM, VG Pocket) are NOT in it; ask.
+- reference/gba_bios.bin: the real GBA BIOS (user-supplied) for
+  `compare_furb.py --bios` and tools/probes/biosboot.
+- reference/Furbtendulator-main/: the full Furbtendulator source (from
+  Furbtendulator-main.zip); tools/furb_cli builds it headless.
+- testroms/: Add 'em Up, Push the Ball, Scramble, Table Soccer (VT03), Time
+  Pilot; supplied later: Aero Gyrodine, Hex City X, VG Pocket VT09, Lucky Lawn
+  Mower VT369, Table Soccer VT369. Star Ally, Lonely Island and LLM VT09 are
+  NOT on disk; ask.
 
 In git:
 - DATASHEET_DIGEST*.md: VT02/VT03 datasheet notes. Bit numbering there is

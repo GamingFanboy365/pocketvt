@@ -198,6 +198,10 @@ mapVTinit:
 
     @ Install the $4100-$41FF write hook ------------------------------
     adr     r1, write_vt4xxx
+    ldr     r2, =vt_tk8007          @ mapper 419: $4016 also clocks the ADPCM MCU
+    ldrb    r2, [r2]
+    cmp     r2, #0
+    adrne   r1, write_tk4xxx
     str_    r1, writemem_4
 
     @ Install the $4000-$40FF / $4100-$41FF READ hook -----------------
@@ -207,6 +211,10 @@ mapVTinit:
     @ comment in vt_reg_read() -- and would break any VT title that probes
     @ its hardware.
     adr     r1, read_vt4xxx
+    ldr     r2, =vt_tk8007
+    ldrb    r2, [r2]
+    cmp     r2, #0
+    adrne   r1, read_tk4xxx
     str_    r1, readmem_4
 
     @ --- VT extra opcode handlers were installed at the top of this
@@ -240,6 +248,33 @@ vt_apply_prg_banks:
     bl_long mapEF_
     
     ldmfd   sp!, {pc}
+
+@ ============================================================================
+@ EWRAM-stack trampolines for the heavy VT C work the vblank IRQ runs
+@ (guide s.77b, s.78e).  The IRQ runs in System mode on whatever user stack it
+@ interrupted, and IWRAM leaves ~410-470 bytes of it.  Nested on the frame-end
+@ chain, vt_chr_sync_flush overran into .bss (vt_prg_banks sits at its top):
+@ Add 'em Up with split slots (s.77b), then Aero Gyrodine's boot on the
+@ devkitARM build, before any split (s.78e).  If sp is still in IWRAM, switch
+@ to vt_ewram_stack; if the interrupted code is already on it, keep going down
+@ it.  In ROM: vblankinterrupt is IWRAM code, and IWRAM code comes out of the
+@ same budget.
+@ ============================================================================
+.macro vt_ewram_trampoline name, target
+    .global \name
+\name:
+    mov     r1, sp
+    cmp     r1, #0x03000000
+    ldrhs   sp, =vt_ewram_stack_top
+    stmfd   sp!, {r1, lr}
+    bl      \target
+    ldmfd   sp!, {r1, lr}
+    mov     sp, r1
+    bx      lr
+.endm
+    vt_ewram_trampoline vt_chr4_rebuild_stacked, vt_chr4_rebuild_if_dirty
+    vt_ewram_trampoline vt_16c_palette_fixup_stacked, vt_16c_palette_fixup
+    .ltorg
 
 @ ============================================================================
 @ write_vt4xxx  (writemem_4 hook)
@@ -280,6 +315,44 @@ read_vt4xxx:
     moveq   pc, lr
     ldr     pc, =IO_R               @ tail-jump; lr still points at the core
 
+
+@ ============================================================================
+@ read_tk4xxx / write_tk4xxx -- mapper 419 (Taikee TK-8007 MCU) only.
+@ $4017 reads carry the ADPCM chip's READY (bit 4) and NOT-clock (bit 3), and
+@ $4016 bit 2 clocks the chip (vt_tk_write4016 in vt_regs.c).  Installed in
+@ place of read_vt4xxx / write_vt4xxx so no other cart pays for them.
+@ The read side is joy1_R (io.s) without the VS dip bits: no stack, no C.
+@ ============================================================================
+read_tk4xxx:
+    ldr     r1, =0x4017
+    cmp     r12, r1
+    bne     read_vt4xxx
+    ldr_    r0, joy1serial
+    mov     r1, r0, asr #1
+    and     r0, r0, #1
+    ldrb_   r2, joystrobe
+    movs    r2, r2
+    streq_  r1, joy1serial
+    ldr     r1, =vt_tk_4017
+    ldrb    r1, [r1]
+    orr     r0, r0, r1
+    mov     pc, lr
+
+write_tk4xxx:
+    ldr     r1, =0x410F              @ ADPCM data nibble: the game streams it
+    cmp     r12, r1                  @ twice per byte, so skip vt_reg_write
+    andeq   r0, r0, #0x0F
+    ldreq   r1, =vt_tk_data
+    streqb  r0, [r1]
+    moveq   pc, lr
+    ldr     r1, =0x4016
+    cmp     r12, r1
+    bne     write_vt4xxx
+    stmfd   sp!, {r0, r12, lr}
+    bl      vt_tk_write4016          @ r0 = value
+    ldmfd   sp!, {r0, r12, lr}
+    ldr     pc, =IO_W                @ then the stock joypad strobe
+    .ltorg
 
 write_vt4xxx:
     @ Session-13 perf: dispatch BEFORE building a frame.  This hook sees every
@@ -511,7 +584,22 @@ write_vt_rom:
     bl      vt_mmc3_forward
     
     ldmfd   sp!, {r0}
-    
+
+    @ guide s.79: a CHR bank changed -> note the raster band (vt_band_mark),
+    @ like ppu.s vt_band_hook does for $2012-$2017.  get_scanline_2 returns
+    @ the NES scanline in addy (r12, restored from the stack below).
+    ldr     r1, =vt_mmc3_chr_touched
+    ldrb    r2, [r1]
+    cmp     r2, #0
+    beq     1f
+    mov     r2, #0
+    strb    r2, [r1]
+    stmfd   sp!, {r0}
+    bl_long get_scanline_2
+    mov     r0, addy
+    bl      vt_band_mark
+    ldmfd   sp!, {r0}
+1:
     @ Did vt_mmc3_forward change the banking configuration?
     ldr     r1, =vt_prg_dirty
     ldrb    r2, [r1]

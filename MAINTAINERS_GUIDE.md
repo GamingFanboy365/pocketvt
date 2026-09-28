@@ -3409,3 +3409,527 @@ Open items those docs carried, still unimplemented:
 * **$2000 D7 NMI polarity** and the **VT02 low-luminance palette corner**
   are spec-vs-code notes, not bugs. See DATASHEET_DIGEST.md appendix B
   before "fixing" either.
+
+## 75. furb_cli: the reference emulator, headless, and compare_furb.py (after s21b62)
+
+No emulator change. Michael supplied the full Furbtendulator source
+(Furbtendulator-main.zip, unpacked to the gitignored reference/). It now builds
+as a 32-bit Linux CLI (tools/furb_cli, README there), and tools/compare_furb.py
+runs one .nes through it and through PocketVT (builder.py + mGBA) with the same
+input and scores every requested frame. This replaces reference screenshots for
+anything the testroms cover; ask for captures only for carts not on disk.
+
+How it is built: compat/ shims Win32/DirectX (every GUI/DirectX/registry call
+inert, all settings at compiled-in defaults: NTSC palette, VT03Palette=0); the
+iNES mapper pack becomes Mappers/iNES.so loaded through a dlopen-backed
+LoadLibrary, exactly like iNES.dll; furb_cli.cpp replaces WinMain and runs
+NES::Thread's CPU loop, owning the keyboard state the standard controller reads.
+Traps met on the way, recorded so nobody re-debugs them: (1) -m32 is required,
+the savestate macros and DWORD assume a 32-bit long; (2) registry stubs must
+return a NONZERO code -- Controllers::LoadSettings tests == ERROR_SUCCESS and a
+zero stub made it parse garbage; (3) Settings::FSkip must be 0, a large value
+makes the PPU take its frame-skip path and draw nothing (one-colour frames);
+(4) __forceinline must expand to nothing -- MSVC silently emits an out-of-line
+copy that other files call; (5) -msse2 -mfpmath=sse matches MSVC's float model.
+Deterministic: identical runs give identical frame hashes, across clean rebuilds.
+
+Alignment (the part that makes the scores mean something):
+* Frames are NES frames on both sides. PocketVT's `frame` word (symbol
+  `frametotal`, the globals-block counter timeout.s bumps once per emulated
+  frame) keys the harness's input and captures. At full speed GBA frame 700 is
+  only NES frame ~563 (about 140 GBA frames of boot), so GBA-frame alignment is
+  wrong even for 60/60 carts.
+* PocketVT's screen trails its counter by up to ~5 NES frames when it runs
+  below 60 (Scramble gameplay, 47/60), so each capture is matched against
+  +-8 reference frames (ties go to the nearest).
+* Screen geometry: column = x + 8 always (no horizontal scaling). Row: dma0buff
+  vofs = NES scroll + (source row - line), so line-to-line steps are scale75's
+  decimation (1 or 2) except at a raster split; the tool rebuilds the row map
+  from the steps, substitutes the 3-line rhythm at splits, and searches each
+  split segment's offset separately (Scramble: playfield -1, HUD -2).
+  DO NOT use y + vofs directly as the row -- that is tilemap space, and was
+  only right in earlier tools because their screens were unscrolled.
+
+First results (repo-root core, testroms): Time Pilot 100.00% struct at f200 and
+f600; Scramble title 99.97% (0 mismatched px), gameplay f700 99.0%; Push the
+Ball f600 97.5% (moving robot/paddles only); Add 'em Up f600 81.8% with the top
+strip flagged -- the raster-split CHR gap, open item 1. On Scramble gameplay
+every reference colour has exactly one PocketVT counterpart (same palette
+indices, different DAC: e.g. (189,192,0) -> (148,148,0)), so there is no colour
+fault; the remaining ~1% is the 1-pixel terrain outline. Per column, PocketVT's
+terrain top maps one NES row ABOVE the reference's on 160 columns and to the
+same row on 63. That is consistent with scale75 dropping the edge row on some
+lines, but a real 1-row vertical offset in gameplay (NES scroll Y = 2 there) is
+not ruled out -- worth one look with the VALUE_SENTINEL build. Scramble also diverges in game state by ~f850 (the reference's ship dies, ours
+does not) -- expected over long runs, so compare early frames.
+
+## 76. furb_cli: the rest of the GUI's features, headless (after s21b62)
+
+No emulator change. furb_cli now covers what the GUI does, not just "run a
+.nes and dump frames": the FDS, NSF and VS mapper packs; settings through
+Furbtendulator's own registry loader (.reg exports or Name=value files,
+--set, --save-config); every controller type on every port including Four
+Score, the Famicom 4-player adapters, Zapper, keyboards, mice and the
+microphones; WAV and AVI capture of the real mixer output; savestates,
+movies (through the GUI's own movie dialogs), cheats, DIP switches, custom
+palettes, header patching, CPU trace, battery saves; FDS disk and tape
+commands. tools/furb_cli/README.md lists the options;
+tools/furb_cli/selftest.py checks each one (0 failures at this commit).
+
+How: the shim is no longer all-inert. The registry is a map; a dialog script
+registered for a template ID runs the real dialog procedure against fake
+controls; file pickers are answered from a queue; DirectSound captures the
+samples Sound.cpp writes. The packs reach those host functions through one
+exported symbol (furb_host_lookup, -Wl,--dynamic-list), because each .so
+links its own static copy of compat.cpp built with -DFURB_PACK.
+
+Traps, so nobody re-debugs them:
+(1) GetModuleFileName must be real. A stub made ProgPath empty, which
+    silently broke BIOS/, cheats.cfg, dip.cfg and samples/ loading.
+(2) MSVC's "rt,ccs=UTF-16LE" fopen mode. The cfg files are UTF-16 and read
+    with fgetwc; glibc ignores ccs=, the text came out garbled and a
+    syntax-error message overflowed a buffer and crashed. open_ccs_read
+    decodes the file (BOM detection) into a real temporary UTF-8 file and
+    reopens it. Writing into tmpfile() does not work (the stream is already
+    byte-oriented, fgetwc returns WEOF) and fmemopen crashes in getwc.
+(3) NSF does not play on load, in the GUI either: CPU::Reset clears the INIT
+    IRQ after the mapper reset, so the player waits for Play. --nsf-song N
+    moves the song slider, sends WM_HSCROLL, and clicks Play.
+(4) NES::OpenFile sets NES::Running for NSFs regardless of AutoRun. There is
+    no emulation thread here, so furb_cli clears it after loading.
+(5) Pad buttons must not share code space with keyboards: keyboard devices
+    read KeyState by DIK code, so pads are mapped to virtual joysticks
+    (device 2+port, code (dev<<16)|button).
+(6) Frame hashes changed at this commit (RGB byte order), so compare hashes
+    only within one furb_cli build. The frames themselves are unchanged: 48
+    dumped frames over 3 ROMs are byte-identical to the previous build.
+
+Unverified: real FDS disks (dummy BIOS only), the keyboards, mice, Arkanoid,
+tablet and data recorder (plumbing exercised, no test ROM reads them), and
+the VT369 hi-res dump path -- Lucky Lawn Mower VT369 (supplied this session,
+in the gitignored testroms/) runs as console VT369 but never sets $201C bit 2.
+
+## 77. Raster-split slots FIXED and on by default: four bugs, not one (after s21b62)
+
+Open item 1 of s.73. `VT_SPLIT_SLOTS` is now defined in config.h and is on
+by default; `-DVT_SPLIT_SLOTS=0` builds a core byte-identical to the one
+before this section. Every number below is from `compare_furb.py` (s.75),
+built with build_pvt.sh.
+
+| cart (Start at NES 320) | before t200/t400/t700 | after |
+|---|---|---|
+| Add 'em Up | 60.65 / 60.36 / 81.83 % | 98.46 / 98.17 / 99.88 % |
+| Aero Gyrodine | 64.42 / 100 / 100 % | 99.99 / 100 / 100 % |
+| Hex City X | 68.69 / 99.53 / 99.53 % | 100 / 99.98 / 99.98 % |
+
+Scramble, Time Pilot, Push the Ball, Table Soccer (VT03 and VT369), Lucky Lawn
+Mower VT369 and VG Pocket have identical scores. Without input, Aero's title
+scores 100.00% from t100 to t900 and Hex's 100.00%. Speed (NES frames per GBA
+second) is unchanged on every cart that does not split. Aero's and Hex's titles
+run at 32-33, down from 39 and 35 when they showed the wrong tiles. They still
+need speed work (open item 2).
+
+### 77a. Blocks 2/3 were never free: the 32K PRG copy lives there
+
+s.73 assumed BG char blocks 2/3 were free on VT carts. They are not, on ANY VT
+cart. loadcart.c's `USE_ACCELERATION` copies the last 32K of PRG to
+`novrom_bank` = 0x06008000-0x0600FFFF (the first 16K to 0x06010000), and the
+6502 executes from there. `vram_dump` confirmed it on Add 'em Up, Aero, Hex and
+Scramble: each 8K there is byte-identical to a PRG bank. Aero survived the old
+WIP only because its bank at 0x06008000 is mostly empty.
+
+Moving PRG out of VRAM for good works but costs about 10% on every VT cart
+(Aero 39->34, LLM VT369 38->34, Table Soccer VT369 35->31, Scramble 46->42).
+Leaving one bank in the 8K gap between the slots does not work either. PocketNES
+executes a branch as host-pointer arithmetic, so Add 'em Up's `$E011: BPL $DF98`,
+run from a copy at 0x0600E000, lands in slot tiles. (PocketNES's old answer, the
+256-byte prefix copy of the Arkista's Ring fix, has no room here.)
+
+The fix moves PRG only when a cart first needs a slot, `vt_prg_evict`
+(ppu_vt.c). loadcart.c records an identical EWRAM twin of the VRAM copy
+(`vt_prg_shadow`: the whole-PRG EWRAM copy when PRG <= 128K, the decompressed
+image, or a fresh 32K copy at the cache start). On first use every
+`instant_prg_banks` entry and every speed-hack PC pointing into
+0x06008000-0x0600FFFF is repointed to the twin. timeout.s `vblank_handler_0`
+then calls `vt_apply_prg_banks` right after `newframe_nes_vblank` returns.
+`map*_` end in `flush`, which re-encodes the 6502 PC through the new memmap
+before another instruction runs. Every JMP/JSR/RTS/RTI/vector goes through
+`encodePC` too, so nothing can re-enter the VRAM copy. Carts that never split
+keep the fast layout.
+
+### 77b. The IWRAM user stack is only ~470 bytes, and split slots overflowed it
+
+The user stack runs from `__sp_usr` (0x03007D60) down to `__bss_end__`
+(~0x03007B84). The vblank IRQ runs `vt_chr4_rebuild_if_dirty` in System mode on
+whatever stack it interrupted. On the base core the deepest point is 0x03007C0C,
+136 bytes of headroom. With slots, an IRQ landing during the frame-end chain
+(`vblank_handler_0` saves 13 registers, then `newframe_nes_vblank` ->
+`vt_palette_rebuild_gba` -> `vt_bands_frame_end` -> `vt_split_build` -> decoder)
+went down to 0x03007B50 and overwrote `vt_prg_banks` and the IWRAM canaries.
+Add 'em Up then mapped PRG bank 0 at $E000 and jumped into NES RAM. That is
+the "hang after two slot assemblies" of s.73.
+
+Found with the probes: `lbwatch` caught the jump into RAM, `memwatch` on
+`_memmap_E` caught `mapEF_` loading bank 0 from `vt_apply_prg_banks`, and `spmin`
+showed the System-mode SP below `__bss_end__`. Once a cart has taken slots, both
+entry points now run on a 3K EWRAM stack (`vt_ewram_stack`): the frame-end call
+in timeout.s, and the vblank call through `vt_chr4_rebuild_stacked` in mapVT.s.
+The latter is kept in ROM because IWRAM code comes out of the same 470 bytes; an
+inline version cost 40 bytes of `.iwram`. The first frame that needs a slot only
+moves the PRG and builds nothing, because that call entered on the IWRAM stack.
+Building even one slot in that frame, as a first version did, corrupted Aero's
+game state (90% after Start). Deepest IWRAM point now: 0x03007C50, 204 bytes of
+headroom, more than before.
+
+(Superseded by s.78e: the EWRAM stack is now used unconditionally, not only after
+a cart first takes slots, and there is no build-free first frame any more.)
+
+### 77c. Stale slot lines, and an IRQ race inside vt_split_build
+
+The two remaining faults were on Aero's title. `bg0cntbuff` persists across
+frames (double-buffered), so a line that stopped being a split line kept its
+slot char base. Band lines now store their original char base in BGCNT bits
+4-5 (unused by the hardware), and each frame end restores every tagged line
+before applying the new bands.
+
+`vt_split_repair` runs from the vblank IRQ and could land in the middle of a
+`vt_split_build`. It took the half-written page for a stomp and rebuilt it with
+the OLD key; the outer build then resumed, leaving slot 3's page 0 with 49
+tiles from the other bank set (the GYRODINE logo tiles over the top star strip).
+`vram_dump` of both slots before and after the LRU swap located it: seven pages
+exact, one mixed. The build now clears `vt_split_valid[s]` (volatile) for its
+whole duration.
+
+### 77d. Regression, and what is not verified
+
+Frame 700 (framebuffer + palette RAM) is byte-identical to the previous core on
+Scramble, Time Pilot, Push the Ball, both Table Soccers, LLM VT369 and VG Pocket.
+The frame-SET test is not a strict subset: Time Pilot renders 3 frames and Push
+the Ball 6 that the old core did not, and Scramble and LLM VT369 1 each. All are
+in the first 110 GBA frames (boot fade and first scroll steps), and after frame
+120 every frame matches. It is a phase shift from the few instructions added per
+vblank, not a rendering change.
+
+NOT verified: Star Ally, Lonely Island and Lucky Lawn Mower VT09 (not on disk
+this session). They do not split, so they should behave like VG Pocket and
+Scramble, but nobody has run them. `score_5bit.sh` (LLM VT09) was not run for
+the same reason.
+
+compare_furb.py now masks NES 2.0 header byte 13 to its low nibble for
+furb_cli. Furbtendulator reads the whole byte as the extended console type,
+and the VG Pocket 50-in-1 dump has 0x28 there, which crashed its PPU.
+`--furb-arg` passes anything else through.
+
+## 78. Title speed, a stale-decode bug behind a split, and a redundant palette build (after s.77)
+
+Aero Gyrodine's and Hex City X's titles went from 32-33 to 34-35 NES frames per
+GBA second (base core before s.77: 39 and 35, with the wrong tiles), and Lucky
+Lawn Mower VT369 from 38 to 41. Every testrom's compare_furb scores are
+unchanged on the build_pvt.sh path. Frame 700 is identical to the s.77 core on
+the seven carts that do not split. The only new frames are boot and scroll
+phase steps: boot fade (GBA frames 55, 108-109), VG Pocket's splash transition
+(93; neither core matches the reference there, which switches at NES frame 23),
+Time Pilot 87, and Scramble's scroll positions (87-88, 694-696; Scramble runs
+below 60, so which positions get rendered depends on timing).
+
+### 78a. Where the time goes (tools/probes/cycprof)
+
+`cycprof` charges every step its real GBA cycles (EWRAM and ROM wait states
+included) and reports per function. With `FT=<frametotal> ABS=1` it reports per
+NES frame, and with `RANGE=lo-hi` per 16-byte bin, which addr2line maps to
+source lines. On Aero's title, s.77 cost about 111k cycles per NES frame over
+the old core: `vt_bands_frame_end` 42.6k, palette 14k, and the 6502 handlers
+2-4k each because PRG now comes from EWRAM. Almost all of the frame-end cost
+was the two per-line passes (restore, then tag) over up to 240 EWRAM lines,
+in Thumb code from ROM. They are now branchless, two lines per 32-bit word
+(`vt_lines_restore`, `vt_lines_tag`), and the restore covers only the range
+tagged when that buffer was last current. A first version picked the buffer
+side wrongly and rescanned all 240 lines every frame; the word loops also
+need `vt_line_orig2` forced inline under -Os.
+
+### 78b. vt_build_16color_palette ran twice per GBA vblank
+
+The vblank IRQ built it in `vt_chr4_rebuild_if_dirty`, then `run_palette`
+overwrote it, then `vt_16c_palette_fixup` built it again as the final writer.
+That was about 12% of Aero's title frame. The first build is now skipped when
+the fixup is certain to follow: `firstframeready` is set and the vblank is top
+level. The handler stores the outer `inside_gba_vblank` in `vt_vbl_outer`
+(8 bytes of IWRAM code), because a nested vblank exits before run_palette and
+the fixup. In a nested vblank it builds only if its inputs (palette RAM +
+$2010, snapshot `vt_pal_built`) changed since the last build. This keeps the
+s21b48 rule that the palette is rebuilt every frame: the fixup still is.
+
+### 78c. Hex City X's menu: garbage metasprite, missing cursor
+
+A 16x16 sprite showed as noise in the middle of the menu and the cursor
+vanished (99.53% vs 99.98%). The old core had it; s.77 hid it only by timing.
+The cause is not the sprite path. `vt_chr_sync_flush` decodes from
+`vt_frame_reg` on split frames and from the live registers otherwise, and it
+only runs when a bank write asks for a sync. The title's last split frame
+consumed the pending sync with the title's banks (12-15). When the menu stopped
+splitting, nothing asked again, so all eight pages stayed decoded from the
+title's banks indefinitely. `vt_bands_frame_end` now calls
+`vt_chr_sync_from_prg` whenever the source changes: a split starts or ends, or
+the primary band's registers change. A stable split still never marks
+anything dirty (the s.72 storm stays fixed).
+
+Found by: `objdump`-style OAM/palette/OBJ-VRAM dumps keyed to NES frames (same
+OAM and palette, different tile data). Then `ftwatch` on the sprite tile
+(`vt_obj4_overlay` wrote it in the good build and never in the bad one). Then
+the page-bank dump (12-15 instead of 0-3). A first guess was hardening
+`vt_obj4_overlay`'s one-word probe, which changed nothing, so it was reverted.
+
+This fix applies with `VT_SPLIT_SLOTS=0` too, so that build is no longer
+byte-identical to the pre-s.77 core.
+
+### 78d. Still open
+
+60/60 on these titles needs the frame roughly halved (~500k -> ~280k cycles per
+NES frame). The biggest items are now the 6502 core, read_vt4xxx ($41xx polling,
+~8%), joypad reads (~5%) and the remaining palette build (~12%, now once per
+vblank). None of it is split-specific.
+
+### 78e. The IWRAM stack again: unconditional EWRAM stack, and libgba's IntrTable
+
+The shipped core (devkitARM Docker build) broke Aero Gyrodine with 78b: title
+64%, game stuck on the title. The build_pvt.sh core was fine. `spmin` from
+power-on showed why: the user stack reached 0x03007B80, 68 bytes below
+`__bss_end__`, inside `vt_chr_sync_flush` run from the vblank IRQ, and
+overwrote `vt_prg_banks` with 0 and $3F. This was during boot, BEFORE any PRG
+move, while s.77 still switched to the EWRAM stack only after one. 78b only
+changed when the IRQ landed; bisecting the Docker build (78a, 78b, 78c
+reverted one at a time) pinned it to 78b's timing change, not to any logic in
+78b.
+
+Two fixes:
+1. Every heavy VT C entry now runs on the 3K EWRAM stack unconditionally. The
+   vblank IRQ's `vt_chr4_rebuild_if_dirty` and `vt_16c_palette_fixup` go
+   through ROM trampolines (`vt_ewram_trampoline` in mapVT.s; IWRAM code
+   would come out of the same budget), and timeout.s switches for
+   `newframe_nes_vblank`. If the interrupted code is already on the EWRAM
+   stack, it keeps going down it. The slot-free first frame after the PRG
+   move is gone; that frame now runs on the EWRAM stack too.
+2. The Docker link pulled in `libgba.a(interrupt.o)`. PocketVT's
+   `IntFn IntrTable[14];` was a -fcommon tentative definition, and GNU ld
+   extracts an archive member that defines a still-COMMON symbol. libgba's
+   120-byte `IntrTable` then won the merge: 64 bytes of IWRAM .bss, taken
+   straight out of the stack. build_pvt.sh never links libgba, which is why
+   only the shipped core had 64 bytes less stack. `IntrTable` is now
+   initialised (a real definition); the Docker core's `__bss_end__` equals
+   build_pvt's (0x03007B84) and its ROM is 968 bytes smaller.
+
+Measured on the shipped core from power-on (12M steps each, Aero, Add 'em Up,
+Hex, Scramble, VG Pocket, LLM VT369): the deepest IWRAM point is 0x03007C1C,
+152 bytes of headroom, in non-VT code (`__clzdi2`, `spriteinit`). The EWRAM
+stack peaks at about 380 of 3072 bytes.
+
+Docker-vs-Docker scores (84f17d3 core -> this one, Start at 320): Aero title
+100 -> 99.99, Hex 100 -> 99.99, Add 'em Up t700 99.88 -> 99.85, Scramble
+99.97/99.00 -> 99.96/98.98, Push the Ball 97.49 -> 97.44. The Aero, Hex, Add
+'em Up and Scramble deltas are 2-9 px from capturing at a different GBA frame
+(faster core). Push the Ball's is a stable 20 px (one pixel column of the text
+box border). NES RAM and CHR RAM are identical between the two cores at NES
+frame 200, but ~9 bytes of the GBA tile cache differ. So PocketNES's CHR-RAM
+tile conversion misses an update under some timings: pre-existing, and not
+chased yet.
+
+## 79. Table Soccer runs, VG Pocket's colours, the real BIOS, and wait states (after s.78)
+
+Everything here was measured with tools/compare_furb.py against Furbtendulator,
+keyed to NES frames, on the Docker-built core unless a build_pvt.sh core is named.
+
+### 79a. Table Soccer VT03 (mapper 419): four independent faults
+
+Mapper 419 (Taikee TK-8007 MCU) used to fall through to mapper 163 and showed
+nothing. It is OneBus with the same PPU/MMC3 mangle tables and no CPU mangle,
+plus a 3-bit ADPCM chip that the game handshakes with: $4016 bit 2 is a data
+clock (rising edge latches the high nibble, falling edge the low one), $410F
+bits 0-3 are the nibble, and $4017 reads return READY in bit 4 and NOT-clock in
+bit 3 (reference/nrs/mapper419.cpp and s_ADPCM3Bit.cpp). The game spins on
+AND #$18 of $4017 at $F5FC before every byte, so without the status bits it
+never leaves its first command. loadcart.c routes 419 to OneBus with submapper
+tag 0x40; vt_regs.c models the command protocol and the 12-frame buffer
+(drained from frametotal) so READY behaves; mapVT.s installs read_tk4xxx and
+write_tk4xxx only for this mapper, and the $410F nibble is stored straight from
+asm because the game streams it 6000+ times a second. The decoded samples are
+not played.
+
+With the CPU running, the title had four 64-line bands of distinct CHR banks
+but only two split slots, so the LRU rebuilt a slot for every band every frame
+(65% of the CPU) and the first band showed the third band's tiles. Three
+changes fix that without new VRAM. A slot used by an earlier band of the same
+frame is never evicted by a later one. When a frame needs a third extra bank
+set and no line of the frame shows the primary's other pattern half, that
+half's char block is lent as slot 2 (vt_blk_lent; vt_chr4_copy_to_vram* skip
+it while lent, and it is handed back the first frame that does not need it).
+And slots go to the tallest bands first, so a frame with more bands than slots
+(the formation screen has six) loses only its thinnest strips. Because slot 2
+can now be block 0 or 1, the bg0cntbuff tag mark moved from "char base bit 3"
+to BGCNT bit 6 (mosaic, which has no effect while REG_MOSAIC is 0; PocketVT
+never writes it).
+
+The menu text is PIX16EN sprites without SPEXTEN ($2010 = $87). The PIX16 path
+existed but required SPEXTEN and refused COLCOMP, so these fell to the 8-wide
+4bpp overlay: every letter an opaque block. vt_spr_eva_update now takes this
+case with EVA forced to 0, plain page addressing (vt_assemble_page_pix16_plain)
+and the slot keyed on the page's current bank, publishing all eight EVA
+entries of spr_cache_map because update_sprites adds OAM byte-2 bits
+regardless.
+
+The match pitch came out as bare grass. The nametables proved it: every grass
+tile was 0. The game DMAs the pitch from ROM $B800 (PRG offset $1800, 8K bank
+0) with $4034 = $01, and loadcart.c's USE_ACCELERATION keeps PRG 16K page 0 in
+OBJ VRAM 0x06010000-0x06013FFF, exactly where the extended sprite slots are
+written. Every read of page 0 after the first slot write returned sprite
+pixels. This was latent for every VT cart since the EVA path went in. Before
+the first slot write, vt_prg_evict_obj now repoints the page-0 banks at an
+identical twin (cart ROM, or EWRAM when the PRG was decompressed or cached;
+vt_prg_page0, set by loadcart.c) and raises vt_prg_evict_pending. The
+timeout.s hook that rebuilds the memmap is now VT-wide rather than split-slot
+only, and slot writes wait until it has run.
+
+Finally the split lines drifted. Furbtendulator's OneBus counter
+(h_OneBus.cpp clockScanlineCounter) is clocked once per scanline at dot 256
+when BK16EN or TSYNEN is set, reloads on the clock after it reaches zero and
+fires at zero. A free-running period of N is therefore N+1 lines, and a $4102
+rephase inside the picture takes effect on the next line's clock. PocketVT
+counted plain N. Calibrated against Furbtendulator's traces (writes to $2016 at
+lines 39/47/55/79/223 on the formation screen, 60/126/189 on the title),
+sound.s now uses N for an arm from vblank (its first band was already exact),
+N+2 for a rephase inside the picture, and N+1 for the free-running reload.
+Both screens' band lines now match Furbtendulator exactly
+(VT_TIMER_NPLUS1, default 1). Aero, Hex, Add 'em Up and Star Ally are
+unchanged by it.
+
+Results: title 96-99%, team select 99%, match 97% (the COM team is a random
+pick and differs), formation screen 92.8% (the two six-line shirt strips would
+need a sixth char block). Speed rose from 5 NES fps at first boot to 43-44 with
+79c.
+
+### 79b. VG Pocket: the DAC table was a fit, and 2bpp mode ignored it
+
+Palette RAM in the VG games matched Furbtendulator byte for byte; the colours
+did not. vt_compat_rgb555_vg had been fitted to four menu captures under index
+models later disproved, and entries those menus never used were guesses:
+$04, $29 and $37 all mapped to one green, $28 and $2C to one light blue, which
+is why Get it Right's peach face was green. furb_cli --dump-palette now writes
+Furbtendulator's active colour tables, and the VG table is its VT09 colours
+(RGB888 >> 3); the fitted table is kept under #if 0. Games that run with
+$2010 = 0 (plain 2bpp) went through run_palette and PocketNES's stock nes_rgb,
+not the console's DAC. A cart whose header names its DAC now gets it there
+too: vt_mapped_rgb_fixup rewrites MAPPED_RGB whenever it differs, called from
+vt_palette_rebuild_gba once per frame. A bl_long placed inside paletteinit
+was tried first and a Scramble core stopped booting. At the same time new
+globals had landed in IWRAM .bss, so which of the two broke it is not
+separated. Both were undone, and all new globals are EWRAM_BSS
+(__bss_end__ back to 0x03007B84).
+
+One racer lost its dashboard: it switches BG CHR at line 174 through MMC3
+$8000/$8001. The s.73 comment said mapVT.s marks bands after MMC3 bank writes;
+it never did. vt_mmc3_forward now flags CHR changes and write_vt_rom records
+the band at get_scanline_2. The split slots also work for 2bpp backgrounds now
+(vt_chr2_assemble_page_vram; lending stays 4bpp-only because PocketNES's 2bpp
+cache keeps rewriting the other half). That game went from 81.3% to 99.4%.
+
+Across all 50 games at NES frame 900 the mean exact-colour match went from
+22% to 98.3% on the shipped core. A few games show a band of missing BG tiles whose size moves
+with timing (88-100% between builds that differ only in timing). Their
+nametables match Furbtendulator exactly, so this is the tile-cache staleness
+of s.78e / open item 21, not a palette or banking fault. Lucky Lawn Mower VT09's
+header names no DAC, so it inherits the VG table through V16BEN and now matches
+Furbtendulator exactly as well; its earlier colours were fitted to the gg.png
+and lawn.png photos, which are not in the tree, so that comparison is still
+owed.
+
+### 79c. Real hardware: the header, the BIOS, and cart wait states
+
+mGBA 0.10 skips the BIOS without a word when a cart's Nintendo logo is invalid
+("Invalid logo, skipping BIOS"); a real GBA's BIOS refuses to start such a
+cart. build_pvt.sh called /opt/devkitpro/tools/bin/gbafix, which is not
+installed on that path, and ignored the failure, so every build_pvt.sh core had
+a zeroed logo and would not have booted on hardware. The Docker core was always
+fine (the Makefile runs gbafix). tools/gbafix.py now does the same job, copying
+the logo from a ROM that already carries it (the committed pocketvt.gba,
+checked by CRC32 so no logo bytes are in the tree), and builder.py warns if the
+play ROM's header would not boot.
+
+With the user's BIOS dump (reference/gba_bios.bin, never committed) pvt_run
+and compare_furb.py --bios boot through the real BIOS: the full intro, the
+header check and the real SWI routines. Every test ROM boots and renders the
+same as under mGBA's HLE BIOS; the few differences are frame-phase
+(Aero's title 100 vs 99.5 at one frame, Star Ally's BKEXTEN repair cycle).
+tools/probes/biosboot reports when a ROM leaves the BIOS.
+
+Nothing ever wrote WAITCNT, so the cart ran at the power-on 4/2 wait states
+without the prefetch buffer. crt0 now sets 0x4317 (3/1 plus prefetch, what
+retail games use; VT_FAST_WAITCNT, default 1). PocketVT runs much of its VT
+code as Thumb C from ROM, so this is the largest speed change in a while:
+Time Pilot t700 34 -> 58 NES fps, Scramble 48 -> 59, Star Ally 36-38 -> 44-46,
+Aero and Hex titles 34 -> 41-42, Table Soccer 28 -> 43, LLM VT09 54 -> 60.
+mGBA models both the wait states and the prefetch buffer, so these numbers
+should carry to hardware; that is the one claim here not checked on a GBA.
+
+### 79d. Sound: what is and is not emulated
+
+Measured with tools/probes/pvtwav (PocketVT audio between two NES frames) and
+wavcmp.py against furb_cli --wav. Plain 2A03 music is right where the cart runs
+at full speed: Lonely Island's loudness envelope correlates 0.85 with
+Furbtendulator's, against 0.1-0.5 for unrelated music. Scramble scores 0.54.
+Star Ally cannot be judged this way while it runs below full speed, because its
+music plays proportionally slower. VT-specific PCM is weaker. The VT02+ ADPCM
+channels ($4120-$412F) are decoded but mixed only inside timer1interrupt, which
+is PocketNES's DMC refill and stops when the DMC is idle, so on their own they
+are effectively silent, and the IMA table is not VT369's. The TK-8007 voice in
+Table Soccer is handshaked but not played. The second APU ($4020-$402F) and the
+VT369 sound CPU are not emulated. Among the test carts only Lucky Lawn Mower
+VT369 (which does not boot yet) and Table Soccer use any of these. No test cart
+played NES DMC samples in the windows sampled, including all 50 VG games,
+although the VG ROM contains DMC code. One real fault was removed on the way:
+vt_adpcm_mix_gba carried a second copy of the VT timer that subtracted 114 CPU
+cycles per call from a period counted in scanlines. That raised IRQ_MAPPER on
+every DMC refill for any game with its timer IRQ enabled.
+
+### 79e. Speed work that is not in 79c
+
+The ADPCM nibble stores skip vt_reg_write. vt_spr_eva_update handles each
+(page, EVA) key once per call instead of once per sprite.
+vt_palette_rebuild_gba no longer re-derives all 512 vt_palette_to_gba[]
+entries every frame: nothing reads that table, and it was 5.5% of Table
+Soccer's match frame on every VT cart.
+
+### 79f. Tools added
+
+furb_cli dumps the nametables (.nt) and its colour tables (--dump-palette).
+pvt_run takes PVT_DUMP (memory ranges at each target) and PVT_BIOS. New probes:
+peek, memdump, biosboot, pvtwav and wavcmp.py. ftwatch takes several key spans,
+and cycprof can warm up to an NES frame with input (WARMFT, KEYS). The probes
+README lists them.
+
+### 79g. Star Ally paid for the speed, and the Docker build can be stale
+
+On the Docker core, Star Ally averaged about one point lower over NES frames
+500-900 than the previous Docker core (97.8 against 98.9), with parts of the
+planet missing on some frames. The build_pvt.sh core showed no drop, and
+neither the timer change nor any logic change moved it. A Docker build with
+WAITCNT left at power-on brought it back to 98.9, at 39 NES fps instead of 48.
+The cause is rate, not logic. Star Ally's BKEXTEN map is kept current partly
+by vt_bk_scrub, a safety-net sweep of 60 cells per GBA vblank (full coverage
+every 32 GBA frames), sized when ROM code ran at 4/2 wait states. At 48 NES fps
+more of the map changes between sweeps. The sweep size is now
+VT_BK_SCRUB_SPLIT chunks per screen. 8 (120 cells, full coverage every 16
+frames) brought gameplay back to 98.65 at 44 NES fps, but left the title
+screen permanently half-drawn (84% from NES frame 130 on). The likely cause is
+that wider sweeps touch more (page, attr) pairs per vblank and thrash the
+10-slot BKEXTEN cache; this is not verified. The default stays 16 (60 cells).
+Star Ally therefore ships about one point lower in gameplay (97.8 over frames
+500-900, some frames missing planet chunks) at 48 NES fps instead of 36. A real
+fix is to budget the sweep per NES frame, or to grow the slot cache, not
+simply to widen the sweep. Open.
+
+That test first seemed to show WAITCNT was not the cause, because the "off"
+core still had it. The devkitARM Makefile builds incrementally in build/, and
+its asm rules do not generate header dependencies (the -MMD lines are
+commented out), so changing a #define in config.h does NOT rebuild the .s files
+that test it. Clean first (`rm -rf build`) whenever a config.h default or an
+asm-visible define changes. The shipping core here was built both clean and
+incrementally, and the two are byte-identical.
