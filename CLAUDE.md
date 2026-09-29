@@ -92,12 +92,16 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   NMIDBG style counters. Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.79)
-See MAINTAINERS_GUIDE.md s.79 (Table Soccer, VG colours, real BIOS, wait
+## Current state (after s.81)
+See MAINTAINERS_GUIDE.md s.81 (VT369 $6000 ROM, 15-bit palette), s.80 (VT369 CPU
+side), s.79 (Table Soccer, VG colours, real BIOS, wait
 states, sound) and s.77-78 (raster-split slots, speed).
 - Working: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower VT09, VG Pocket
   (all 50; colours now Furbtendulator's), Push the Ball, Time Pilot, Add 'em Up,
-  Aero Gyrodine, Hex City X, Table Soccer VT03 (mapper 419; menus/match 96-99%).
+  Aero Gyrodine, Hex City X, Table Soccer VT03 (mapper 419; menus/match 96-99%),
+  Table Soccer VT369 (non-enhanced renderer; select screen 99.9%, match 96.7%).
+- vt_palette_ram holds FULL bytes (VT369 colours are 15-bit); VT03/VT09
+  readers must mask & 0x3F. On VT369 vt_reg_write ignores $4140-$41FF.
 - Raster-split slots: 3 (block 2, block 3, and the primary's unused pattern
   half when free), tallest bands first, 4bpp and 2bpp, MMC3 CHR writes mark
   bands too. `-DVT_SPLIT_SLOTS=0` turns them off.
@@ -117,9 +121,9 @@ states, sound) and s.77-78 (raster-split slots, speed).
   the 3K EWRAM stack. Measure with tools/probes/spmin from power-on.
 
 ## Open work, in priority order
-1. VT369 platform port (s.47): Lucky Lawn Mower VT369 and Table Soccer VT369
-   (both black in PocketVT). Both run in furb_cli (Table Soccer VT369 only
-   warns that VT369-00.BIN is missing; guide s.79h), so compare_furb works.
+1. VT369 enhanced renderer ($201E != 0, plan in s.80): Lucky Lawn Mower VT369
+   (4bpp), Fire Fighter and Jewel Master (8bpp) are still black. Then
+   enhanced sprites, and CPU x3 ($411C bit 7) if a cart needs it.
 2. Sound (s.79d): VT ADPCM $4120-$412F only mixes while NES DMC plays; the
    TK-8007 voice (Table Soccer) is not played; second APU $4020-$402F and the
    VT369 sound CPU are absent. Measure with tools/probes/pvtwav + wavcmp.py.
@@ -141,8 +145,8 @@ LOCAL ONLY, gitignored, never commit (the user supplies them as test.zip):
   Furbtendulator-main.zip); tools/furb_cli builds it headless.
 - testroms/: Add 'em Up, Push the Ball, Scramble, Table Soccer (VT03), Time
   Pilot; supplied later: Aero Gyrodine, Hex City X, VG Pocket VT09, Lucky Lawn
-  Mower VT369, Table Soccer VT369. Star Ally, Lonely Island and LLM VT09 are
-  NOT on disk; ask.
+  Mower VT369, Table Soccer VT369, Fire Fighter VT369, Jewel Master VT369,
+  Star Ally, Lonely Island, LLM VT09.
 
 In git:
 - DATASHEET_DIGEST*.md: VT02/VT03 datasheet notes. Bit numbering there is

@@ -410,6 +410,10 @@ void vt_reset(void)
 // convention issues corrupting m6502_pc (`r9`) and m6502_mmap (`r4`) across
 // the bridge.
 
+EWRAM_BSS u16 vt_prg_bank6;    /* s.81: VT369 $6000-$7FFF ROM bank ... */
+EWRAM_BSS u8  vt_prg6_rom;     /* ... and whether it is mapped ($411C bit 6) */
+extern u8 vt_console;
+
 static u32 vt_get_phys_bank(u8 bnk)
 {
     u8  ps      = vt.reg[0x0B] & 0x07;
@@ -449,6 +453,13 @@ void vt_recompute_prg_banks(void)
     }
     vt_prg_banks[1] = (u16)bank_pq1;
     vt_prg_banks[3] = (u16)bank_eff;
+
+    /* s.81: VT369 maps PRG ROM at $6000-$7FFF when $411C bit 6 is set, bank
+     * $4112 (h_OneBus.cpp syncPRG).  Table Soccer VT369 runs its boot code
+     * there; with SRAM in its place the 6502 ran zeros and never set up the
+     * palette.  vt_apply_prg_banks (mapVT.s) applies it on VT369 only. */
+    vt_prg6_rom   = (vt_console == 0x0A) && (vt.reg[0x1C] & 0x40);
+    vt_prg_bank6  = (u16)vt_get_phys_bank(vt.reg[0x12]);
 
     vt_prg_dirty = 1;
 }
@@ -783,6 +794,10 @@ void vt_reg_write(u8 addr_lo, u8 val)
                 vt_recompute_prg_banks();
                 vt_chr_sync_from_prg();
                 break;
+            case 0x12:                  // VT369: $6000 ROM bank (s.81)
+            case 0x1C:                  // VT369: bit 6 maps ROM at $6000
+                if (vt_console == 0x0A) vt_recompute_prg_banks();
+                break;
             default:
                 break;
         }
@@ -955,6 +970,11 @@ void vt_reg_write(u8 addr_lo, u8 val)
         }
         return;
     }
+
+    /* s.81: on VT369, $4140-$41FF are the sound CPU's and other registers
+     * (Table Soccer VT369 writes $4144/$4148/$414C/$4165/$4189 at boot); they
+     * landed in the palette here. */
+    if (vt_console == 0x0A) return;
 
     if (addr_lo >= 0x40 && addr_lo < 0x80) {
         vt_palette_write(addr_lo - 0x40, val);

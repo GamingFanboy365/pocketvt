@@ -4012,3 +4012,65 @@ core only in the interrupted stack bytes and $0050, and the new core is
 slightly CLOSER to Furbtendulator's RAM there (5 differing bytes against 6).
 So this is display timing from the speed change, not a state fault. It is
 recorded here rather than left silent.
+
+## 81. VT369, part 2: Table Soccer VT369 runs; the palette keeps 15-bit colours
+
+Table Soccer VT369 was black, and the renderer was not the reason. Tracing
+furb_cli from reset showed that the cart's boot code calls $603D in its first
+instructions, before any RAM copy could have put code there. On VT369,
+$411C bit 6 maps PRG ROM at $6000-$7FFF, bank $4112 through the usual
+prgAND/prgOR (h_OneBus.cpp syncPRG, `ROM->ConsoleType == CONSOLE_VT369 &&
+reg4100[0x1C] & 0x40`). The cart writes $411C = $C0 and $4112 = $3D at boot.
+PocketVT left SRAM there, so the 6502 ran zeros from $603D, never uploaded its
+palette, and the game went on in a broken state. vt_recompute_prg_banks now
+computes vt_prg6_rom and vt_prg_bank6 (both EWRAM), a $4112 or $411C write
+recomputes them on VT369, and vt_apply_prg_banks in mapVT.s maps the bank with
+map67_ and installs rom_R60 and empty_W, as mapper 40 does. With the bit clear
+it restores sram_R, sram_W and the default memmap_6. Other consoles never
+reach that code.
+
+The second fault was in vt_reg_write. It treats $4140-$417F as a palette
+window and $4180-$41FF as extended OAM, a leftover from s21b55. On VT369 those
+addresses belong to the sound CPU and other hardware: Table Soccer VT369
+writes $4144, $4148, $414C, $4165 and $4189 at boot. Those writes landed in
+vt_palette_ram as colours $30, $32 and $3F. vt_reg_write now returns before
+both windows on VT369. VT03 and VT09 are unchanged.
+
+The palette step of the s.80 plan is done for the non-enhanced renderer. A
+VT369 COLCOMP colour is 15 bits, 0RRRRRGGGGGBBBBB, from the palette byte
+pair (PPU_VT369::GetPalIndex, `Palette[TC|0x80] << 8 | Palette[TC]`, into
+PALETTE_VT369), so all eight bits of both bytes matter. vt_palette_ram now
+keeps the full byte on every write path: the low-bank path in ppu.s
+VRAM_pal, the high-bank path VRAM_pal_hi with vt_palette_write_hi, and the
+palette DMA fast path vt_pal_dma_fast. nes_palette, the 32-byte view the 2bpp
+renderer reads, is still masked to six bits. Every VT03/VT09 reader of
+vt_palette_ram already masked with & 0x3F. vt369_col() converts a pair to
+the GBA's BGR555. vt_palette_rebuild_gba uses it through vt_colcomp_col(),
+and vt_build_16color_palette has its own VT369 loop, so the VT03 loop is
+the same code as before. An earlier draft checked the console for each of
+the 128 entries, which cost Table Soccer VT03 about one NES frame per
+second (43-44 down to 42). The split loop measures 43.1 against the old
+core's 43.2 over 18 seconds, which is noise.
+
+Results against Furbtendulator (the Docker core, also booted through the real
+BIOS): Table Soccer VT369 was 15.6% struct (black). The team-select screen
+now scores 99.8-99.9% with exact colours equal to struct, and the match
+96.7% at frame 850. Past about frame 1100 the two emulators play different
+matches and the score means nothing. The select screen's remaining
+differences are a few flag tiles (Italy, France) and the P1 cursor sprite.
+Speed is 43 NES fps on the menus and 40 in the match. The cart sets $411C
+bit 7 (CPU times three), which PocketVT does not model. Whether the game
+needs the extra CPU time is not yet known.
+
+Regression against the core before this change: Lonely Island and VG Pocket
+are byte-identical for all 800 frames. Star Ally's 32 distinct frames all
+appeared in the old core's set. Scramble, LLM VT09 and Table Soccer VT03
+each have one new frame. Each is a transition (Scramble's title appearing
+one frame earlier, one raster line in LLM's intro, a half-drawn loading
+screen in Table Soccer), and their frame-700 pictures are identical.
+compare_furb struct and exact5 scores are unchanged on every test ROM at
+150/400/700, and Star Ally's frame 700 is higher (99.10% against 98.61%).
+Lucky Lawn Mower VT369, Fire Fighter and Jewel Master are unchanged and still
+black. They run the enhanced renderer ($201E = $0F), which is the next step.
+Fire Fighter and Jewel Master use its 8bpp mode ($201C = $12), and Lucky Lawn
+Mower VT369 its 4bpp mode ($201C = $11).

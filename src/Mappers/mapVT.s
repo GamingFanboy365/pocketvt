@@ -246,7 +246,33 @@ vt_apply_prg_banks:
     ldr     r1, =vt_prg_banks
     ldrh    r0, [r1, #6]
     bl_long mapEF_
-    
+
+    @ s.81: VT369 $411C bit 6 maps PRG ROM bank $4112 at $6000-$7FFF (like
+    @ mapper 40's ROM there); clear, it is the usual SRAM again.  Other
+    @ consoles never touch $6000 here.
+    ldr     r1, =vt_console
+    ldrb    r0, [r1]
+    cmp     r0, #0x0A
+    ldmnefd sp!, {pc}
+    ldr     r1, =vt_prg6_rom
+    ldrb    r0, [r1]
+    cmp     r0, #0
+    beq     1f
+    ldr     r0, =rom_R60
+    str_    r0, readmem_6
+    ldr     r0, =empty_W
+    str_    r0, writemem_6
+    ldr     r1, =vt_prg_bank6
+    ldrh    r0, [r1]
+    bl_long map67_
+    ldmfd   sp!, {pc}
+1:
+    ldr     r0, =sram_R
+    str_    r0, readmem_6
+    ldr     r0, =sram_W
+    str_    r0, writemem_6
+    ldr     r0, =NES_RAM-0x5800
+    str_    r0, memmap_6
     ldmfd   sp!, {pc}
 
 @ ============================================================================
