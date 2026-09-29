@@ -228,6 +228,17 @@ mapVTinit:
     str_    r1, readmem_2
     ldr     r1, =vt369_ppu_W
     str_    r1, writemem_2
+    @ guide s.84: the embedded ROM at $1000-$1FFF, when the file has one
+    ldr     r1, =vt369_misc
+    ldr     r1, [r1]
+    cmp     r1, #0
+    ldrne   r1, =vt369_ram_R
+    strne_  r1, readmem_0
+    @ guide s.84: and the sound CPU's RAM at $4800-$4FFF
+    ldr     r1, =read_vt369_4xxx
+    str_    r1, readmem_4
+    ldr     r1, =write_vt369_4xxx
+    str_    r1, writemem_4
 1:
 
     @ --- VT extra opcode handlers were installed at the top of this
@@ -313,6 +324,7 @@ vt_apply_prg_banks:
 .endm
     vt_ewram_trampoline vt_chr4_rebuild_stacked, vt_chr4_rebuild_if_dirty
     vt_ewram_trampoline vt_16c_palette_fixup_stacked, vt_16c_palette_fixup
+    vt_ewram_trampoline vt369_snd_fill_stacked, vt369_snd_fill    @ guide s.84
     .ltorg
 
 @ ============================================================================
@@ -384,7 +396,32 @@ read_vt4xxx:
     cmp     r1, #0xB9
     moveq   r0, #0x80
     moveq   pc, lr
-    ldr     pc, =IO_R               @ tail-jump; lr still points at the core
+    @ guide s.84: VT369 GPIO ports $4140-$415F (OneBus h_OneBus_GPIO.cpp,
+    @ no device attached): +0 mask, +2 latch, +3 ~mask, else $FF.  Lucky
+    @ Lawn Mower counts $0FFA once a frame only while $414F reads $FF.
+    sub     r2, r1, #0x40
+    cmp     r2, #0x20
+    ldrhs   pc, =IO_R               @ tail-jump; lr still points at the core
+    ldr     r0, =vt_console
+    ldrb    r0, [r0]
+    cmp     r0, #0x0A
+    ldrne   pc, =IO_R
+    mov     r2, r2, lsr #3          @ port 0-3
+    and     r1, r1, #7
+    cmp     r1, #2
+    ldreq   r0, =vt369_gpio_latch
+    ldreqb  r0, [r0, r2]
+    moveq   pc, lr
+    cmp     r1, #3
+    cmpne   r1, #0
+    movne   r0, #0xFF
+    movne   pc, lr
+    ldr     r0, =vt369_gpio_mask
+    ldrb    r0, [r0, r2]
+    cmp     r1, #3
+    mvneq   r0, r0
+    andeq   r0, r0, #0xFF
+    mov     pc, lr
 
 
 @ ============================================================================
@@ -707,10 +744,50 @@ write_vt_rom:
 @ ============================================================================
 
 @ ============================================================================
-@ vt369_pal_W -- vram_write_tbl[15] while VT369 enhanced mode is on (s.82):
-@ a $2007 write to $3C00-$3FFF lands in the 1024-byte VT369 palette.
-@ In: r0 = data, addy = PPU address.  May clobber r1 and addy, like VRAM_pal.
+@ read_vt369_4xxx / write_vt369_4xxx -- readmem_4 / writemem_4 on VT369
+@ (s.84): $4800-$4FFF is the sound CPU's RAM ($1800-$1FFF, vt369_snd.c);
+@ everything else goes on to the VT handlers.  Reads: no stack.
 @ ============================================================================
+@ vt369_ram_R -- readmem_0 on VT369 carts with an embedded ROM (s.84):
+@ $1000-$1FFF reads the 4K misc ROM, $0000-$0FFF stays RAM (ram_R_mask).
+    .global vt369_ram_R
+vt369_ram_R:
+    tst     r12, #0x1000
+    ldreq   pc, =ram_R_mask
+    ldr     r0, =vt369_misc
+    ldr     r0, [r0]
+    mov     r1, r12, lsl #20
+    ldrb    r0, [r0, r1, lsr #20]
+    mov     pc, lr
+
+    .global read_vt369_4xxx
+read_vt369_4xxx:
+    tst     r12, #0x0800
+    beq     read_vt4xxx
+    ldr     r1, =vt369_sram
+    mov     r0, r12, lsl #21
+    ldrb    r0, [r1, r0, lsr #21]
+    mov     pc, lr
+
+    .global write_vt369_4xxx
+write_vt369_4xxx:
+    tst     r12, #0x0800
+    beq     write_vt4xxx
+    ldr     r1, =vt369_sram         @ store here; C only for the registers
+    mov     r2, r12, lsl #21        @ vt369_snd_write acts on: $1FA2 and
+    mov     r2, r2, lsr #21         @ $1840-$184F / $18A0-$18AF (start and
+    strb    r0, [r1, r2]            @ stop masks).  Table Soccer streams
+    bic     r2, r2, #0x0F           @ ~50 bytes a frame into $1800-$197F.
+    cmp     r2, #0x040
+    cmpne   r2, #0x0A0
+    cmpne   r2, #0x7A0
+    movne   pc, lr
+    stmfd   sp!, {r0, r12, lr}
+    mov     r1, r0                  @ val
+    mov     r0, r12                 @ addr
+    bl      vt369_snd_write
+    ldmfd   sp!, {r0, r12, pc}
+
 @ ============================================================================
 @ vt369_ppu_R / vt369_ppu_W -- readmem_2 / writemem_2 on VT369 (s.82).
 @ $3000-$3FFF is nametable RAM ($2000 | addr & $FFF, normal mirroring);
@@ -741,6 +818,11 @@ vt369_ppu_W:
     bl_long vram_write_direct
     ldmfd   sp!, {addy, pc}
 
+@ ============================================================================
+@ vt369_pal_W -- vram_write_tbl[15] while VT369 enhanced mode is on (s.82):
+@ a $2007 write to $3C00-$3FFF lands in the 1024-byte VT369 palette.
+@ In: r0 = data, addy = PPU address.  May clobber r1 and addy, like VRAM_pal.
+@ ============================================================================
     .global vt369_pal_W
 vt369_pal_W:
     ldr     r1, =vt369_pal

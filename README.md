@@ -35,9 +35,9 @@ frames.
 | Add 'em Up | working, full speed; 98-99.9% picture |
 | Aero Gyrodine, Hex City X | working; raster-split titles 99.99%, 42-43 NES fps, gameplay full speed |
 | Table Soccer (VT03, mapper 419) | working; menus and match 96-99%, about 43 NES fps; no voice samples |
-| Table Soccer VT369 | working; team select 99.9%, match 96.7%, 40-43 NES fps |
+| Table Soccer VT369 | working, with its streamed music; team select 99.9%, match 96.7%, 48 NES fps |
 | Lucky Lawn Mower VT369 | working (VT369 enhanced renderer, 4bpp); 99.7% picture, full speed |
-| Fire Fighter VT369, Jewel Master VT369 | working (enhanced renderer, 8bpp); 95-99% picture, the rest is game-state drift; Fire Fighter runs at 44-51 NES fps |
+| Fire Fighter VT369, Jewel Master VT369 | working (enhanced renderer, 8bpp) with sound effects; Jewel Master 99.9% picture, Fire Fighter 96% (game-state drift) at 44-51 NES fps |
 | Mapper 405 (VT168, zero-vector boot) | does not boot yet |
 
 Raster splits (a game switching CHR banks partway down the screen from a
@@ -50,7 +50,10 @@ Sound: the standard 2A03 channels play, and match the reference where a game
 runs at full speed. The VT-specific PCM hardware is incomplete. The VT02+
 ADPCM channels (`$4120-$412F`) are only mixed while NES DMC audio happens to
 be playing, the Table Soccer TK-8007 voice chip is answered but not played,
-and the second APU (`$4020-$402F`) and the VT369 sound CPU are not emulated.
+and the second APU (`$4020-$402F`) is not emulated. The VT369 sound CPU is
+emulated at a high level, as Furbtendulator does it by default: Lucky Lawn
+Mower, Fire Fighter and Jewel Master play their ADPCM effects, and Table
+Soccer VT369 plays its streamed music.
 
 Open work, in priority order, is listed in CLAUDE.md. The detailed record
 is MAINTAINERS_GUIDE.md.

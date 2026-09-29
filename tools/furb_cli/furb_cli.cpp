@@ -394,6 +394,13 @@ static void dump_frame(const std::string &prefix, int frame, const std::vector<u
 	f = fopen(name, "wb");
 	fwrite(NES::CPU_RAM, 1, sizeof(NES::CPU_RAM), f);
 	fclose(f);
+	// .snd (VT369 only): the sound CPU's RAM $1800-$1FFF, the main CPU's $4800-$4FFF
+	if (RI.ConsoleType == CONSOLE_VT369) {
+		snprintf(name, sizeof name, "%s_f%04d.snd", prefix.c_str(), frame);
+		f = fopen(name, "wb");
+		fwrite(vt369SoundRAM + 0x1800, 1, 0x800, f);
+		fclose(f);
+	}
 	// .nt: PPU $2000-$2FFF as the PPU sees it (the four mapped 1K nametable pages)
 	snprintf(name, sizeof name, "%s_f%04d.nt", prefix.c_str(), frame);
 	f = fopen(name, "wb");

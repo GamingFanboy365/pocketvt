@@ -285,6 +285,7 @@ void vt_tk_write4016(u8 val)
 void vt_reset(void)
 {
     { extern void vt369_reset(void); vt369_reset(); }   /* guide s.82 */
+    { extern void vt369_snd_reset(void); vt369_snd_reset(); }   /* guide s.84 */
     // Preserve submapper across reset -- loadcart.c sets it from the iNES
     // header before mapVTinit runs.
     u8 saved_submapper = vt.submapper;
@@ -483,6 +484,7 @@ static u8 vt_mmc3_cmd;
 // ppu_vt.c's s.73 comment claimed this call existed -- it did not, so MMC3-
 // style mid-frame CHR switches, e.g. a VG Pocket racer's dashboard, were lost).
 EWRAM_BSS u8 vt_mmc3_chr_touched;
+EWRAM_BSS u8 vt369_gpio_mask[4], vt369_gpio_latch[4];   /* VT369 $4140-$415F (s.84) */
 
 // VT32/VT369 multiply/divide unit ($4130-$4137, guide s.80).
 EWRAM_BSS u8  vt_alu_on;        /* console type VT32/VT369 (loadcart.c) */
@@ -975,7 +977,16 @@ void vt_reg_write(u8 addr_lo, u8 val)
     /* s.81: on VT369, $4140-$41FF are the sound CPU's and other registers
      * (Table Soccer VT369 writes $4144/$4148/$414C/$4165/$4189 at boot); they
      * landed in the palette here. */
-    if (vt_console == 0x0A) return;
+    if (vt_console == 0x0A) {
+        extern void vt369_snd_ctl(u32 val);
+        if (addr_lo == 0x62) vt369_snd_ctl(val);      /* s.84: sound CPU on/off */
+        else if (addr_lo >= 0x40 && addr_lo < 0x60) { /* s.84: GPIO mask / latch */
+            const u32 port = (addr_lo >> 3) & 3, r = addr_lo & 7;
+            if (r == 0) vt369_gpio_mask[port] = val;
+            else if (r == 2 || r == 3) vt369_gpio_latch[port] = val;
+        }
+        return;
+    }
 
     if (addr_lo >= 0x40 && addr_lo < 0x80) {
         vt_palette_write(addr_lo - 0x40, val);
@@ -1049,6 +1060,16 @@ void vt_adpcm_tick(s16 *buf, int samples)
 __attribute__((target("arm")))
 void vt_adpcm_mix_gba(void)
 {
+    /* guide s.84: while the VT369 sound CPU runs, DirectSound B is its */
+    { extern u8 vt369_snd_on; extern void vt369_snd_fill_stacked(void);
+      if (vt369_snd_on) {
+          /* the idle-DMC path just stopped timer 0 (the sample clock):
+           * restart it before anything else (vt369_snd.c, vt369_snd_timer) */
+          volatile u16 *tm0cnt_h = (volatile u16 *)0x04000102;
+          if (!(*tm0cnt_h & 0x80)) *tm0cnt_h = 0x80;
+          vt369_snd_fill_stacked();
+          return;
+      } }
     // PCMWAV is a fixed GBA address in palette RAM area (see equates.h)
     s8 * const buf  = (s8*)0x05000280;
     const int  SIZE = 128;   // PCMWAVSIZE from equates.h
