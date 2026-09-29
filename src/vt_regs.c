@@ -284,6 +284,7 @@ void vt_tk_write4016(u8 val)
 
 void vt_reset(void)
 {
+    { extern void vt369_reset(void); vt369_reset(); }   /* guide s.82 */
     // Preserve submapper across reset -- loadcart.c sets it from the iNES
     // header before mapVTinit runs.
     u8 saved_submapper = vt.submapper;

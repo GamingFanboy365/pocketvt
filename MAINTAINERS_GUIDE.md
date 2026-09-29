@@ -4074,3 +4074,112 @@ Lucky Lawn Mower VT369, Fire Fighter and Jewel Master are unchanged and still
 black. They run the enhanced renderer ($201E = $0F), which is the next step.
 Fire Fighter and Jewel Master use its 8bpp mode ($201C = $12), and Lucky Lawn
 Mower VT369 its 4bpp mode ($201C = $11).
+
+## 82. VT369, part 3: the enhanced picture ($201E != 0)
+
+Lucky Lawn Mower VT369, Fire Fighter and Jewel Master all run the VT369
+enhanced renderer: $201E = $0F (pattern bases from $2020-$2023, the new OAM
+layout), $201D = $0F (128 sprites of 16x16 pixels) and attribute bits used as
+tile-number bits 8-9. Lucky Lawn Mower VT369 has 4bpp backgrounds
+($201C = $11), and the other two have 8bpp ($201C = $12). All three were
+black. The new file src/ppu_vt369.c draws them. It follows
+OneBus_VT369.cpp (RunNoSkipEnhanced, ProcessSpritesEnhanced, GetPalIndex),
+and the carts' own traces showed which parts they use.
+
+Backgrounds. An enhanced BG tile comes straight out of PRG ROM. 4bpp tiles
+are 32 bytes with the low nibble as the left pixel, and 8bpp tiles are 64
+bytes with one byte per pixel. Those are exactly the GBA's 4bpp and 8bpp tile
+formats, so a tile is a plain copy. The tile number of a cell is its
+nametable byte, plus its two attribute bits as bits 8-9 unless $201C bit 3 is
+set. A tile starts at ($2020 | $2021 << 8) << 13 + tile * 32 or 64 when
+$201E bit 0 is set. With the bit clear, it starts from the $2012/$2016 bank.
+Fire Fighter's screen uses 743 distinct 8bpp tiles (47 KB), more than the
+free BG VRAM below the map holds, so tiles are cached. Every distinct tile
+number gets a VRAM slot, and each slot is reference-counted by the map cells
+that show it. Slots come first from BG VRAM that nothing else needs: tiles
+1-127, 256-383 and 448-511 in 8bpp (or 2-255, 512-767 and 896-1023 in 4bpp)
+from char base 0. Those ranges skip the UI layer at 0x2000-0x3FFF, whose
+off-screen cells point at tiles 0 and 1, and the game's tilemap at
+0x6000-0x6FFF. When those run out, an 8bpp screen gets the 32K at 0x06008000,
+after vt_prg_evict has moved the PRG copy from there (s.77a).
+vt369_high_slots_ok wraps it with the pending/apply handshake that
+vt_prg_evict_obj already uses from the GBA vblank. A cell that finds no free
+slot is retried by a full sweep on the next vblank. That happens for a few
+frames while the PRG copy moves, and then Fire Fighter holds all 743 tiles
+with no misses. Each vblank, the map is updated by diffing the nametable RAM
+against a shadow copy. A changed name byte re-derives its cell, and a changed
+attribute byte re-derives 16 cells. vt369_frame_end sets 8bpp or 4bpp, with
+char base 0, in every line of PocketNES's per-line BG0CNT buffer. PocketNES
+itself still does the scrolling and scaling. Its own BG writers are switched
+off through vt_bkexten_live, the gates BKEXTEN already has, and
+vt_chr4_rebuild_if_dirty and vt_bk_consume return at once in enhanced mode.
+
+Palette. Enhanced colours are 15-bit pairs from a 1024-byte palette, with BG
+colour c at 2c and sprite colour c at 0x200 + 2c. The CPU reaches it through
+$2007 at $3C00-$3FFF: while enhanced mode is on, vram_write_tbl[15] points
+at vt369_pal_W (mapVT.s). The carts load it every frame with fast DMA
+($411C bit 7). $4034 selects the target ($2004 or $2007), $2006 sets the
+address, and each $4014 write moves 256 bytes. vt369_dma_4014 (C, called from
+write_vt4xxx) does those copies a word at a time into the 1024-byte palette
+or the 512-byte OAM. Only a $2007 target below $3C00, such as the nametable
+loads from ROM, still takes the old per-byte path. The GBA palette is
+rewritten every vblank as the last palette writer, since run_palette changes
+parts of it before that, but only palette words that changed are
+re-converted. The first version skipped the aligned(4) on the converted
+buffer, and its word copies rotated every odd colour, so Lucky Lawn Mower's
+sky came out black.
+
+Sprites. OAM has the new arrangement ($201E bit 2): Y at n, tile low byte at
+0x80+n, attribute at 0x100+n and X at 0x180+n. With $201D bit 3 the
+attribute's top bits are negative X/Y instead of flips. A 16x16 4bpp sprite
+is 8 bytes per row, which are the halves of two GBA tile rows, so a sprite
+becomes four GBA tiles in one of 128 OBJ VRAM slots at 0x06010000. Those
+slots are cached by tile number, and a slot used in the current frame is
+never evicted. Sprite n is GBA OBJ n, so lower numbers stay in front as on
+the VT369. The position uses update_sprites' own transform: YSCALE_LOOKUP
+minus windowtop, SCREEN_LEFT, and in SCALED_SPRITES mode an affine
+double-size box centred where update_sprites centres its 8x8 box. The flip
+matrices are 8, 16 and 24. A one-line correction, VT369_SPR_DY, was tried at
+-2, -1 and +1. +1 helped Fire Fighter and hurt the other two, so it stays 0.
+PocketNES's own OAM copy is filled with Y = $FF on every sprite DMA, so its
+sprite pass hides entries 0-63 and never caches tiles over ours. That pass
+still clears entries 0-63 each vblank, so all 128 entries are written again
+afterwards. An entry is rebuilt only when its four OAM bytes change, which
+brought the per-frame cost down from 12 NES fps to near zero. 8bpp sprites
+(8x16, or $201C bit 5) are not done yet.
+
+$3000-$3FFF. The VT369 maps nametable RAM into CPU space at $3000-$3FFF
+(h_OneBus.cpp readNT/writeNT). Lucky Lawn Mower VT369 mows its lawn by
+copying cut-grass tiles from $34xx to $32xx with LDA/STA ($zp),Y, and it never
+touches $2007. PocketVT sent those writes to its extended-register handler, so
+the lawn never got cut (about 51 cells wrong at frame 400). For VT369
+carts, mapVTinit now installs vt369_ppu_R and vt369_ppu_W as readmem_2 and
+writemem_2. They send $3000-$3FFF to the nametables (reads through vram_map,
+writes through vram_write_direct), and everything else still goes to PPU_R
+and PPU_W.
+
+Speed. The first working version cost Lucky Lawn Mower 52 -> 38 NES fps.
+cycprof put 39% in vt369_vblank and 13% in the DMA. The nametable diff had
+been inlined into one large function that spilled to the EWRAM stack, where
+each spill costs 3 cycles, so it ran at about 66 cycles per word. It is now
+split into small non-inlined functions, the palette conversion only redoes
+changed words, the DMA copies words, and sprites are rebuilt only when they
+change.
+
+Results against Furbtendulator (build_pvt.sh core, NES frames 150/400/700):
+Lucky Lawn Mower VT369 goes from 77% (black) to 99.66/99.67/99.73% at
+60 NES fps. Fire Fighter goes from 16% to 96.5/96.3/96.3% at 44-51 fps.
+Jewel Master goes from 34% to 99.85/96.9/94.8% at 60 fps. exact5 equals
+struct to within 0.1% in all three. What is left in Fire Fighter and Jewel
+Master is game state rather than drawing: burning windows and falling jewels
+in other places, and Jewel Master's next piece is different, so the two
+emulators' random numbers have diverged. Table Soccer VT369 (non-enhanced) is
+unchanged at 98.68%.
+
+Regression against the merged s.81 core: Lonely Island, VG Pocket and
+Scramble are byte-identical for 800 frames. Star Ally has 2 new frames, and
+Table Soccer VT03, Lucky Lawn Mower VT09 and Table Soccer VT369 have 1, 1 and
+3. Each one is a single raster line or a few pixels in a boot or loading
+frame, and frame 700 is identical in every case. Not done: 8bpp sprites,
+hi-res mode ($201C bit 2), sprite priority against 8bpp BG colour 0 (GBA
+priority 3 behind BG0 is used), CPU x3, and the sound CPU.

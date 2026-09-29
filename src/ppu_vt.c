@@ -58,6 +58,11 @@ void vt_bk_frame_check(void);
 void vt_bk_invalidate(void);
 void vt_bk_whole(void);
 void vt_bk_scrub(void);
+/* VT369 enhanced picture (ppu_vt369.c, guide s.82) */
+extern u8 vt369_enh;
+void vt369_reg_write(u32 offset, u32 val);
+void vt369_frame_end(void);
+void vt369_vblank(void);
 // SESSION 20: throttled replacement for the 1920-cell vt_bk_whole() blast.
 // Processes a bounded chunk of the map per vblank and returns 1 when the full
 // map has been swept, so a BKEXTEN mode flip / cache-invalidate rebuild no
@@ -332,6 +337,7 @@ void vt_mapped_rgb_fixup(void);
 __attribute__((target("arm")))
 void vt_palette_rebuild_gba(void)
 {
+    if (vt369_enh) { vt369_frame_end(); return; }   /* s.82 */
     /* s21b62: newframe_nes_vblank (NES line 242) calls this first; the frame's
      * catch-ups have already filled bg0cntbuff to line 240 and the buffer swap
      * has not happened yet -- the right moment to apply raster-split bands
@@ -1272,6 +1278,7 @@ static void vt_split_repair(void);
 __attribute__((target("arm")))
 void vt_chr4_rebuild_if_dirty(void)
 {
+    if (vt369_enh) return;         /* s.82: ppu_vt369.c owns BG VRAM */
     if (vt_bkexten_live) {         // slots replace the page-linear pipeline;
         // Session 19: run the whole BKEXTEN batch with IME masked.  The
         // vblank handler re-enables IME early, so a slow pass here could be
@@ -1853,6 +1860,7 @@ void vt_bk_attr_shadow_reset(void)
 __attribute__((target("arm")))
 void vt_bk_consume(u32 cur, u32 lim)
 {
+    if (vt369_enh) return;         /* s.82: vt369_bg_update diffs the nametables */
     volatile u16 *ime = (volatile u16*)0x04000208;   // see session-19 note
     u16 saved = *ime; *ime = 0;
     vt_bk_dbg[2] += 0x10000;   // high half: consume-entry count
@@ -2095,6 +2103,7 @@ __attribute__((target("arm")))
 void vt_16c_palette_fixup(void)
 {
     if (!vt_active) return;
+    if (vt369_enh) { vt369_vblank(); return; }   /* s.82 */
 #ifdef VT_AUTOPLAY
     // Debug-only self-playing script.  Drives the user's reported route into
     // the side-scrolling stage: hold Up ~3.5s, Right ~1s, Up ~1s.  Never
@@ -2274,6 +2283,7 @@ void vt_chr4_rebuild_if_dirty_OLD(void)
 
 void vt_ppu_reg_write(u8 page, u8 offset, u8 val)
 {
+    if (page == 0 && offset < 0x40 && vt_console == 0x0A) vt369_reg_write(offset, val);
     if (page == 0) {
         // $2012-$2017: OneBus CHR bank registers.  Shadow into vt_chr_reg[]
         // so the values are observable for debug and ready for the future
@@ -2326,7 +2336,7 @@ void vt_ppu_reg_write(u8 page, u8 offset, u8 val)
                     // BKEXTEN transition (session 18): live when bit4 set
                     // together with 4bpp backgrounds (BK16EN).
                     {
-                        u8 want = ((val & 0x12) == 0x12);
+                        u8 want = ((val & 0x12) == 0x12) || vt369_enh;   /* s.82 */
                         if (want != vt_bkexten_live) {
                             vt_bkexten_live = want;
                             vt_bk_dbg[0]++;
@@ -2634,6 +2644,9 @@ static int vt_prg_evict_obj(void)
     return 0;                              /* not until timeout.s applied it */
 }
 
+/* guide s.82: VT369 enhanced sprites write OBJ VRAM 0x06010000-0x06013FFF. */
+int vt369_obj_ok(void) { return vt_prg_evict_obj(); }
+
 void vt_prg_obj_reset(void)
 {
     vt_prg_obj_evicted = 0;
@@ -2678,6 +2691,15 @@ static int vt_prg_evict(void)
     return 1;
 }
 
+/* guide s.82: VT369 enhanced BG tiles may use 0x06008000+ once the PRG copy
+ * has moved and timeout.s has re-applied the banks (pending clear).  Called
+ * from the GBA vblank: asking for the move just raises the flags. */
+int vt369_high_slots_ok(void)
+{
+    if (!vt_prg_evicted) { vt_prg_evict(); return 0; }
+    return !vt_prg_evict_pending;
+}
+
 void vt_split_reset(void)
 {
     vt_split_valid[0] = vt_split_valid[1] = vt_split_valid[2] = 0;
@@ -2686,6 +2708,8 @@ void vt_split_reset(void)
     vt_prg_evict_pending = 0;
     vt_tag_buf[0] = vt_tag_buf[1] = 0;      /* first use scans all 240 lines */
 }
+#else
+int vt369_high_slots_ok(void) { return 0; }
 #endif
 
 /* The slot (0-2) holding bank set k, building it on a miss; -1 if every

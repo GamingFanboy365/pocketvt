@@ -217,6 +217,19 @@ mapVTinit:
     adrne   r1, read_tk4xxx
     str_    r1, readmem_4
 
+    @ guide s.82: the VT369 maps the nametables into CPU space at
+    @ $3000-$3FFF (h_OneBus.cpp readNT/writeNT).  Lucky Lawn Mower VT369
+    @ mows its lawn by copying tiles there with LDA/STA ($zp),Y.
+    ldr     r2, =vt_console
+    ldrb    r2, [r2]
+    cmp     r2, #0x0A
+    bne     1f
+    ldr     r1, =vt369_ppu_R
+    str_    r1, readmem_2
+    ldr     r1, =vt369_ppu_W
+    str_    r1, writemem_2
+1:
+
     @ --- VT extra opcode handlers were installed at the top of this
     @ function (before vt_reset).  See the long comment there.
 
@@ -481,6 +494,19 @@ write_vt4xxx:
 @ $4014 W -- DMA trigger.  Decide sprite vs video based on $4034 bit 0.
 @ ------------------------------------------------------------------
 .Lvt_w_4014:
+    @ guide s.82: VT369 enhanced mode -- 256-byte DMA into the 512-byte OAM
+    @ or the 1024-byte palette ($3C00-$3FFF), in C.  0 = not handled (a
+    @ $2007 target below $3C00): fall through to the paths below.
+    ldr     r1, =vt369_enh
+    ldrb    r1, [r1]
+    cmp     r1, #0
+    beq     1f
+    stmfd   sp!, {r0}
+    bl      vt369_dma_4014
+    cmp     r0, #0
+    ldmfd   sp!, {r0}
+    bne     .Lvt_write_done
+1:
     ldr     r1, =vt_dma_settings
     ldrb    r1, [r1]
     tst     r1, #0x01
@@ -679,6 +705,52 @@ write_vt_rom:
 @ jump table (mapperinit_tbl).  We declare MAPPER_VT = 253 here; add it
 @ to both tables in cart.s using the existing .byte / .word pattern.
 @ ============================================================================
+
+@ ============================================================================
+@ vt369_pal_W -- vram_write_tbl[15] while VT369 enhanced mode is on (s.82):
+@ a $2007 write to $3C00-$3FFF lands in the 1024-byte VT369 palette.
+@ In: r0 = data, addy = PPU address.  May clobber r1 and addy, like VRAM_pal.
+@ ============================================================================
+@ ============================================================================
+@ vt369_ppu_R / vt369_ppu_W -- readmem_2 / writemem_2 on VT369 (s.82).
+@ $3000-$3FFF is nametable RAM ($2000 | addr & $FFF, normal mirroring);
+@ $2000-$2FFF stays the PPU register window.  The read side has no stack
+@ and must keep addy (read-modify-write instructions reuse it).
+@ ============================================================================
+    .global vt369_ppu_R
+vt369_ppu_R:
+    tst     addy, #0x1000
+    ldreq   pc, =PPU_R
+    mov     r0, addy, lsr #10
+    and     r0, r0, #3
+    add     r0, r0, #8               @ vram_map[8..11] = $2000-$2FFF pages
+    adr_    r1, vram_map
+    ldr     r1, [r1, r0, lsl #2]
+    mov     r0, addy, lsl #22
+    ldrb    r0, [r1, r0, lsr #22]
+    mov     pc, lr
+
+    .global vt369_ppu_W
+vt369_ppu_W:
+    tst     addy, #0x1000
+    ldreq   pc, =PPU_W
+    stmfd   sp!, {addy, lr}
+    mov     addy, addy, lsl #20
+    mov     addy, addy, lsr #20
+    orr     addy, addy, #0x2000
+    bl_long vram_write_direct
+    ldmfd   sp!, {addy, pc}
+
+    .global vt369_pal_W
+vt369_pal_W:
+    ldr     r1, =vt369_pal
+    mov     addy, addy, lsl #22
+    strb    r0, [r1, addy, lsr #22]
+    ldr     r1, =vt369_pal_dirty
+    mov     addy, #1
+    strb    addy, [r1]
+    mov     pc, lr
+    .pool
 
     MAPPER_VT = 253
 

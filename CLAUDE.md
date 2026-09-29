@@ -92,14 +92,19 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   NMIDBG style counters. Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.81)
-See MAINTAINERS_GUIDE.md s.81 (VT369 $6000 ROM, 15-bit palette), s.80 (VT369 CPU
-side), s.79 (Table Soccer, VG colours, real BIOS, wait
+## Current state (after s.82)
+See MAINTAINERS_GUIDE.md s.82 (VT369 enhanced picture, $3000 nametable window),
+s.81 (VT369 $6000 ROM, 15-bit palette), s.80 (VT369 CPU side), s.79 (Table Soccer, VG colours, real BIOS, wait
 states, sound) and s.77-78 (raster-split slots, speed).
 - Working: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower VT09, VG Pocket
   (all 50; colours now Furbtendulator's), Push the Ball, Time Pilot, Add 'em Up,
   Aero Gyrodine, Hex City X, Table Soccer VT03 (mapper 419; menus/match 96-99%),
-  Table Soccer VT369 (non-enhanced renderer; select screen 99.9%, match 96.7%).
+  Table Soccer VT369 (non-enhanced renderer; select screen 99.9%, match 96.7%),
+  Lucky Lawn Mower VT369 (99.7%), Jewel Master and Fire Fighter VT369 (95-99%;
+  the rest is game-state drift) through the enhanced renderer, src/ppu_vt369.c.
+- VT369 enhanced mode ($201E != 0) owns BG VRAM, the tilemap, the GBA palette
+  and OAM (vt369_enh); PocketNES's BG writers are off via vt_bkexten_live.
+  8bpp BG tiles may use 0x06008000+ after vt_prg_evict (s.77a).
 - vt_palette_ram holds FULL bytes (VT369 colours are 15-bit); VT03/VT09
   readers must mask & 0x3F. On VT369 vt_reg_write ignores $4140-$41FF.
 - Raster-split slots: 3 (block 2, block 3, and the primary's unused pattern
@@ -121,9 +126,8 @@ states, sound) and s.77-78 (raster-split slots, speed).
   the 3K EWRAM stack. Measure with tools/probes/spmin from power-on.
 
 ## Open work, in priority order
-1. VT369 enhanced renderer ($201E != 0, plan in s.80): Lucky Lawn Mower VT369
-   (4bpp), Fire Fighter and Jewel Master (8bpp) are still black. Then
-   enhanced sprites, and CPU x3 ($411C bit 7) if a cart needs it.
+1. VT369 leftovers (s.82): 8bpp sprites, hi-res mode ($201C bit 2), CPU x3
+   ($411C bit 7; Fire Fighter runs 44-51 NES fps), the VT369 sound CPU.
 2. Sound (s.79d): VT ADPCM $4120-$412F only mixes while NES DMC plays; the
    TK-8007 voice (Table Soccer) is not played; second APU $4020-$402F and the
    VT369 sound CPU are absent. Measure with tools/probes/pvtwav + wavcmp.py.
