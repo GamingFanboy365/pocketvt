@@ -35,7 +35,8 @@ frames.
 | Add 'em Up | working, full speed; 98-99.9% picture |
 | Aero Gyrodine, Hex City X | working; raster-split titles 99.99%, 42-43 NES fps, gameplay full speed |
 | Table Soccer (VT03, mapper 419) | working; menus and match 96-99%, about 43 NES fps; no voice samples |
-| Lucky Lawn Mower VT369, Table Soccer VT369 | CPU side runs, screen still black (the VT369 renderer is in progress) |
+| Table Soccer VT369 | working; team select 99.9%, match 96.7%, 40-43 NES fps |
+| Lucky Lawn Mower VT369, Fire Fighter VT369, Jewel Master VT369 | CPU side runs, screen still black (they use the VT369 enhanced renderer, in progress) |
 | Mapper 405 (VT168, zero-vector boot) | does not boot yet |
 
 Raster splits (a game switching CHR banks partway down the screen from a

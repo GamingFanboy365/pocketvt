@@ -258,7 +258,7 @@ __attribute__((target("arm")))
 void vt_palette_write_hi(u8 offset, u8 val)
 {
     offset = (offset & 0x7F) | 0x80;   // s21b59: all 128 hi entries (was & 0x1F)
-    val    &= 0x3F;
+    /* s.81: full byte kept -- VT369 colours are 15-bit; readers mask 0x3F */
     vt_palette_ram[offset] = val;
     // Backdrop mirroring within the hi bank, NintendulatorNRS rule
     // (addr & 0x63) == 0 -- entries 0x80,0x84..0x9C only.
@@ -295,6 +295,25 @@ void vt_palette_write_hi(u8 offset, u8 val)
 // keeps standard NES carts looking right when run on a VT chip.
 //
 // When COLCOMP=1 we look up vt03_palette_lut[((hi<<6)|lo) & 0xFFF].
+extern u8 vt_console;                 /* NES 2.0 console type (vt_regs.c) */
+
+/* s.81: a VT369 COLCOMP colour is 15-bit 0RRRRRGGGGGBBBBB from the byte pair
+ * (NintendulatorNRS PPU_VT369::GetPalIndex, GFX.cpp PALETTE_VT369); the GBA
+ * wants 0BBBBBGGGGGRRRRR. */
+static inline u16 vt369_col(u8 lo, u8 hi)
+{
+    const u32 c = ((u32)hi << 8 | lo) & 0x7FFF;
+    return (u16)(((c & 0x1F) << 10) | (c & 0x03E0) | (c >> 10));
+}
+
+/* COLCOMP colour of a (lo, hi) palette byte pair.  vt_palette_ram keeps full
+ * bytes (s.81); VT03/VT09 use 6 bits of each through the 4096-entry LUT. */
+static inline u16 vt_colcomp_col(u8 lo, u8 hi)
+{
+    if (vt_console == 0x0A) return vt369_col(lo, hi);
+    return vt03_palette_lut[(((u32)(hi & 0x3F)) << 6) | (lo & 0x3F)];
+}
+
 static inline u16 vt03_composite_to_gba(u8 lo, u8 hi)
 {
     if (vt_reg_2010 & 0x80) {
@@ -404,17 +423,13 @@ void vt_palette_rebuild_gba(void)
         for (int slot = 0; slot < 4; slot++) {
             // BG entry
             u8  bg_idx = (sub * 4 + slot) & 0x1F;
-            u8  bg_lo  = vt_palette_ram[bg_idx]        & 0x3F;
-            u8  bg_hi  = vt_palette_ram[bg_idx | 0x80] & 0x3F;
-            u16 bg_col = vt03_palette_lut[ (((u16)bg_hi << 6) | bg_lo) & 0xFFF ];
-            gba_bg[sub * 16 + slot] = bg_col;
+            gba_bg[sub * 16 + slot] = vt_colcomp_col(vt_palette_ram[bg_idx],
+                                                     vt_palette_ram[bg_idx | 0x80]);
 
             // OBJ entry (sprite palettes start at $3F10)
             u8  obj_idx = (0x10 + sub * 4 + slot) & 0x1F;
-            u8  obj_lo  = vt_palette_ram[obj_idx]        & 0x3F;
-            u8  obj_hi  = vt_palette_ram[obj_idx | 0x80] & 0x3F;
-            u16 obj_col = vt03_palette_lut[ (((u16)obj_hi << 6) | obj_lo) & 0xFFF ];
-            gba_obj[sub * 16 + slot] = obj_col;
+            gba_obj[sub * 16 + slot] = vt_colcomp_col(vt_palette_ram[obj_idx],
+                                                      vt_palette_ram[obj_idx | 0x80]);
         }
     }
 
@@ -1048,9 +1063,15 @@ static void vt_build_16color_palette(void)
         for (int i = 0; i < 64; i++)
             gba_obj[i] = (u16)((i & 31) | (3 << 5) | ((i >> 5) << 10));  /* b5 carries slot bit 5 */
 #else
-    if (colcomp) {
+    if (colcomp && vt_console == 0x0A) {   /* s.81: VT369 15-bit colours */
+        #define VT_CC(ix) vt369_col(vt_palette_ram[(ix)], vt_palette_ram[(ix) | 0x80])
+        if (do_bg)  for (int i = 0; i < 64; i++) gba_bg[i]  = VT_CC(idx_bg_tab[i]);
+        if (do_obj) for (int i = 0; i < 64; i++) gba_obj[i] = VT_CC(idx_sp_tab[i]);
+        #undef VT_CC
+    } else if (colcomp) {
+        /* vt_palette_ram keeps full bytes (s.81); VT03/VT09 use 6 bits of each */
         #define VT_CC(ix) vt03_palette_lut[(((u32)(vt_palette_ram[(ix) | 0x80] & 0x3F) << 6) \
-                                            | (vt_palette_ram[(ix)] & 0x3F)) & 0xFFF]
+                                        | (vt_palette_ram[(ix)] & 0x3F))]
         if (do_bg)  for (int i = 0; i < 64; i++) gba_bg[i]  = VT_CC(idx_bg_tab[i]);
         if (do_obj) for (int i = 0; i < 64; i++) gba_obj[i] = VT_CC(idx_sp_tab[i]);
         #undef VT_CC

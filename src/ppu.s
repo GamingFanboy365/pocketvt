@@ -4785,17 +4785,16 @@ vt_pal_dma_fast:
 .Lpdf_loop:
 	and r12,r0,r7
 	ldrb r12,[r6,r12]
-	and r12,r12,#0x3f		@ only colours 0-63 are valid
 
-	strb r12,[r4,r3]		@ linear VT store (full 7-bit offset)
+	strb r12,[r4,r3]		@ linear VT store, full byte (s.81: VT369)
 	cmp r3,#0x20
 	bhs .Lpdf_skip_mirror
-	strb r12,[r5,r3]		@ legacy 32-byte view for the 2bpp renderer
 	tst r3,#0x03
-	bne .Lpdf_skip_mirror
-	eor r8,r3,#0x10			@ backdrop mirroring (high<->low)
-	strb r12,[r4,r8]
-	strb r12,[r5,r8]
+	eoreq r8,r3,#0x10		@ backdrop mirroring (high<->low)
+	streqb r12,[r4,r8]
+	and r12,r12,#0x3f		@ only colours 0-63 are valid (flags kept)
+	strb r12,[r5,r3]		@ legacy 32-byte view for the 2bpp renderer
+	streqb r12,[r5,r8]
 .Lpdf_skip_mirror:
 	add r3,r3,#1
 	add r0,r0,#1
@@ -5146,7 +5145,6 @@ VRAM_pal:	@write to VRAM palette area ($3F00-$3F1F, plus $3F80-$3F9F on VT03)
 	bne VRAM_pal_hi			@ $3F80-$3F9F: hi byte only
 #endif
 	@ Low-byte path.
-	and r0,r0,#0x3f			@(only colors 0-63 are valid)
 #if VT_MODE
 	@ Session-11 perf: the C round trip (5-reg push + bl_long +
 	@ vt_palette_write_lo prologue) per palette byte was ~9% of ALL host
@@ -5170,6 +5168,9 @@ VRAM_pal:	@write to VRAM palette area ($3F00-$3F1F, plus $3F80-$3F9F on VT03)
 	strb r2,[r1]
 	ldmfd sp!,{r2}
 #endif
+	@ guide s.81: vt_palette_ram keeps the FULL byte (a VT369 colour is
+	@ 15 bits from two palette bytes); every VT03/VT09 reader masks & 0x3F.
+	and r0,r0,#0x3f			@(only colors 0-63 are valid)
 	@ Legacy 32-byte nes_palette store, mirror $xC->$1C etc. (unchanged --
 	@ this view feeds the inherited 2bpp renderer and must keep NES
 	@ mirroring semantics).
@@ -5190,7 +5191,7 @@ VRAM_pal_hi:	@VT03 hi-byte palette write ($3F80-$3F9F)
 	@ Does NOT touch nes_palette -- only updates the VT hi-byte shadow buffer
 	@ via the C bridge.  Mirroring of bg-color entries is handled C-side.
 	stmfd sp!,{r2,r3,addy,lr}
-	and r1,r0,#0x3f			@ r1 = value (6 valid bits)
+	and r1,r0,#0xff			@ r1 = value, full byte (s.81: VT369 uses all 8 bits)
 	and r0,addy,#0x7f		@ r0 = offset within hi bank (0..0x7F) -- s21b59: 16-colour COLCOMP needs all 128
 	bl_long vt_palette_write_hi
 	ldmfd sp!,{r2,r3,addy,lr}
