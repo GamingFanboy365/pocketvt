@@ -632,6 +632,23 @@ vt_timer_install_now:
 	@ thanks to -ffixed-r10).  Arms or rephases the timeout; replace_timeout_2
 	@ handles the already-queued case.
 	stmfd sp!,{r4,lr}
+#ifdef VT_TIMER_LOG
+	ldr_ r1,timestamp
+	ldr_ r0,frame_timestamp
+	sub r1,r1,r0
+	ldr r0,=vt_tlog_idx
+	ldrb r2,[r0]
+	add r12,r2,#1
+	and r12,r12,#127
+	strb r12,[r0]
+	ldr r0,=vt_tlog
+	add r0,r0,r2,lsl#3
+	str r1,[r0]
+	ldr r1,=frametotal
+	ldr r1,[r1]
+	orr r1,r1,#0x20000000
+	str r1,[r0,#4]
+#endif
 	ldr r0,=vt
 	ldrh r2,[r0,#0x68]		@ vt.timer_period
 	movs r2,r2
@@ -681,7 +698,76 @@ vt_timer_install_now:
 	ldmfd sp!,{r4,lr}
 	bx lr
 
+@ s.87: $4101 written by the IRQ handler.  The hardware counter reloads on
+@ the scanline clock AFTER the one that reached zero (h_OneBus.cpp
+@ clockScanlineCounter), so a $4101 write within a line of an expiry sets the
+@ length of the count already running.  vt_timer_handler scheduled that
+@ count with the old value: Star Ally writes $25 at its line-199 IRQ and the
+@ reference fires again at 237, where PocketVT carried 200 lines into the next
+@ frame instead.  Re-schedule from the last expiry, as the handler would have.
+	global_func vt_timer_reload_check
+vt_timer_reload_check:
+	stmfd sp!,{r4,lr}
+	ldr r0,=vt_timer_last_fire
+	ldr r1,[r0]
+	ldr r2,=vt_w41_now		@ exact time of the $4101 write (mapVT.s)
+	ldr r2,[r2]
+	sub r2,r2,r1
+	ldr r0,=341
+	cmp r2,r0
+	bhs 9f			@ not within a line of an expiry: nothing to do
+	ldr r0,=vt
+	ldrh r2,[r0,#0x68]		@ the new vt.timer_period
+	movs r2,r2
+	moveq r2,#256
+#if VT_TIMER_NPLUS1
+	add r2,r2,#1
+#endif
+	ldr r0,=341
+	mul r2,r0,r2
+	ldr_ r0,frame_timestamp
+	ldr_ r12,render_end_time
+	add r0,r0,r12
+	cmp r1,r0
+	bhs 1f
+	add r1,r1,r2
+	cmp r1,r0
+	bls 2f
+	sub r2,r1,r0
+1:	ldr_ r0,frame_timestamp
+	ldr_ r12,cyclesperframe
+	add r0,r0,r12
+	ldr_ r12,line_zero_start_time
+	add r0,r0,r12
+	add r1,r0,r2
+2:
+	adrl_ r12,vt_timer_timeout
+	ldr r0,=vt_timer_handler
+	bl_long replace_timeout_2
+9:	ldmfd sp!,{r4,lr}
+	bx lr
+
 vt_timer_handler:
+#ifdef VT_TIMER_LOG
+	ldr_ r1,vt_timer_timestamp
+	ldr_ r0,frame_timestamp
+	sub r1,r1,r0
+	ldr r0,=vt_tlog_idx
+	ldrb r2,[r0]
+	add r12,r2,#1
+	and r12,r12,#127
+	strb r12,[r0]
+	ldr r0,=vt_tlog
+	add r0,r0,r2,lsl#3
+	str r1,[r0]
+	ldr r1,=frametotal
+	ldr r1,[r1]
+	orr r1,r1,#0x10000000
+	str r1,[r0,#4]
+#endif
+	ldr_ r1,vt_timer_timestamp	@ s.87: remember when this expiry fired
+	ldr r0,=vt_timer_last_fire
+	str r1,[r0]
 	ldr r0,=vt
 	ldrh r2,[r0,#0x68]		@ vt.timer_period (0 => 256-tick wrap)
 	movs r2,r2
