@@ -91,11 +91,14 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
 - tools/probes/: one-question mGBA harnesses (speed, frame hashes, VRAM/RAM
   dumps, live PC/lastbank, single-step watchpoints, stack depth). README there.
 - Diagnostic hooks used this project: DMA_LOG (mapVT.s video DMA), TLOG /
-  NMIDBG style counters. Always build them into a SEPARATE build dir and
+  NMIDBG style counters; s.87 adds -DVT_NO_SPEEDHACK, -DVT_DIAG_NOVSYNC
+  (frame end never waits) and -DVT_TIMER_LOG (VT timer expiry/re-arm ring). Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.86)
-See MAINTAINERS_GUIDE.md s.86 (Zuma: VT369 DMA low byte $4024, 16-row
+## Current state (after s.87)
+See MAINTAINERS_GUIDE.md s.87 (frame pacing with vblank credits; VRAM fast
+path for $4107/$4108 and the multiplier; Star Ally's vblank-overrun glitches;
+VT timer reload), s.86 (Zuma: VT369 DMA low byte $4024, 16-row
 sprites from $2000 bit 5; speed hacks under every opcode encryption), s.85 (VT369 start-up stall; Jewel Master VT03 sprites
 and BKEXTEN slot checksums), s.84 (VT369 sound CPU HLE; corrects s.83), s.83 (bank switching), s.82 (VT369 enhanced picture, $3000 nametable window),
 s.81 (VT369 $6000 ROM, 15-bit palette), s.80 (VT369 CPU side), s.79 (Table Soccer, VG colours, real BIOS, wait
@@ -126,12 +129,21 @@ states, sound) and s.77-78 (raster-split slots, speed).
 - VT timer: N+1 lines free-running, N+2 after an in-picture rephase, N from
   vblank (`VT_TIMER_NPLUS1`); split lines match Furbtendulator exactly.
 - WAITCNT = 0x4317 at boot (`VT_FAST_WAITCNT`): 3/1 + prefetch. Speed (NES fps):
-  Time Pilot 58-60, Scramble 59-60, SA 60, Aero/Hex titles 41-42 then 60,
-  Table Soccer 43, LLM VT09 60, LI/VG/Add 'em Up 60; VT369: Table Soccer 60,
-  LLM/Jewel Master 56-60, Fire Fighter 44, Zuma 52-60.
+  Time Pilot 57-60, Scramble 60, SA 60 (47 in its heaviest stretch), Aero/Hex
+  titles 42-43 then 60, Table Soccer 43-44, LLM VT09 60, LI/VG/Add 'em Up 60;
+  VT369: Table Soccer, LLM, Jewel Master, Fire Fighter and Zuma 60.
+- Frame pacing (s.87a): every GBA vblank is a credit, every NES frame spends
+  one; the frame end waits only without credit (vt_vsync_ahead). Speed probes
+  can show 61-62 while a slow stretch is made up; the average stays 60.
+- The vblank handler must not run into the next frame (s.87c): BKEXTEN map
+  work runs in vt_bk_late (from vrom_update_tiles) after the HBlank DMA
+  set-up, and run_palette skips itself while vt_pal_owned. Anything heavy
+  added before the DMA set-up brings back shifted frames and grey lines.
+- writemem_4 on VT carts (not 419) is write_vt4xxx_v in .vram1 (s.87b);
+  ROM handler in vt_w4_next. `.vram1` ends at 0x06003FF0: 16 bytes left.
 - Speed hacks: the finder and set_cpu_hack decode opcodes through vt_op_dec
   (filled by vt_rebuild_optable) and patch op_table at the RAW byte, for any
-  encryption submapper (s.86d). They run from ROM; .vram1 has ~0x130 free.
+  encryption submapper (s.86d). They run from ROM.
 - PRG page 0 lives in OBJ VRAM until the first VT sprite slot is written, then
   moves to its ROM/EWRAM twin (vt_prg_evict_obj). Never write OBJ slots 0-7
   without it.
@@ -144,7 +156,7 @@ states, sound) and s.77-78 (raster-split slots, speed).
 
 ## Open work, in priority order
 1. VT369 leftovers (s.82): 8bpp sprites, hi-res mode ($201C bit 2), CPU x3
-   ($411C bit 7; Fire Fighter runs 44-51 NES fps; Jewel Master's $3A trails
+   ($411C bit 7; Fire Fighter and Zuma ask for it, s.87a got them to 60 without; Jewel Master's $3A trails
    the reference 1-4 frames by frame 700, s.84d). Sound CPU: the $40AE
    per-channel rate divider, and the programs no test cart uses (s.84e).
 2. Sound (s.79d): VT ADPCM $4120-$412F only mixes while NES DMC plays; the

@@ -93,7 +93,8 @@ EWRAM_BSS u8 vt_chr_outer_4100;
 // (bank 0x11C became 0x1C).  map89_/mapAB_/mapCD_/mapEF_ already accept 9-bit
 // banks: they mask with rommask>>13, which is 511 for a 4 MB image.
 u16 vt_prg_banks[4];
-u8 vt_prg_dirty = 0;
+u8 vt_prg_dirty = 0;       /* s.87: mask of changed PRG windows */
+static void vt_prg_invalidate(void);
 // Set when the nametable arrangement changed; consumed by write_vt4xxx, which
 // calls vt_set_mirroring() (cart.s) from ARM context with a valid stack.
 EWRAM_BSS u8 vt_mirror_dirty;
@@ -141,6 +142,15 @@ static inline int vt_chr_reg_index(u8 addr_lo)
 #include <stddef.h>
 EWRAM_BSS u8 vt_timer_render_seen = 0;
 EWRAM_BSS u8 vt_timer_armed = 0;
+#ifdef VT_TIMER_LOG
+EWRAM_BSS u32 vt_tlog[256];   /* diagnostic: (dot offset in frame, tag<<28|frametotal) pairs */
+EWRAM_BSS u8  vt_tlog_idx;
+#endif
+EWRAM_BSS u32 vt_timer_last_fire;  /* s.87: timestamp of the last VT timer expiry (sound.s) */
+EWRAM_BSS u32 vt_w41_now;          /* s.87: exact time of the current $41xx write (mapVT.s) */
+EWRAM_BSS u8 vt_bank_nomangle;   /* s.87: $4107/$4108 not swapped */
+EWRAM_BSS u8 vt_w41_fast;        /* s.87: write_vt4xxx_v fast paths (mapVT.s) */
+EWRAM_BSS void *vt_w4_next;      /* s.87: the ROM writemem_4 behind it */
 _Static_assert(offsetof(VTState, timer_period)  == 0x68, "sound.s vt_timer asm uses +0x68");
 _Static_assert(offsetof(VTState, timer_ctrl)    == 0x6C, "sound.s vt_timer asm uses +0x6C");
 _Static_assert(offsetof(VTState, want_timer_irq)== 0x6D, "sound.s vt_timer asm uses +0x6D");
@@ -150,6 +160,35 @@ _Static_assert(offsetof(VTState, want_timer_irq)== 0x6D, "sound.s vt_timer asm u
    ppuctrl1=+0x45A (stable, defined by the _m_ list in equates.h). */
 extern u8 _wantirq;
 #define VT_PPUCTRL1_SHADOW (*((volatile u8 *)&_wantirq - 0x420 + 0x45A))
+
+/* s.87: frame pacing.  The frame end used to wait with IntrWait(0, VBlank),
+ * which remembers only ONE pending vblank: a frame that ran past two vblanks
+ * left the next cheap frames each waiting a whole GBA frame, and Fire Fighter
+ * VT369 (frames of very uneven cost) ran at 44 NES fps while it emulates 67
+ * with no wait at all.  Now every GBA vblank adds a credit (vt_gba_vbl, counted
+ * in vt_timer_tick_frame from the vblank IRQ) and every NES frame spends one;
+ * the frame end waits only while it has no credit.  A backlog of more than 3
+ * (after the menu, or a stall) is dropped rather than raced through. */
+EWRAM_BSS u32 vt_gba_vbl;
+EWRAM_BSS u32 vt_nes_paced;
+EWRAM_BSS u8  vt_pace_waits;
+
+__attribute__((target("arm")))
+int vt_vsync_ahead(void)
+{
+    s32 credit = (s32)(vt_gba_vbl - vt_nes_paced);
+    if (credit > 3) vt_nes_paced = vt_gba_vbl - 1;
+    else if (credit < 0) vt_nes_paced = vt_gba_vbl;
+    /* Two waits and still no credit: the vblank IRQ is not counting (it
+     * bails when nested).  Go on, as the old single wait would have. */
+    if ((s32)(vt_gba_vbl - vt_nes_paced) > 0 || vt_pace_waits >= 2) {
+        vt_nes_paced++;
+        vt_pace_waits = 0;
+        return 0;                   // this frame had its vblank: go on
+    }
+    vt_pace_waits++;
+    return 1;                       // ahead of the GBA: wait for a vblank
+}
 
 __attribute__((target("arm")))
 void vt_timer_tick_frame(void)
@@ -186,6 +225,8 @@ void vt_timer_tick_frame(void)
     if (vt_active && speedhacks[1].hack_pc) {
         set_cpu_hack(1);
     }
+
+    vt_gba_vbl++;               // s.87: frame pacing (vt_vsync_ahead)
 
     if (!vt_timer_render_seen) {
         if (VT_PPUCTRL1_SHADOW & 0x18) vt_timer_render_seen = 1;
@@ -303,6 +344,8 @@ void vt_reset(void)
 
     vt_timer_render_seen = 0;
     vt_timer_armed       = 0;
+    vt_timer_last_fire   = 0x80000000u;   /* no expiry yet */
+    vt_w41_fast          = 0;
 
     /* Clear any IRQ lines pended before this cart took over (the ROM menu
        runs the APU frame sequencer with vt_active=0, so a 2A03 frame IRQ
@@ -366,7 +409,9 @@ void vt_reset(void)
 
     vt_mmc3_reset();
 
-    // Recompute PRG banks internally
+    // Recompute PRG banks internally (all windows: s.87)
+    vt_bank_nomangle = (vt.submapper & 0x4F) != 2;
+    vt_prg_invalidate();
     vt_recompute_prg_banks();
 
     // After the CHR bank defaults are set, do the initial 8KB CHR-from-PRG
@@ -419,17 +464,8 @@ void vt_reset(void)
 
 EWRAM_BSS u16 vt_prg_bank6;    /* s.81: VT369 $6000-$7FFF ROM bank ... */
 EWRAM_BSS u8  vt_prg6_rom;     /* ... and whether it is mapped ($411C bit 6) */
+EWRAM_BSS u8  vt_prg_apply_mask;  /* s.87: scratch for vt_apply_prg_dirty */
 extern u8 vt_console;
-
-static u32 vt_get_phys_bank(u8 bnk)
-{
-    u8  ps      = vt.reg[0x0B] & 0x07;
-    u32 prgAND  = (ps == 7) ? 0xFF : (u32)(0x3F >> ps);
-    u32 pq3     = vt.reg[0x0A];
-    u32 pa21    = (vt.reg[0x00] >> 4) & 0x0F;
-    u32 prgOR   = (pq3 | (pa21 << 8)) & ~prgAND;
-    return ((u32)bnk & prgAND) | prgOR;
-}
 
 // ---------------------------------------------------------------------------
 // PRG window resync (matches h_OneBus.cpp::syncPRG).
@@ -438,37 +474,53 @@ static u32 vt_get_phys_bank(u8 bnk)
 //   - PQ2EN ($410B bit 6): if 0, $C000 fixes to 0xFE; if 1, $C000 reads PQ2
 //   - COMR6 ($4105 bit 6): if 1, slot 8 and slot C swap destinations
 //                          (the windows literally trade addresses)
-//   - prgAND / prgOR:      driven by PS / PQ3 (see vt_get_phys_bank above)
+//   - prgAND / prgOR:      driven by PS ($410B bits 0-2), PQ3 ($410A) and
+//                          PA21-PA24 ($4100 bits 4-7)
+//
+// s.87: vt_prg_dirty is a mask of the windows that changed (bits 0-3 =
+// $8000/$A000/$C000/$E000, bit 4 = the VT369 $6000 window), and
+// vt_apply_prg_dirty (mapVT.s) re-maps only those.  Fire Fighter VT369 writes
+// $4107/$4108 about 65 times a frame, mostly with the value already there,
+// and every write used to re-map all four windows.  vt_reset forces a full
+// apply by invalidating the shadow first (vt_prg_invalidate).
 //
 void vt_recompute_prg_banks(void)
 {
-    bool pq2en = (vt.reg[0x0B] & 0x40) != 0;
-    bool comr6 = (vt.reg[0x05] & 0x40) != 0;
-
-    // Per Furb: flip swaps slots 0x8<->0xC.
-    u32 bank_pq0 = vt_get_phys_bank(vt.reg[0x07]);
-    u32 bank_pq1 = vt_get_phys_bank(vt.reg[0x08]);
-    u32 bank_pq2 = vt_get_phys_bank(pq2en ? vt.reg[0x09] : 0xFE);
-    u32 bank_eff = vt_get_phys_bank(0xFF);
-
-    if (comr6) {
-        vt_prg_banks[0] = (u16)bank_pq2;     // slot 8 receives what would have gone to slot C
-        vt_prg_banks[2] = (u16)bank_pq0;     // slot C receives what would have gone to slot 8
-    } else {
-        vt_prg_banks[0] = (u16)bank_pq0;
-        vt_prg_banks[2] = (u16)bank_pq2;
+    u32 ps  = vt.reg[0x0B] & 0x07;
+    u32 msk = (ps == 7) ? 0xFF : (0x3Fu >> ps);
+    u32 orr = ((u32)vt.reg[0x0A] | ((u32)(vt.reg[0x00] >> 4) << 8)) & ~msk;
+#define VT_PHYS(bnk) (((u32)(bnk) & msk) | orr)
+    u32 b[4];
+    b[0] = VT_PHYS(vt.reg[0x07]);
+    b[1] = VT_PHYS(vt.reg[0x08]);
+    b[2] = VT_PHYS((vt.reg[0x0B] & 0x40) ? vt.reg[0x09] : 0xFE);
+    b[3] = VT_PHYS(0xFF);
+    if (vt.reg[0x05] & 0x40) {          // COMR6: slots 8 and C trade places
+        u32 t = b[0]; b[0] = b[2]; b[2] = t;
     }
-    vt_prg_banks[1] = (u16)bank_pq1;
-    vt_prg_banks[3] = (u16)bank_eff;
+    u32 dirty = 0;
+    for (int i = 0; i < 4; ++i)
+        if (vt_prg_banks[i] != b[i]) { vt_prg_banks[i] = (u16)b[i]; dirty |= 1u << i; }
 
     /* s.81: VT369 maps PRG ROM at $6000-$7FFF when $411C bit 6 is set, bank
      * $4112 (h_OneBus.cpp syncPRG).  Table Soccer VT369 runs its boot code
      * there; with SRAM in its place the 6502 ran zeros and never set up the
      * palette.  vt_apply_prg_banks (mapVT.s) applies it on VT369 only. */
-    vt_prg6_rom   = (vt_console == 0x0A) && (vt.reg[0x1C] & 0x40);
-    vt_prg_bank6  = (u16)vt_get_phys_bank(vt.reg[0x12]);
+    u8  p6 = (vt_console == 0x0A) && (vt.reg[0x1C] & 0x40);
+    u16 k6 = (u16)VT_PHYS(vt.reg[0x12]);
+#undef VT_PHYS
+    if (p6 != vt_prg6_rom || (p6 && k6 != vt_prg_bank6)) dirty |= 0x10;
+    vt_prg6_rom  = p6;
+    vt_prg_bank6 = k6;
 
-    vt_prg_dirty = 1;
+    vt_prg_dirty |= (u8)dirty;
+}
+
+/* The next vt_recompute_prg_banks marks every window changed. */
+static void vt_prg_invalidate(void)
+{
+    for (int i = 0; i < 4; ++i) vt_prg_banks[i] = 0xFFFF;
+    vt_prg6_rom = 0xFF;
 }
 
 // ---------------------------------------------------------------------------
@@ -494,7 +546,7 @@ EWRAM_BSS u8 vt369_gpio_mask[4], vt369_gpio_latch[4];   /* VT369 $4140-$415F (s.
 // VT32/VT369 multiply/divide unit ($4130-$4137, guide s.80).
 EWRAM_BSS u8  vt_alu_on;        /* console type VT32/VT369 (loadcart.c) */
 EWRAM_BSS u8  vt_console;       /* NES 2.0 extended console type, 0 if none */
-EWRAM_BSS u8  vt_alu_rd[16];    /* read-back for $4130-$413D (mapVT.s) */
+EWRAM_BSS u8  vt_alu_rd[16] __attribute__((aligned(4)));  /* read-back for $4130-$413D (mapVT.s; s.87: word stores) */
 EWRAM_BSS u32 vt_alu14;
 EWRAM_BSS u16 vt_alu56, vt_alu67;
 
@@ -789,6 +841,8 @@ void vt_reg_write(u8 addr_lo, u8 val)
     extern void vt_timer_install_now(void);
     if (!vt_timer_armed) {          /* first $41xx touch: start the free-run count */
         vt_timer_armed = 1;
+        extern u8 vt_alu_on;
+        vt_w41_fast = (vt_alu_on ? 1 : 0) | (vt_bank_nomangle ? 2 : 0);
         vt_timer_install_now();     /* in-core memory-handler context: race-free */
     }
     // $4100-$411F: system control shadow
@@ -848,6 +902,10 @@ void vt_reg_write(u8 addr_lo, u8 val)
                 // start anything.  The counter ticks unconditionally; this
                 // is just the value it reloads to when it wraps from 0.
                 vt.timer_period = val;
+                {   /* s.87: a write right after an expiry sets the running count */
+                    extern void vt_timer_reload_check(void);
+                    if (vt_timer_armed) vt_timer_reload_check();
+                }
                 break;
             case VT_REG_TIMER_HI: // 0x02
                 // VT03 datasheet $4102 W: "Load preload timer data and start".

@@ -4644,3 +4644,163 @@ missing), and here it is one row late (144 pixels of green where the
 reference is black). That is the ±1-row split residue, and it follows timing:
 the core before s.85 also scored 99.40%. The other changes (0/5-0/6 +0.03,
 2/0 frame 900 -0.15, 4/3-4/4 frame 1100 -0.05) are gameplay positions.
+
+## 87. Star Ally and Zuma "sorta buggy", Fire Fighter below full speed
+
+The user tested the PR #10 ROMs and reported Star Ally and Zuma as "sorta
+buggy" and Fire Fighter VT369 as not running at full speed. Nothing more
+specific came with the report, so each game was measured against the
+reference over long gameplay runs (NES frames 100-2000 with Start and
+periodic A presses and moves), with three cores side by side: main before
+PR #10, the PR #10 core, and a PR #10 core built with `-DVT_NO_SPEEDHACK`
+(a new diagnostic switch in speedhack_manager that never installs a hack).
+
+### 87a. Fire Fighter: the vblank wait, not the emulation
+
+Fire Fighter ran at 44 NES fps. Its profile showed 25% of all GBA time in
+the BIOS halt at 0x1F0, and a `-DVT_DIAG_NOVSYNC` build (the frame end never
+waits) ran it at 66-69 fps. The emulator was fast enough; the pacing lost
+the time. Fire Fighter's NES frames cost very different amounts: without the
+wait, the NES frames finished per GBA frame went 2 0 3 0 1 2 0 2. The frame
+end waited with IntrWait(0, VBlank), which remembers only one pending
+vblank, so after a frame that ran past two vblanks each of the cheap frames
+behind it still waited a whole GBA frame: 1 1 1 0, 45 fps.
+
+The frame end now paces with credits (vt_vsync_ahead, vt_regs.c). Every
+top-level GBA vblank adds one (vt_gba_vbl, counted in vt_timer_tick_frame),
+every NES frame spends one, and the frame end waits only while it has none.
+A backlog above 3 (after the menu, or a stall) is dropped instead of raced
+through, and two waits without a new credit fall back to the old behaviour,
+in case the vblank IRQ ever stops counting. NoVSync, slow motion and 50 Hz
+keep the old wait. Fire Fighter now runs 58-61 (60 on average). The catch-up
+shows as 59/61 pairs in the speed probe; the average never exceeds 60.
+
+### 87b. Zuma: register writes from cart ROM
+
+The one thing measurably wrong with Zuma was gameplay speed: 60 fps on the
+title, then 44-51 once the chain filled the screen. The picture scored the
+same with and without the speed hack at every frame, and a frame that looked
+broken (frame 677: green specks at the top, balls missing) turned out to be
+PocketVT's own game popping three balls, which the reference's game (random
+colours, s.86b) had not done. A snapshot of the VT369 sprite list at NES line
+242, tried against that frame, changed nothing and was reverted.
+
+Zuma's gameplay cost about 350K cycles per NES frame, and 91K of it was
+register access: per frame it multiplies 29 times on the VT32/VT369
+multiplier (116 writes to $4130/$4131/$4134/$4135, then reads of $4136,
+$4138 and $4139) and writes $4107/$4108 58 times. Each write went through
+write_vt4xxx and vt_reg_write in C, about 250 cycles from cart ROM. Two
+changes:
+
+vt_recompute_prg_banks now works out the four windows inline and marks only
+the windows that changed in vt_prg_dirty (bit 4 is the VT369 $6000 window).
+vt_apply_prg_dirty (mapVT.s) re-maps just those; vt_apply_prg_banks keeps its
+all-windows meaning for init and eviction, and vt_reset invalidates the
+shadow so the first recompute marks everything.
+
+write_vt4xxx_v, in .vram1, is now writemem_4 on every VT cart but mapper
+419 and passes anything it does not handle to the ROM handler in
+vt_w4_next. It returns at once for a $4107/$4108 write of the value already
+there (Fire Fighter and Zuma rewrite them constantly; not on submapper 2,
+which swaps the two) and does the multiplier writes itself, exactly as
+vt_reg_write's ALU case does (the divide, $4136/$4137, stays in C). Both are
+enabled by vt_w41_fast once the first $41xx write has armed the VT timer.
+A version of the same code in ROM still cost about 300 cycles a write; in
+VRAM it is about 110. Zuma gameplay is now about 281K cycles per NES frame
+and runs 60 fps to frame 2000 in the long run. `.vram1` ends at 0x06003FF0.
+
+### 87c. Star Ally: the vblank handler ran into the next frame
+
+In the PR #10 core Star Ally drew about a hundred consecutive frames (NES
+640-740) with the picture shifted down, a grey line across the screen and
+the score bar cut off. The same two kinds of damage appear on main and on
+the no-hack core, just scattered: frame by frame over NES 700-1000, main
+showed 23 frames with a grey line and 15 isolated shifted frames.
+
+The VT timer was the first suspect, since Star Ally's score bar is a raster
+split. A `-DVT_TIMER_LOG` build (a ring of expiries and re-arms in EWRAM)
+showed the timer firing at lines 199.9 and 237.9 and re-arming in vblank in
+every frame, glitches included, so the timer was not it. It did turn up a
+real difference from the reference: the IRQ handler at line 199 writes a
+new reload ($4101 = $25) and the hardware uses it for the count already
+running (it reloads on the clock after the zero, h_OneBus.cpp), so the
+reference fires again at 237. PocketVT computed the next expiry when the
+timer fired, with the old value, and carried 200 lines into the next frame.
+vt_timer_reload_check (sound.s) now re-schedules from the last expiry when
+$4101 is written within a line of it; the line-237 IRQ fires as in the
+reference. "Within a line" needs the exact time of the write: the first
+version compared against `timestamp`, which is the time of the last timeout
+event and can be many lines old, and VG Pocket game 2/0 (a vertical shooter
+with a score-bar split) lost its whole playfield (99.2% to 36.9%). The write
+path in mapVT.s now stores the exact time (timestamp + cycles_to_run -
+cycles, as get_scanline_2 computes it; r8 is only valid there, not inside
+the C call) in vt_w41_now, and the check uses that.
+
+A diagnostic that logged VCOUNT when run_palette starts found the cause.
+run_palette normally runs at GBA line 194-217, so the vblank handler already
+spends 35-57 of vblank's 68 lines before it; in every grey-line frame it ran
+at line 14-35 of the NEXT frame, and the grey line sat exactly on that row.
+The handler writes the legacy 4-entry palette (run_palette) and a moment
+later the 16-colour one (vt_16c_palette_fixup), and the line the GBA drew in
+between showed NES colour $00. The shifted frames are the same overrun one
+step earlier: the handler stops HBlank DMA on entry and started it again
+only after vt_chr4_rebuild_stacked (where Star Ally's BKEXTEN cell writes,
+sweep and slot checks run), so a late restart left the top band with the
+previous frame's last scroll (the score bar's) and applied the scroll table
+from the wrong line down.
+
+The BKEXTEN batch (vt_chr_sync_flush, the whole-map stepper, the bank
+recheck, the slot checksums and the map sweep: Star Ally's heavy part) now
+runs after the HBlank DMA set-up. vt_chr4_rebuild_if_dirty only marks it
+pending (vt_bk_late_pending) and vt_bk_late does it, called on the EWRAM
+stack from the top of vrom_update_tiles (ppu.s), the first call after the
+set-up that lives in ROM: a call in the IWRAM handler itself would have
+left `__bss_end__` exactly at the 0x03007B84 limit. Moving the whole of
+vt_chr4_rebuild_stacked there was tried first and broke Aero Gyrodine's
+title (a block of wrong tiles in its bottom band, 100% to 99.79% at every
+title frame): for the raster-split carts something in the non-BKEXTEN
+rebuild has to happen before the per-line tables are copied, so that path
+keeps its place and only BKEXTEN work moved.
+
+run_palette returns at once while VT's own builder writes every palette
+entry the picture uses (vt_pal_owned: BK16EN, or VT369 enhanced), and
+vt_16c_palette_fixup keeps the VCOUNT IRQ off while it does.
+
+Frame by frame over NES 700-1000 (Start, A and moves) Star Ally now shows no
+grey-line frames and no shifted frames, against 23 and 15 on main; over NES
+1000-1300 with a different input pattern, none against 20 and 9. A build with
+the timer log compiled in, whose different timing had moved glitches around
+before, also shows none. A build that only skipped run_palette removed the
+lines but still shifted 9 frames, which is what separated the two causes.
+Why PR #10 showed them for a hundred frames in a row: at a locked 60 fps the
+phase between the NES and GBA frames stays put, so an overrun that happens
+once happens every frame until the game's load changes.
+
+The handler is still long in Star Ally (vt_bk_write_cell alone averages
+19.6K cycles per NES frame); what overruns now is work whose late arrival
+does not show. VT369 enhanced carts do their picture uploads in
+vt369_vblank at the end of the same handler, so an overrun there would tear
+too; Zuma's frame-by-frame run showed none.
+
+### 87d. Regression
+
+All 17 test ROMs at NES frames 150, 400 and 700 score within 0.11 points of
+PR #10. The largest move is Push the Ball frame 150, 97.49% to 97.38%, its
+timing-exposed stale tile (open item 3); Aero Gyrodine's title is 100% at
+every frame from 100 to 300. Speed: Fire Fighter 44-51 to 60, Jewel Master
+and LLM VT369 56-58 to 60, Scramble 57-59 to 60, Table Soccer VT03 43 to 44,
+Zuma 60 to NES frame 2000 in gameplay; Star Ally still falls to about 47 in
+its heaviest stretch (NES ~1400, main 35-40), which is compute-bound. VG
+Pocket, all 50 games at NES frames 900 and 1100: mean 99.49% against PR
+#10's 99.47%, lowest game 97.74% (was 97.58%); the per-game moves are
+gameplay timing in both directions (0/1 -0.25 at frame 900, +0.41 at 1100).
+
+In the frame-set test (800 GBA frames, no input) new frames appear in the
+boot transitions (GBA 50-85) and in carts whose speed changed: Zuma and Fire
+Fighter now show different in-between frames at 60 fps, Scramble's title
+fades a few GBA frames earlier, LLM VT09 is one animation step apart at GBA
+800. The VT369 sound host test passes (0 failing). The Docker build links
+with `__bss_end__` 0x03007B64 and `.vram1` to 0x06003FF0; the lowest user
+stack pointer is 0x03007C88 (Zuma) and 0x03007CA8 (Star Ally), still above
+.bss. Docker-built Star Ally, Zuma, Fire Fighter and VG Pocket play ROMs
+boot through the real BIOS and run at 60.

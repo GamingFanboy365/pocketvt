@@ -1276,11 +1276,28 @@ void vt_chr4_do_rebuild(void)
 extern u8 vt_split_frame;
 extern u8 vt_spr16_active;
 static void vt_split_repair(void);
+static void vt_chr4_rebuild_rest(void);
+EWRAM_BSS u8 vt_bk_late_pending;   /* s.87: BKEXTEN batch waiting for vt_bk_late */
 __attribute__((target("arm")))
 void vt_chr4_rebuild_if_dirty(void)
 {
     if (vt369_enh) return;         /* s.82: ppu_vt369.c owns BG VRAM */
-    if (vt_bkexten_live) {         // slots replace the page-linear pipeline;
+    /* s.87: the BKEXTEN batch runs later in the vblank, after the HBlank DMA
+     * set-up (vt_bk_late, called from ppu.s): run here, a heavy frame (Star
+     * Ally) delayed that set-up into the next frame's picture. */
+    if (vt_bkexten_live) { vt_bk_late_pending = 1; return; }
+    vt_chr4_rebuild_rest();
+}
+
+/* s.87: ppu.s calls this (on the EWRAM stack) right after the HBlank DMA
+ * set-up of a top-level vblank. */
+__attribute__((target("arm")))
+void vt_bk_late(void)
+{
+    if (!vt_bk_late_pending) return;
+    vt_bk_late_pending = 0;
+    if (vt369_enh || !vt_bkexten_live) return;
+    {                              // slots replace the page-linear pipeline;
         // Session 19: run the whole BKEXTEN batch with IME masked.  The
         // vblank handler re-enables IME early, so a slow pass here could be
         // NESTED by the next vblank on the same user stack -- which sits
@@ -1319,8 +1336,12 @@ void vt_chr4_rebuild_if_dirty(void)
             vt_chr4_dirty = 0;
             vt_chr4_assemble();
         }
-        return;
     }
+}
+
+__attribute__((target("arm")))
+static void vt_chr4_rebuild_rest(void)
+{
     // Apply any pending CHR sync exactly once per frame -- must run in ALL
     // modes (plain 2bpp VT games need their NES_VRAM window refreshed too),
     // so it sits before the 16-colour-only gate below.
@@ -2156,8 +2177,15 @@ static void vt_spr_eva_update(void)
 }
 
 __attribute__((target("arm")))
+/* s.87: set while VT's own palette builder writes every GBA palette entry the
+ * picture uses -- the 16-colour BG builder (BK16EN; OBJ entries it writes in
+ * every mode) or the VT369 enhanced upload.  run_palette (ppu.s) then skips
+ * its legacy 4-entry copy, and its mid-frame VCOUNT switches stay off. */
+EWRAM_BSS u8 vt_pal_owned;
 void vt_16c_palette_fixup(void)
 {
+    vt_pal_owned = vt_active && (vt369_enh || (vt_reg_2010 & 0x02));
+    if (vt_pal_owned) *(volatile u16 *)0x04000004 &= (u16)~0x0020;   /* DISPSTAT: no VCOUNT IRQ */
     if (!vt_active) return;
     if (vt369_enh) { vt369_vblank(); return; }   /* s.82 */
 #ifdef VT_AUTOPLAY

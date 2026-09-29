@@ -481,6 +481,9 @@ void speedhack_manager(const u8* initpc, const u8* lastbank, int hacknum)
 	// BNE wait (raw $B0, refused before) is hacked too: 55 -> 60 fps.
 	speedhack_T *sh=&speedhacks[hacknum];
 
+#ifdef VT_NO_SPEEDHACK
+	return;	//diagnostic build: never install a hack (s.87)
+#endif
 	hack_to_install=0;
 	if (hacknum==0 && (ppustat_ & 0x40) )
 	{

@@ -1729,6 +1729,17 @@ no_bkexten_whole:
 	.endif
 
 vrom_update_tiles:
+#if VT_MODE
+	@ s.87: the BKEXTEN map work vt_chr4_rebuild_if_dirty defers (Star Ally's
+	@ cell writes, sweep and slot checks) runs here, AFTER the vblank's HBlank
+	@ DMA set-up.  Run before it, a heavy frame went past line 227: the next
+	@ frame started with HBlank DMA stopped, drew its top band with the
+	@ previous frame's last scroll, and the late-started table shifted the
+	@ rest.  (Hooked here, in ROM, because IWRAM has no room for a call.)
+	stmfd sp!,{lr}
+	bl_long vt_bk_late_stacked
+	ldmfd sp!,{lr}
+#endif
 	ldrb_ r0,bankable_vrom
 	ldrb_ r1,frameready
 	movs r0,r0
@@ -3075,6 +3086,16 @@ ystart:	.byte YSTART
 	.pushsection .vram1, "ax", %progbits
 run_palette:
 	stmfd sp!,{lr}
+#if VT_MODE
+	@ s.87: VT's palette builder owns the GBA palette (BK16EN, or VT369
+	@ enhanced; vt_pal_owned, ppu_vt.c): the legacy view written here was
+	@ rewritten a moment later by vt_16c_palette_fixup, and when the vblank
+	@ handler ran into the next frame that moment was a grey line on screen.
+	ldr r0,=vt_pal_owned
+	ldrb r0,[r0]
+	cmp r0,#0
+	ldmnefd sp!,{pc}
+#endif
 	@--------
 	@ step 1: scale or scroll scanline numbers to physical GBA scanline numbers
 	@--------
@@ -3559,6 +3580,28 @@ nesoam_was_clean:
 	ldrb_ r4,novblankwait_
 	teq r4,#1					@NoVSync?
 	beq l03
+#ifdef VT_DIAG_NOVSYNC
+	b l03					@ diagnostic build: never wait (s.87)
+#endif
+#if VT_MODE
+	@ s.87: normal vsync spends one vblank credit per NES frame and waits
+	@ only while it has none (vt_vsync_ahead, vt_regs.c), so a frame that
+	@ overran two vblanks is made up by the cheap frames after it.  NoVSync,
+	@ slow motion and 50 Hz keep the old wait below.
+	teq r4,#0
+	bne l01
+	ldr_ r0,emuflags
+	tst r0,#FPS50
+	bne l01
+l02:
+	bl_long vt_vsync_ahead
+	cmp r0,#0
+	beq l03
+	mov r0,#0					@a vblank since the last wait counts
+	mov r1,#1
+	swi 0x040000
+	b l02
+#endif
 l01:
 	mov r0,#0					@don't wait if not necessary
 	mov r1,#1					@VBL wait

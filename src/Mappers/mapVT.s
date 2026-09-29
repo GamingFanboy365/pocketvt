@@ -203,6 +203,10 @@ mapVTinit:
     cmp     r2, #0
     adrne   r1, write_tk4xxx
     str_    r1, writemem_4
+    ldreq   r2, =vt_w4_next         @ s.87: the VRAM fast entry goes first
+    streq   r1, [r2]
+    ldreq   r1, =write_vt4xxx_v
+    streq_  r1, writemem_4
 
     @ Install the $4000-$40FF / $4100-$41FF READ hook -----------------
     @ Until session 12 there was NO read hook: vt_reg_read() existed but
@@ -238,6 +242,9 @@ mapVTinit:
     ldr     r1, =read_vt369_4xxx
     str_    r1, readmem_4
     ldr     r1, =write_vt369_4xxx
+    ldr     r2, =vt_w4_next         @ s.87: behind the VRAM fast entry
+    str     r1, [r2]
+    ldr     r1, =write_vt4xxx_v
     str_    r1, writemem_4
 1:
 
@@ -253,27 +260,61 @@ mapVTinit:
 @ ============================================================================
 vt_apply_prg_banks:
     stmfd   sp!, {lr}
-    
+    mov     r0, #0x1F                @ every window
+    b       .Lvt_apply_mask
+
+@ s.87: re-map only the windows vt_recompute_prg_banks marked in
+@ vt_prg_dirty (bit n = window n, bit 4 = VT369 $6000), and clear it.
+    .global vt_apply_prg_dirty
+vt_apply_prg_dirty:
+    stmfd   sp!, {lr}
+    ldr     r1, =vt_prg_dirty
+    ldrb    r0, [r1]
+    mov     r2, #0
+    strb    r2, [r1]
+.Lvt_apply_mask:
+    ldr     r1, =vt_prg_apply_mask
+    strb    r0, [r1]
+
     @ s21b26: vt_prg_banks is u16 -- outer bank pushes the number past 255.
+    tst     r0, #1
+    beq     1f
     ldr     r1, =vt_prg_banks
     ldrh    r0, [r1, #0]
     bl_long map89_
-    
+1:
+    ldr     r1, =vt_prg_apply_mask
+    ldrb    r0, [r1]
+    tst     r0, #2
+    beq     1f
     ldr     r1, =vt_prg_banks
     ldrh    r0, [r1, #2]
     bl_long mapAB_
-    
+1:
+    ldr     r1, =vt_prg_apply_mask
+    ldrb    r0, [r1]
+    tst     r0, #4
+    beq     1f
     ldr     r1, =vt_prg_banks
     ldrh    r0, [r1, #4]
     bl_long mapCD_
-    
+1:
+    ldr     r1, =vt_prg_apply_mask
+    ldrb    r0, [r1]
+    tst     r0, #8
+    beq     1f
     ldr     r1, =vt_prg_banks
     ldrh    r0, [r1, #6]
     bl_long mapEF_
+1:
 
     @ s.81: VT369 $411C bit 6 maps PRG ROM bank $4112 at $6000-$7FFF (like
     @ mapper 40's ROM there); clear, it is the usual SRAM again.  Other
     @ consoles never touch $6000 here.
+    ldr     r1, =vt_prg_apply_mask
+    ldrb    r0, [r1]
+    tst     r0, #0x10
+    ldmeqfd sp!, {pc}
     ldr     r1, =vt_console
     ldrb    r0, [r1]
     cmp     r0, #0x0A
@@ -325,6 +366,7 @@ vt_apply_prg_banks:
     vt_ewram_trampoline vt_chr4_rebuild_stacked, vt_chr4_rebuild_if_dirty
     vt_ewram_trampoline vt_16c_palette_fixup_stacked, vt_16c_palette_fixup
     vt_ewram_trampoline vt369_snd_fill_stacked, vt369_snd_fill    @ guide s.84
+    vt_ewram_trampoline vt_bk_late_stacked, vt_bk_late            @ s.87
     .ltorg
 
 @ ============================================================================
@@ -686,8 +728,19 @@ write_vt4xxx:
     mov     r1, r0              @ arg2 = val
     ldr     r0, [sp]            @ arg1 = addy
     
+    @ s.87: the exact 6502 time of this write, for vt_timer_reload_check
+    @ ($4101 right after a timer expiry).  `timestamp` alone is the time of
+    @ the last timeout event, which can be many lines back; the core's
+    @ cycles register (r8) is only valid here, not inside the C call.
+    ldr_    r1, cycles_to_run
+    sub     r1, r1, cycles, asr #CYC_SHIFT
+    ldr_    r2, timestamp
+    add     r1, r1, r2
+    ldr     r2, =vt_w41_now
+    str     r1, [r2]
+
     @ We swap around so r0=addr, r1=val, then call our C handler
-    mov     r1, r0
+    ldr     r1, [sp]
     and     r0, r12, #0xFF
     bl      vt_reg_write
     
@@ -698,9 +751,7 @@ write_vt4xxx:
     ldrb    r2, [r1]
     cmp     r2, #0
     beq     .Lvt_no_prg
-    mov     r2, #0
-    strb    r2, [r1]
-    bl      vt_apply_prg_banks
+    bl      vt_apply_prg_dirty
 
 .Lvt_no_prg:
     @ Did vt_reg_write change the nametable arrangement ($4106 / $A000)?
@@ -765,14 +816,83 @@ write_vt_rom:
     ldrb    r2, [r1]
     cmp     r2, #0
     beq     .Lvt_rom_write_done
-    
-    mov     r2, #0
-    strb    r2, [r1]
-    bl      vt_apply_prg_banks
+    bl      vt_apply_prg_dirty
 
 .Lvt_rom_write_done:
     ldmfd   sp!, {r12, pc}
 
+
+@ ============================================================================
+@ write_vt4xxx_v -- writemem_4 on every VT cart but mapper 419 (s.87)
+@
+@ Two writes that need no C, in .vram1 because from cart ROM every
+@ instruction and literal waits on the bus (~300 cycles a write):
+@   $4107/$4108 with the value already there (Fire Fighter and Zuma rewrite
+@   them 30-60 times a frame): nothing changes, return.
+@   $4130-$4135, the VT32/VT369 multiplier (Zuma: ~29 multiplies, 116
+@   writes a frame): as vt_reg_write's ALU case, the bytes go to vt_alu14 /
+@   vt_alu56 and their read-back copies in vt_alu_rd (+0 and +8), and a
+@   $4135 write multiplies.  $4136/$4137 (divide) stay in C.
+@ vt_w41_fast (vt_regs.c) enables them: bit 0 the multiplier (vt_alu_on),
+@ bit 1 the bank registers (not submapper 2, which swaps them); both only
+@ once the first $41xx write has armed the VT timer.  Everything else goes
+@ to the ROM handler in vt_w4_next.  r0 = value, r12 = address; only r1 and
+@ r2 are used, so r0 and r12 come back as they were.
+@ ============================================================================
+    .pushsection .vram1, "ax", %progbits
+    .align 2
+    .global write_vt4xxx_v
+write_vt4xxx_v:
+    and     r1, r12, #0xFF00
+    cmp     r1, #0x4100
+    bne     9f
+    and     r1, r12, #0xFF
+    sub     r1, r1, #0x30
+    cmp     r1, #5
+    bls     2f
+    add     r1, r1, #0x30-0x07      @ $4107 -> 0, $4108 -> 1
+    cmp     r1, #1
+    bhi     9f
+    ldr     r2, =vt_w41_fast
+    ldrb    r2, [r2]
+    tst     r2, #2
+    beq     9f
+    ldr     r2, =vt
+    add     r2, r2, r1
+    ldrb    r2, [r2, #0x07]         @ vt.reg[] is at offset 0
+    cmp     r2, r0
+    bxeq    lr
+9:
+    ldr     r1, =vt_w4_next
+    ldr     pc, [r1]
+2:
+    ldr     r2, =vt_w41_fast
+    ldrb    r2, [r2]
+    tst     r2, #1
+    beq     9b
+    ldr     r2, =vt_alu_rd
+    add     r2, r2, r1
+    strb    r0, [r2]
+    strb    r0, [r2, #8]
+    cmp     r1, #4
+    ldrlo   r2, =vt_alu14
+    ldrhs   r2, =vt_alu56-4
+    strb    r0, [r2, r1]
+    cmp     r1, #5
+    bxne    lr
+    ldr     r2, =vt_alu56
+    ldrh    r1, [r2]
+    ldr     r2, =vt_alu14
+    ldrh    r2, [r2]
+    mul     r1, r2, r1
+    ldr     r2, =vt_alu14
+    str     r1, [r2]
+    ldr     r2, =vt_alu_rd
+    str     r1, [r2]
+    str     r1, [r2, #8]
+    bx      lr
+    .ltorg
+    .popsection
 
 @ ============================================================================
 @ Mapper number registration
