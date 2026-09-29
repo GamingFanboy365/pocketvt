@@ -94,8 +94,9 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   NMIDBG style counters. Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.85)
-See MAINTAINERS_GUIDE.md s.85 (VT369 start-up stall; Jewel Master VT03 sprites
+## Current state (after s.86)
+See MAINTAINERS_GUIDE.md s.86 (Zuma: VT369 DMA low byte $4024, 16-row
+sprites from $2000 bit 5; speed hacks under every opcode encryption), s.85 (VT369 start-up stall; Jewel Master VT03 sprites
 and BKEXTEN slot checksums), s.84 (VT369 sound CPU HLE; corrects s.83), s.83 (bank switching), s.82 (VT369 enhanced picture, $3000 nametable window),
 s.81 (VT369 $6000 ROM, 15-bit palette), s.80 (VT369 CPU side), s.79 (Table Soccer, VG colours, real BIOS, wait
 states, sound) and s.77-78 (raster-split slots, speed).
@@ -106,6 +107,8 @@ states, sound) and s.77-78 (raster-split slots, speed).
   Table Soccer VT369 (non-enhanced renderer; select screen 99.9%, match 96.7%),
   Lucky Lawn Mower VT369 (99.7%), Jewel Master (99.9%) and Fire Fighter VT369
   (96%; game-state drift) through the enhanced renderer, src/ppu_vt369.c.
+  Zuma (VT369, 256.13; title 99.9%, gameplay 95-99% -- its ball colours are
+  random, like Jewel Master's jewels).
 - VT369 sound CPU: high-level, src/vt369_snd.c (programs $40AE and $0293 are
   exercised; host test tools/probes/vt369snd_test.c must report 0 failing).
   Starts are rising edges; the per-sample loops are ARM in IWRAM (the space
@@ -123,9 +126,12 @@ states, sound) and s.77-78 (raster-split slots, speed).
 - VT timer: N+1 lines free-running, N+2 after an in-picture rephase, N from
   vblank (`VT_TIMER_NPLUS1`); split lines match Furbtendulator exactly.
 - WAITCNT = 0x4317 at boot (`VT_FAST_WAITCNT`): 3/1 + prefetch. Speed (NES fps):
-  Time Pilot 58-60, Scramble 59-60, SA 44-56, Aero/Hex titles 41-42 then 60,
-  Table Soccer 43, LLM VT09 60, LI/VG/Add 'em Up 60; VT369: Table Soccer 48,
-  LLM/Jewel Master 56-60, Fire Fighter 44.
+  Time Pilot 58-60, Scramble 59-60, SA 60, Aero/Hex titles 41-42 then 60,
+  Table Soccer 43, LLM VT09 60, LI/VG/Add 'em Up 60; VT369: Table Soccer 60,
+  LLM/Jewel Master 56-60, Fire Fighter 44, Zuma 52-60.
+- Speed hacks: the finder and set_cpu_hack decode opcodes through vt_op_dec
+  (filled by vt_rebuild_optable) and patch op_table at the RAW byte, for any
+  encryption submapper (s.86d). They run from ROM; .vram1 has ~0x130 free.
 - PRG page 0 lives in OBJ VRAM until the first VT sprite slot is written, then
   moves to its ROM/EWRAM twin (vt_prg_evict_obj). Never write OBJ slots 0-7
   without it.

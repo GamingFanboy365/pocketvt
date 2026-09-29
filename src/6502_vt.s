@@ -216,6 +216,7 @@ vt_state_enc_next    = 0x22
     .extern _JMP_abs      @ original JMP abs handler in 6502.s (label _4C)
     .extern _JMP_ind      @ original JMP ind handler in 6502.s (label _6C)
 
+    .global op_vt_JMP_abs
 op_vt_JMP_abs:
     ldr     r0, =vt
     ldrb    r1, [r0, #vt_state_enc_pending]
@@ -227,6 +228,15 @@ op_vt_JMP_abs:
     strb    r1, [r0, #vt_state_enc_pending]
 op_vt_jmp_abs_go:
     b_long  _4C                 @ tail-call original JMP abs
+
+@ s.86: JMP abs with the idle-loop speed hack (set_cpu_hack installs it
+@ at the raw byte of a hacked JMP; see _4Cy in 6502.s).
+    .global op_vt_JMP_absy
+op_vt_JMP_absy:
+    ldr_    r0, speedhack_pc
+    cmp     m6502_pc, r0
+    beq_long dobranchhackjmp
+    b       op_vt_JMP_abs
 
 op_vt_JMP_ind:
     ldr     r0, =vt

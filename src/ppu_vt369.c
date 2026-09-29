@@ -371,6 +371,10 @@ static void vt369_sprite_build(int n, u32 key, u32 r1d, u32 w, u32 h, u32 base, 
         pal = at & 3;
     }
     if (vt369_reg[0x1C] & 0x80) tile &= 0xFF;
+    /* s.86: 16 rows through $2000 bit 5 (NES 8x16) use tiles t & ~1 and
+     * t | 1 (64-byte stride); through $201D bit 2, one 128-byte tile. */
+    const u32 tstride = (w / 2) * 8 * ((r1d & 4) ? 2u : 1u);
+    if (h == 16 && !(r1d & 4)) tile &= ~1u;
     if (y >= 240 || y <= -(int)h || x >= 256 || x <= -(int)w) return;
 
     u32 s = vt369_ot2s[tile];
@@ -383,8 +387,8 @@ static void vt369_sprite_build(int n, u32 key, u32 r1d, u32 w, u32 h, u32 base, 
         if (vt369_os2t[s] != 0xFFFF) vt369_ot2s[vt369_os2t[s]] = 0xFFFF;
         vt369_os2t[s] = (u16)tile; vt369_ot2s[tile] = (u16)s;
         /* row r, 8-pixel half q -> GBA tile (r/8)*(w/8) + q, row r%8 */
-        const u32 rowb = w / 2, tsz = rowb * h;
-        const u32 *src = (const u32 *)(vt369_prg() + ((base + tile * tsz) & vt369_prg_mask()));
+        const u32 rowb = w / 2;
+        const u32 *src = (const u32 *)(vt369_prg() + ((base + tile * tstride) & vt369_prg_mask()));
         volatile u32 *dst = (volatile u32 *)(0x06010000u + s * 128u);
         for (u32 r = 0; r < h; r++)
             for (u32 q = 0; q < w / 8; q++)
@@ -394,7 +398,7 @@ static void vt369_sprite_build(int n, u32 key, u32 r1d, u32 w, u32 h, u32 base, 
     vt369_ostamp[s] = f;
     vt369_oslot[n] = (u16)s;
 
-    const u32 shape = (w == h) ? 0 : 0x4000;           /* square / wide */
+    const u32 shape = (w == h) ? 0 : (w > h) ? 0x4000 : 0x8000;   /* square / wide / tall */
     const u32 size = (w == 16 && h == 16) ? 0x4000 : 0;  /* 16x16; 16x8 and 8x8 are size 0 */
     u32 a0, a1;
     const int yk = y - (int)(u8)wtop;
@@ -417,12 +421,17 @@ __attribute__((noinline))
 static void vt369_sprites(void)
 {
     const u32 r1d = vt369_reg[0x1D];
-    const int wide = (r1d & 2) != 0, tall = (r1d & 4) != 0;
-    /* Only 4bpp shapes: 16x16, 16x8 and 8x8 (8bpp sprites are not done). */
-    const int ok = vt369_obj_ok() && (vt369_reg[0x1E] & 4) && (wide || !tall);
+    const int wide = (r1d & 2) != 0;
+    /* s.86: NES 8x16 mode ($2000 bit 5) makes enhanced sprites 16 rows tall
+     * too (Furbtendulator ProcessSpritesEnhanced: spriteHeight); Zuma's balls
+     * showed their top halves only. */
+    const int tall = (r1d & 4) != 0 || (_ppuctrl0 & 0x20) != 0;
+    /* Only 4bpp shapes: 16x16, 16x8, 8x16 ($2000 bit 5) and 8x8.  8 wide
+     * with $201D bit 2 is the 8bpp format (8 bytes a row): not done. */
+    const int ok = vt369_obj_ok() && (vt369_reg[0x1E] & 4) && (wide || !(r1d & 4));
     const u32 w = wide ? 16 : 8, h = tall ? 16 : 8;
     const u32 base = (u32)(vt369_reg[0x22] | vt369_reg[0x23] << 8) << 13;
-    const u32 cfg = (u32)r1d << 24 | (vt369_reg[0x1E] & 1) << 23 | (base >> 13);
+    const u32 cfg = (u32)r1d << 24 | (vt369_reg[0x1E] & 1) << 23 | (u32)tall << 22 | (base >> 13);
     if (cfg != vt369_ocfg) { vt369_ocfg = cfg; vt369_obj_reset(); }
     const int stype = (emuflags >> 8) & 0xFF;
     const int affine = stype == 3, scaled = stype >= 2;
@@ -509,35 +518,50 @@ void vt369_reg_write(u32 offset, u32 val)
 /* $4014 in enhanced mode ($411C bit 7 "fast DMA"): 256 bytes from page
  * (val << 8) to $2004 or $2007 by $4034 bit 0.  Returns 0 when the caller
  * should run its own $2007 path instead (a target below $3C00). */
+/* One source byte over the CPU bus: RAM, or PRG/$6000 through the memmap
+ * the 6502 core fetches with (mapVT.s's video DMA reads $8000+ the same
+ * way).  $2000-$5FFF (registers) never occurs in practice: 0. */
+static inline u32 vt369_dma_byte(u32 a)
+{
+    a &= 0xFFFF;
+    if (a < 0x2000) return ((const u8 *)NES_RAM)[a & vt_nes_ram_mask];
+    if (a < 0x6000) return 0;
+    return _memmap_tbl[a >> 13][a];
+}
+
 int vt369_dma_4014(u32 val)
 {
+    extern u8 vt_dma_lo;
     const u32 len = 1u << (((vt_dma_settings >> 1) & 7) ? ((vt_dma_settings >> 1) & 7) : 8);
-    const u32 src = val << 8;
+    /* s.86: the source is ($4014 << 8) | low byte ($4024 in enhanced mode),
+     * and may be PRG: Zuma DMAs its palette from $8080.  The first version
+     * took page ($4014 << 8) and handed PRG sources back to mapVT.s. */
+    const u32 src = val << 8 | vt_dma_lo;
     const u8 *ram = (const u8 *)NES_RAM;
     const u32 rmask = vt_nes_ram_mask;
-    if (src >= 0x2000) return 0;
+    const int inram = src + len <= 0x2000;
     if (vt_dma_settings & 1) {
         u32 a = _vramaddr & 0x3FFF;
         if ((a & 0x3C00) != 0x3C00) return 0;
         const u32 step = (_ppuctrl0 & 4) ? 32u : 1u;
-        if (step == 1 && !((a | src | len) & 3) && (a & 0x3FF) + len <= 0x400 && src + len <= rmask + 1) {
+        if (inram && step == 1 && !((a | src | len) & 3) && (a & 0x3FF) + len <= 0x400 && src + len <= rmask + 1) {
             u32 *d = (u32 *)&vt369_pal[a & 0x3FF];
             const u32 *sw = (const u32 *)&ram[src];
             for (u32 i = 0; i < len / 4; i++) d[i] = sw[i];
             a += len;
         } else {
-            for (u32 i = 0; i < len; i++, a += step) vt369_pal[a & 0x3FF] = ram[(src + i) & rmask];
+            for (u32 i = 0; i < len; i++, a += step) vt369_pal[a & 0x3FF] = (u8)vt369_dma_byte(src + i);
         }
         _vramaddr = (_vramaddr & ~0x3FFFu) | (a & 0x3FFF);
         vt369_pal_dirty = 1;
     } else {
         u32 a = (u32)vt369_oam_hi << 8;
-        if (!((src | len) & 3) && a + len <= 0x200 && src + len <= rmask + 1) {
+        if (inram && !((src | len) & 3) && a + len <= 0x200 && src + len <= rmask + 1) {
             u32 *d = (u32 *)&vt369_oam[a];
             const u32 *sw = (const u32 *)&ram[src];
             for (u32 i = 0; i < len / 4; i++) d[i] = sw[i];
         } else {
-            for (u32 i = 0; i < len; i++) vt369_oam[(a + i) & 0x1FF] = ram[(src + i) & rmask];
+            for (u32 i = 0; i < len; i++) vt369_oam[(a + i) & 0x1FF] = (u8)vt369_dma_byte(src + i);
         }
         if (len >= 256) vt369_oam_hi ^= 1;
         /* PocketNES's sprite path must see no sprites (Y = $FF): it would

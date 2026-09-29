@@ -257,9 +257,8 @@ static int vt369_prog_for(u32 rv, vt369_prog *p)
  * 128 ticks, and holding the start for all of them restarted the channel
  * every tick and lost the 25-byte frame alignment: Jewel Master's sound
  * effects played PRG as noise (s.84). */
-VT369_HOT
-static u32 vt369_run_48(u32 ch, u32 a, u32 st, u32 sp, u32 lp, const vt369_prog *p,
-                        const u8 *prg, u32 pmask, s32 *mix, u32 n)
+static u32 vt369_run_48_gen(u32 ch, u32 a, u32 st, u32 sp, u32 lp, const vt369_prog *p,
+                            const u8 *prg, u32 pmask, s32 *mix, u32 n)
 {
     u8 *d = &SR(0x1800 + ch * 8);
     u8 *cur = &SR(0x1830 + ch * 4);
@@ -320,6 +319,93 @@ next:
     if (wa_dirty) { cur[0] = (u8)wa; cur[1] = (u8)(wa >> 8); cur[2] = (u8)(wa >> 16); }
     if (swa != swa0) *scur = (u8)swa;
     return a;
+}
+
+/* s.86: the ticks after the first, for a playing PRG channel (no start or
+ * stop can act there, see vt369_run_48).  Same result as the generic loop,
+ * which the host test checks, but the frame's two step-table rows and its
+ * prediction mode are set once per 48-nibble frame and nothing spills: the
+ * generic loop re-read the start address and ran the start/stop tests every
+ * tick, and cost ~340 cycles a sample on Zuma (124K a NES frame). */
+VT369_HOT
+static u32 vt369_play48(u32 ch, u32 lp, const vt369_prog *pg, const u8 *prg, u32 pmask, s32 *mix, u32 n)
+{
+    u8 *d = &SR(0x1800 + ch * 8);
+    u8 *cur = &SR(0x1830 + ch * 4);
+    u32 lead = d[0], frame = d[1], pos = d[5];
+    const s32 vol = d[2] & 0x7F;
+    s32 last = (s8)d[3], out = (s8)d[4];
+    u32 w0 = cur[0] | cur[1] << 8 | cur[2] << 16;      /* address of *p0 */
+    u32 a = 1;
+    s32 *const end = mix + n;
+    /* frame bytes through a plain pointer; a frame that would wrap past the
+     * end of PRG goes to the generic loop */
+    if ((w0 & pmask) + 25 > pmask + 1) return vt369_run_48_gen(ch, 1, 0, 0, lp, pg, prg, pmask, mix, n);
+    const u8 *p0 = prg + (w0 & pmask), *p = p0;
+    const s8 *row = (pos < 24) ? vt369_step[lead & 15]
+                               : vt369_step[(lead - (lead >> 6 & 1) + ((lead >> 7 & 1) << 1)) & 15];
+    while (mix < end) {
+        if (pos == 48) {                               /* frame header */
+            u32 w = w0 + (u32)(p - p0);
+            const u32 l = prg[w & pmask];
+            frame = prg[(w + 1) & pmask];
+            lead = l;
+            if (l == 0xFF) {
+                if (!lp) { a = 0; w0 = w; p0 = p; break; }   /* sample ends */
+                const u8 *st = &SR(0x1860 + ch * 4);
+                w = st[0] | st[1] << 8 | st[2] << 16;
+                last = 0; out = 0;
+                mix++;
+                w0 = w; p0 = p = prg + (w & pmask);
+                if ((w & pmask) + 25 > pmask + 1) break;     /* rest: generic, below */
+                continue;
+            }
+            w += 2;
+            if ((w & pmask) + 23 > pmask + 1) {         /* this frame wraps: */
+                pos = 48; w0 = w - 2; p0 = p;          /* the generic loop re-reads */
+                break;                                 /* its header from here */
+            }
+            w0 = w; p0 = p = prg + (w & pmask);
+            row = vt369_step[l & 15];
+            pos = 0;
+        } else if (!(pos & 1)) {
+            frame = *p++;
+        }
+        if (pos == 24) row = vt369_step[(lead - (lead >> 6 & 1) + ((lead >> 7 & 1) << 1)) & 15];
+        const s32 step = row[(pos & 1) ? frame >> 4 : frame & 15];
+        s32 o;
+        switch (lead >> 4 & 3) {
+            case 0:  o = step; break;
+            case 1:  o = step + out; break;
+            case 2:  o = step + out * 2 - last; break;
+            default: o = step + out - (last >> 1); break;
+        }
+        last = out;
+        out = (s8)o;
+        pos++;
+        *mix++ += out * vol;
+    }
+    const u32 w = w0 + (u32)(p - p0);
+    d[0] = (u8)lead; d[1] = (u8)frame; d[3] = (u8)last; d[4] = (u8)out; d[5] = (u8)pos;
+    cur[0] = (u8)w; cur[1] = (u8)(w >> 8); cur[2] = (u8)(w >> 16);
+    if (a && mix < end)                                /* a wrap: finish generically */
+        return vt369_run_48_gen(ch, 1, 0, 0, lp, pg, prg, pmask, mix, (u32)(end - mix));
+    return a;
+}
+
+/* One 48-nibble channel for a fill.  Starts act on the first tick only and
+ * a stop on every tick, so a stopped or streaming channel, and the first
+ * tick, take the generic loop; a playing PRG channel's other ticks take
+ * vt369_play48. */
+static u32 vt369_run_48(u32 ch, u32 a, u32 st, u32 sp, u32 lp, const vt369_prog *p,
+                        const u8 *prg, u32 pmask, s32 *mix, u32 n)
+{
+    if (p->stream || sp || n < 2) return vt369_run_48_gen(ch, a, st, sp, lp, p, prg, pmask, mix, n);
+    a = vt369_run_48_gen(ch, a, st, 0, lp, p, prg, pmask, mix, 1);
+    if (!a) return 0;                                  /* idle for the rest */
+    if (SR(0x1805 + ch * 8) > 48)                      /* odd position: generic */
+        return vt369_run_48_gen(ch, 1, 0, 0, lp, p, prg, pmask, mix + 1, n - 1);
+    return vt369_play48(ch, lp, p, prg, pmask, mix + 1, n - 1);
 }
 
 /* One fill of n ticks into mix[] (zeroed by the caller).  Returns 0 when

@@ -56,7 +56,12 @@
 normalops:
 	.word _10,_30,_50,_70,_90,_B0,_D0,_F0,_4C
 speedhackops:
+#if VT09_ENCRYPTION
+	@ s.86: JMP keeps the VT09 encryption commit (op_vt_JMP_abs)
+	.word _10y,_30y,_50y,_70y,_90y,_B0y,_D0y,_F0y,op_vt_JMP_absy
+#else
 	.word _10y,_30y,_50y,_70y,_90y,_B0y,_D0y,_F0y,_4Cy
+#endif
 
 cpuhack_reset:
 	stmfd sp!,{r3,lr}
@@ -136,7 +141,7 @@ call_quickhackfinder:
 	and r0,r0,#0x40
 	mov r0,r0,lsr#6
 	@maybe include code to make it not pick itself again
-	b set_cpu_hack
+	b_long set_cpu_hack
 0:
 	stmfd sp!,{r3,lr}
 	mov r2,r0
@@ -158,20 +163,36 @@ call_quickhackfinder:
 @	u32 divider;
 @} speedhack_T;
 
+	@ s.86: get_instruction_number and set_cpu_hack run at most once per
+	@ frame; they live in ROM so .vram1 has room for the hot paths.
+ .text
+ .align
+
 get_instruction_number:
 	@addy = speedhack pc
-	@output: r0=number of instruction (0-8), r1=instruction
+	@output: r0=number of instruction (0-8), r1=instruction byte (the
+	@ op_table index), r2 = the opcode it runs
 	@returns eq if invalid
 	movs addy,addy
 	bxeq lr
 	ldrb r1,[addy]
-	cmp r1,#0x4C
+	mov r2,r1
+#if VT_MODE
+	@ s.86: under VT opcode encryption the byte in PRG is not the opcode
+	@ it runs; classify the decoded opcode, index op_table by the raw byte.
+	ldr r0,=vt_active
+	ldrb r0,[r0]
+	cmp r0,#0
+	ldrne r2,=vt_op_dec
+	ldrneb r2,[r2,r1]
+#endif
+	cmp r2,#0x4C
 	moveq r0,#8
 	beq 1f
-	and r0,r1,#0x1F
+	and r0,r2,#0x1F
 	cmp r0,#0x10
 	bne 0f
-	sub r0,r1,#0x10
+	sub r0,r2,#0x10
 	mov r0,r0,lsr#5
 1:
 	movs addy,addy
@@ -182,30 +203,16 @@ get_instruction_number:
 
 set_cpu_hack:
 	@r0 = speedhack number
-#if VT_MODE
 	@ ------------------------------------------------------------------
-	@ Encryption-aware since session 11.  History: session 6 found this
-	@ function corrupting the encrypted op_table (the unconditional
-	@ "_D0y -> op_table[0xD0]" write turned encrypted BCS into BNE -> the
-	@ t=3.78s blue screen) and gated it off entirely.  Profiling then
-	@ showed ~60% of ALL host time burning in the guest's LDA/CMP/BEQ
-	@ vblank wait loop -- exactly what this machinery exists to skip.
-	@ Under the bit5<->6 opcode swap, branch rows translate as pure pair
-	@ swaps: $30<->$50 and $B0<->$D0, while $10/$70/$90/$F0 are
-	@ INVARIANT (raw == decoded, semantics identical).  So:
-	@   * hacks whose branch byte is on an invariant row are installed
-	@     exactly as in plain mode (indices and handlers already agree);
-	@   * hacks on swapped rows are refused (bail) -- semantics differ;
-	@   * the default BNE hack goes to op_table[$B0], the raw index that
-	@     DECODES to $D0/BNE, instead of raw $D0 (encrypted BCS).
-	@ The flag byte sh_encrypted caches vt.encryption_active for the
-	@ helpers below.
+	@ Encryption-aware (s.86, replacing the session-11 scheme that knew
+	@ only submapper 15's bit5<->6 swap and refused every other row).
+	@ op_table[raw] holds the handler for the opcode raw DECODES to, so a
+	@ hack goes in at the raw byte found in PRG and its type comes from
+	@ the decoded opcode (vt_op_dec, filled by vt_rebuild_optable).  The
+	@ handler a removed hack gives back is vt_sh_norm[n] (the canonical
+	@ table's, so op_vt_JMP_abs survives), and the default BNE hack goes
+	@ to vt_sh_raw[6], the raw byte that decodes to $D0.
 	@ ------------------------------------------------------------------
-	ldr r1,=vt
-	ldrb r1,[r1,#0x20]
-	ldr r2,=_sh_encrypted
-	strb r1,[r2]
-#endif
 	strb_ r0,speedhacknumber
 
 	@if it matches target's speedhack_pc, abort early.  (TESTME)
@@ -221,21 +228,27 @@ set_cpu_hack:
 	bl get_instruction_number
 	beq 0f
 	ldr r2,=normalops
+#if VT_MODE
+	ldr r12,=vt_active
+	ldrb r12,[r12]
+	cmp r12,#0
+	ldrne r2,=vt_sh_norm
+#endif
 	ldr r0,[r2,r0,lsl#2]
 	ldr r2,=op_table
 	str r0,[r2,r1,lsl#2]
 0:
-	@add the default BNE hack.  Under encryption the raw index that
-	@ DECODES to $D0/BNE is $B0 (bit5<->6 swap), so install there;
-	@ raw $D0 is encrypted BCS and must stay on the permuted canonical
-	@ handler.
+	@add the default BNE hack
 	ldr r0,=_D0y
 	ldr r2,=op_table+0xD0*4
 #if VT_MODE
-	ldr r1,=_sh_encrypted
+	ldr r1,=vt_active
 	ldrb r1,[r1]
 	cmp r1,#0
-	ldrne r2,=op_table+0xB0*4
+	ldrne r1,=vt_sh_raw
+	ldrneb r1,[r1,#6]
+	ldrne r2,=op_table
+	addne r2,r2,r1,lsl#2
 #endif
 	str r0,[r2]
 	@set branch length
@@ -255,19 +268,6 @@ set_cpu_hack:
 	
 	bl get_instruction_number
 	beq 0f
-#if VT_MODE
-	@ Encryption: allow only invariant branch rows 0,3,4,7 (mask $99);
-	@ swapped rows and $4C would repeat the session-6 corruption.
-	ldr r2,=_sh_encrypted
-	ldrb r2,[r2]
-	cmp r2,#0
-	beq 9f
-	mov r2,#0x99
-	mov r2,r2,lsr r0
-	tst r2,#1
-	beq 0f
-9:
-#endif
 	cmp r0,#8
 	ldr r2,=speedhackops
 	ldr r0,[r2,r0,lsl#2]
@@ -289,6 +289,12 @@ set_cpu_hack:
 	ldmfd sp!,{lr}
 	bx lr
 
+ .align
+ .pool
+ .section .vram1, "ax", %progbits
+ .subsection 3
+ .align
+
 dobnehack:
 	@cycles per iteration = (2+3)*3 or (2+4)*3 if branch crosses page
 	sub r0,m6502_pc,#3
@@ -308,6 +314,14 @@ dobnehack:
 	
 	@get instruction
 	ldrb r0,[m6502_pc,#-3]
+#if VT_MODE
+	@ s.86: the opcode it runs (VT opcode encryption)
+	ldr r12,=vt_active
+	ldrb r12,[r12]
+	cmp r12,#0
+	ldrne r12,=vt_op_dec
+	ldrneb r0,[r12,r0]
+#endif
 	@is it a DEX CA \ DEY 88 \ INX E8 \ INY C8?
 	cmp r0,#0xCA
 	beq bnehack_dex
@@ -376,7 +390,11 @@ dobranchhackjmp:
 	
 	bl usespeedhack
 6:
+#if VT09_ENCRYPTION
+	b_long op_vt_JMP_abs
+#else
 	b_long _4C
+#endif
 
 dobranchhack2:
 	@second chance

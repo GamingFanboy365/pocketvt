@@ -4500,3 +4500,147 @@ gives 100% at every frame from 700 to 1000 on both builds.) Every other game
 is unchanged. The picture regression over all 16 test ROMs at frames 150,
 400 and 700 is the same as PR #8 or better (Star Ally frame 400: 99.59% to
 99.64%).
+
+## 86. Zuma (VT369), and speed hacks under every opcode encryption
+
+Zuma is mapper 256 submapper 13: VT369, with Cube Tech opcode encryption
+(bits 1 and 4 of each opcode byte swapped). It sets $411C = $C0, so it asks
+for the triple-speed CPU, which PocketVT still does not emulate (open item
+1). It first showed a screen of garbage (struct 7%) and ran at 20-25 NES fps.
+
+### 86a. The video DMA source low byte
+
+Zuma builds its palette and its tile map with the fast video DMA ($4014 with
+$411C bit 7). PocketVT took the source as `$4014 << 8 | ($4034 & $F0)`, and
+only from NES RAM. Furbtendulator (APU_VT369::IntWrite) has two more rules.
+On VT369 in enhanced mode ($201E != 0) the low byte comes from $4024, and a
+$4034 write sets it only while $201D bit 0 is clear; a $412D write of 0
+clears it. The source can also be any CPU address, PRG included. Zuma DMAs
+its palette from $8080 and its map from $8160; with $4024 ignored the map
+came from $8100 and showed palette words as tiles.
+
+The low byte now lives in vt_dma_lo (vt_regs.c). mapVT.s intercepts $4024
+and fills vt_dma_lo from $4034 & $F0 at the $4034 write, which for VT03 and
+VT09 is the same value the DMA used to mask out at $4014 time, so those carts
+are unchanged. On VT03 a $4024 write still goes to IO_W. vt369_dma_4014 reads
+sources below $2000 from NES RAM with word copies as before, and anything
+from $6000 up through the memory map a byte at a time (vt369_dma_byte).
+
+### 86b. 16-row sprites from $2000 bit 5
+
+Zuma's balls came out half height. In enhanced mode the NES 8x16 bit ($2000
+bit 5) also makes sprites 16 rows tall, as $201D bit 2 does. The tile number
+loses bit 0 and the stride is 64 bytes for a 16-wide 4bpp sprite, as on the
+NES (Furbtendulator PPU_VT369). vt369_sprites and vt369_sprite_build now take
+the height from either bit. The title is 99.92% and gameplay 95-99% against
+the reference. The ball colours are random (the user confirmed this, as with
+Jewel Master's jewels), so most of the gameplay residue is different balls,
+not drawing. Some may be chain position drift from the missing CPU x3.
+
+### 86c. The sound loop
+
+Zuma plays 8003 Hz ADPCM through the sound CPU's vector $02A0 (s.84) on one
+or two channels, which made vt369_run_48 its biggest single cost (124K
+cycles per NES frame). The common case (no stream, no pending start, a
+sample that does not wrap inside the fill) now runs in vt369_play48, a
+pointer-based loop that keeps one row pointer and switches it at position
+24; anything unusual falls back to the old loop, renamed vt369_run_48_gen.
+Cost fell to 88K cycles. It runs from ROM because IWRAM has no room. The
+host test (tools/probes/vt369snd_test.c) compares 18,000 fills with 0
+failing, and a planted fault in play48's mode-2 predictor fails 1,775.
+Against Furbtendulator's WAV over NES frames 400-700 the envelope scores
+0.77 and the long-term spectrum 0.96. The level is 2.2x, the same
+over-loud APU as the other carts (open item 2).
+
+### 86d. Speed: idle loops under opcode encryption
+
+A whole-frame profile put most of the rest in the 6502 core: JMP, CMP #,
+LDA zp and untaken branches. Furbtendulator's trace shows why. Zuma's main
+loop waits for its NMI in
+
+    C4D9  A5 5C     LDA $5C
+    C4DB  C9 01     CMP #$01
+    C4DD  F0 07     BEQ $C4E6
+    C4DF  C9 02     CMP #$02
+    C4E1  F0 06     BEQ $C4E9
+    C4E3  4C D9 C4  JMP $C4D9
+
+about 5,800 times a frame. PocketNES's speed-hack finder skips exactly this
+kind of loop, but it read opcode bytes straight from PRG. In Zuma's PRG the
+BEQs are stored as $E2, which the finder's table rejects. set_cpu_hack had a
+second limit: it knew only submapper 15's bit 5<->6 swap. It accepted only
+the branch rows that swap leaves alone ($10, $70, $90, $F0), refused JMP,
+and put the default BNE hack at raw $B0, which on submapper 13 is LDX #.
+
+Both now decode. vt_rebuild_optable fills vt_op_dec (raw byte to the opcode
+it runs) for the current mode, plus vt_sh_raw[n], the raw byte that runs
+branch n or JMP, and vt_sh_norm[n], the handler that byte runs with no
+hack. The finder classifies OP(byte) instead of the byte. set_cpu_hack takes
+the hack type from the decoded opcode and patches op_table at the raw byte,
+which is correct under any mode because op_table[raw] already holds the
+handler for the decoded opcode. It restores a removed hack from vt_sh_norm
+(so op_vt_JMP_abs, the VT09 encryption commit, survives), and puts the
+default BNE hack at vt_sh_raw[6]. dobnehack decodes the opcode before the
+BNE too. On submapper 15 the old code took raw $CA (TAX there) for DEX.
+A JMP hack uses the new op_vt_JMP_absy, and dobranchhackjmp ends in
+op_vt_JMP_abs, so the encryption commit still happens. game_specific_hack
+matches raw Capcom and Konami byte patterns, so it is skipped while
+encryption is on. A rebuild of op_table (a $4169 mode change) removes any
+installed hack, so it now also clears _speedhack_pc and _speedhack_pc2,
+and set_cpu_hack installs the hack again.
+
+get_instruction_number and set_cpu_hack moved from .vram1 to ROM. They run
+at most once a frame, and .vram1 was full: it now ends at 0x06003ED0 of
+0x06004000.
+
+Zuma now runs at 52-60 NES fps instead of 20-25, and the picture is
+unchanged. Star Ally gains too, from 55-56 to 60. Its LDA $6816 / BNE *-5
+wait stores BNE as raw $B0, a row the old set_cpu_hack refused. The finder
+found that loop at the same address in both builds; only the install is
+new. (Session 20b3 measured a hand-seeded hack on that loop as slower, but
+that one used a divider of 1 and was re-armed every frame. This is the
+finder's own hack with its real cycle count.)
+
+### 86e. Regression
+
+Over all 17 test ROMs at NES frames 150, 400 and 700, no struct or exact5
+score drops by more than 0.05 points (Fire Fighter frame 700 and Star Ally
+frame 400; both are gameplay timing, and Star Ally frame 700 rises from
+99.10% to 99.61%). Speed:
+
+| Cart | Before | After |
+|---|---|---|
+| Zuma | 21-25 | 60 |
+| Star Ally (frames 400, 700) | 42-44 | 60 |
+| Table Soccer VT369 (submapper 13 too) | 48 | 60 |
+| Aero, Hex City X, Table Soccer VT03 | 43-44 | 42-43 |
+
+The one-frame drops are within the probe's noise: the GBA speed probe gives
+43-44 for Table Soccer VT03 on both builds.
+
+In the frame-set test over 800 GBA frames, Lonely Island is byte-identical,
+and Star Ally, Scramble and VG Pocket are subsets of main. Five carts add
+frames, all in the boot transition: LLM VT09 one (GBA frame 72), Jewel
+Master VT03 one (83), Aero four (63-69), Hex City X four (59-65) and Table
+Soccer VT03 seven (56-72). Aero spends GBA frames 2 to ~70 inside NES frame
+2 while it builds its title, so the screen shows whatever that frame has
+drawn so far. Main shows a half-built title there, and this build shows a
+half-built screen of other tiles. The NES frames themselves match the
+reference 100% on both builds. Aero and Hex City X are unencrypted, and
+neither build installs a speed hack on them, so their shifts come from code
+moving (set_cpu_hack to ROM, the new tables), not from a hack.
+
+VT369 sound: the host test passes (0 failing). The Docker build links
+(`__bss_end__` 0x03007B64, `.vram1` to 0x06003ED0), and its Zuma, Star Ally,
+Lonely Island and Jewel Master VT369 play ROMs boot through the real BIOS
+and reach 60 NES fps.
+
+VG Pocket, all 50 games at NES frames 900 and 1100: mean struct 99.46%
+against main's 99.48% (main's bad 0/0 pass from s.85c left out; 0/0 is 100%
+here). The one real move is the racing game at 1/1, 1/2, 1/7 and 1/8, from
+99.58% to 99.40%. The black line under its HUD split sits one row off the
+reference. On main it was one row early (96 pixels of the reference's green
+missing), and here it is one row late (144 pixels of green where the
+reference is black). That is the ±1-row split residue, and it follows timing:
+the core before s.85 also scored 99.40%. The other changes (0/5-0/6 +0.03,
+2/0 frame 900 -0.15, 4/3-4/4 frame 1100 -0.05) are gameplay positions.
