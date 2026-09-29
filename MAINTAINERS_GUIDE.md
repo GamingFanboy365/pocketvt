@@ -4192,3 +4192,206 @@ and at frame 1500 the reference is already in its game-over fill while
 PocketVT's game is still running. The seed source is not found yet. Reading
 uninitialised RAM, the sound CPU's registers and the timer are the
 candidates to trace first.
+
+## 83. Correction to s.82: Jewel Master's drift is the missing CPU x3, not the RNG
+
+s.82 said Jewel Master's random-number byte $44 differs from frame 20 and
+blamed an unknown seed. That was wrong. The RNG is $44 = $44 * $15 + 1
+through the multiply unit, stepped once per frame at $E082 (and on demand
+through $C80B). PocketVT's 7E at frame 20 is exactly one step before
+Furbtendulator's 57 (7E * 15 + 1 = A57), so it is the same one-frame capture
+offset as the frame counters. With that offset removed, all 4K of CPU RAM
+match through frame 255. Between frames 256 and 259, $3A (a frame counter)
+moves two frames apart instead of one, which means PocketVT dropped a frame:
+the game's main loop overran it. The cart sets $411C bit 7, which runs the
+CPU at three times the clock (5.37 MHz, updatePrescaler in OneBus_VT369.cpp),
+and PocketVT runs it at 1x. A frame that fits on the chip lags in PocketVT,
+and after that the attract-mode game plays out differently. Fire Fighter's
+drift is presumably the same thing, but that is not traced.
+
+CPU x3 is not attempted yet. PocketNES charges 3 dots per CPU cycle inside
+every opcode macro (6502mac.h, `count*3*CYCLE`), so a runtime x3 needs a
+second opcode table. The other route, tripling the per-scanline budget,
+breaks the dot-based VT timer and the raster-split timing. Either way the
+6502 does up to three times the work on frames that use it. Fire Fighter's
+profile (cycprof, gameplay) puts the 6502 core at about 11%, the enhanced
+renderer at 19% and PRG bank switching at 15%, from 20-30 $4107/$4108
+writes a frame.
+
+Bank switching was tried here and backed out. Applying only the windows
+whose bank changed saved nothing on Fire Fighter, because its writes really
+do alternate banks. It also lowered Table Soccer VT369 from 98.68% to 98.51%,
+so something there depends on the unconditional re-apply of the $6000
+window or the readmem_6/writemem_6 handlers. That dependency is not
+understood. Leave vt_apply_prg_banks as it is until it is.
+
+## 84. VT369, part 4: the sound CPU (high-level), and a correction to s.83
+
+The VT369 has a second 6502 for sound. The main CPU sees its RAM at
+$4800-$4FFF (the sound CPU's $1800-$1FFF), writes a program address into
+the timer-IRQ vector at $1FF8/$1FF9 (Furbtendulator calls it the reset
+vector) and starts it with $4162 = $0D. The programs come from the cart's
+4K embedded ROM, which is the NES 2.0 misc ROM after PRG and CHR in the file.
+The main CPU sees that ROM at $1000-$1FFF and the sound CPU at $4000-$4FFF.
+Lucky Lawn Mower, Fire Fighter and Jewel Master use $40AE, a four-channel
+player of 48-nibble ADPCM frames read straight from PRG. Table Soccer VT369
+copies its own program into sound RAM and uses $0293, three channels of
+3-bit ADPCM that the main CPU streams through 128-byte rings in sound RAM.
+
+src/vt369_snd.c does what Furbtendulator's default "VT369 sound HLE"
+does (OneBus_VT369.cpp, APU_VT369::Run). It does not run the sound program.
+It recognises the vector and performs that program's effect on the sound
+RAM: channel state, addresses, the active mask and the ring read offsets.
+It outputs one sample per sound-CPU timer tick, 13,983 Hz for $40AE and
+8,008 Hz for Table Soccer. The rendering is batched, channel by channel,
+128 ticks at a time. tools/probes/vt369snd_test.c builds the file natively
+and checks it against a direct port of the reference's per-tick code on
+random reachable states: 18,000 fills of 128 ticks agree on every output
+sample and every byte of sound RAM. A mutation of the start logic fails 434
+trials.
+
+Around the HLE, the main CPU side needed three things. loadcart.c finds the
+misc ROM, and mapVTinit installs vt369_ram_R for $1000-$1FFF. The carts copy
+their sound vectors from there, so without it the vector read as zero and
+nothing played. read_vt369_4xxx and write_vt369_4xxx give the main CPU the
+sound RAM. Writes store in assembly and call C only for $1FA2 (the $0293
+command byte) and the $40AE start and stop masks, because Table Soccer
+streams about 50 bytes a frame into the rings. The last piece is the GPIO
+ports $4140-$415F, from NintendulatorNRS h_OneBus_GPIO.cpp with nothing
+attached. A read returns the mask at +0, the latch at +2, the inverted mask
+at +3 and $FF otherwise. Lucky Lawn Mower counts $0FFA once a frame only
+while $414F reads $FF, and with the ports in place its RAM matches the
+reference exactly at frames 400 and 500.
+
+### 84a. Starts are edges
+
+The reference re-applies a held start bit on every tick. That costs nothing
+there, because the games clear the bit one tick later. Jewel Master writes
+the bit to $48A4, spins until the channel's bit comes up in $48A5, then
+clears $48A4. PocketVT renders a fill of 128 ticks at once, so the first
+version held the start for all 128. The channel restarted on every tick and
+lost the 25-byte frame alignment (one lead byte and 24 data bytes, 48
+nibbles). Jewel Master's effects then played PRG as noise. The diff showed
+it at once: furb_cli now writes the sound RAM as `.snd` next to `.ram`, and
+compare_furb takes PVT_DUMP. The reference's channel stopped at the end
+marker at $7E48, 17 frames after $7C9F. PocketVT's ran on to $8E0A.
+
+The cart's own program settles which behaviour is right. At $40BD it ORs
+`$18A4 & ~(its copy of the last $18A4)` into $18A5, so a start is a rising
+edge. vt369_snd.c now does the same, and vt369_snd_write applies a start
+edge (copy the start address, set the active bit) and a stop at the moment
+of the write. The game's spin-wait therefore ends at once instead of
+stalling up to 9 ms until the next fill. The host test's reference model
+keeps the last start mask for the same reason. After the fix, Jewel Master's
+channel state matches the reference byte for byte at every frame compared
+(400-600), and the two effects in frames 400-700 match it in level, band
+spectrum (0.92) and envelope (0.77). The remaining waveform difference is
+the reference's low-pass filter and the 8-bit output.
+
+### 84b. The output path: timer 0, two buffers, gain
+
+PocketNES plays the NES DMC on DirectSound B. DMA2 fills FIFO B, timer 0
+sets the sample rate, and timer 1 counts 128 samples and then raises
+timer1interrupt. That interrupt restarts DMA2 and ends in
+vt_adpcm_mix_gba. While the sound CPU runs, vt_adpcm_mix_gba hands over to
+vt369_snd_fill on the EWRAM stack, which writes the next 128 samples and
+points DMA2's source at them. Three details in that path were wrong at
+first.
+
+The first was the DMA register. The first version wrote 0x040000D4, which
+is DMA3's source register, so Table Soccer stayed silent and the sprite
+palette played. DMA2's source register is 0x040000C8.
+
+The second was a buffer race. The interrupt restarts DMA2 on entry, and the
+fill then rewrote the same buffer while the DMA was already reading it.
+There are now two buffers. The DMA plays the block written last time while
+the fill writes the other one. Each block has a 128-byte guard that repeats
+its last sample, because a late interrupt lets the DMA read past 128. The
+first version had an 8-byte tail there, and the DMA ran on into other
+variables and played them as full-scale clicks.
+
+The third was a stalled clock. The idle-DMC code (pcm1 in timer1interrupt)
+stops timer 0 on every interrupt, and the first version restarted it only
+after rendering. Every 128-sample block was stretched by the render time,
+and Table Soccer's stream played at 7,580 Hz instead of 8,008.
+vt_adpcm_mix_gba now restarts the timer before anything else. Measured with
+fill counts: Table Soccer runs 62.5 fills/s (8,000 Hz) and Jewel Master
+13,953 Hz, against 8,008 and 13,983.
+
+The gain is a separate matter. PocketNES plays the APU about 2.2 times
+louder than Furbtendulator's mixer. The same factor holds on main, and with
+this tree's HLE switched off (`-DVT369_SND_OFF`, kept as a diagnostic).
+Mixed at the reference's scale, the sound CPU came out three times too quiet
+next to the music. I measured this by recording Jewel Master against a copy
+of the ROM whose effect volume ($CAE8 `LDA #$3F`) was patched to 0, on both
+emulators, and subtracting. The gain is x3 for the four-channel programs,
+which brings the effect-to-music ratio to the reference's (2.28 vs 2.27).
+The 3-bit stream gets x1.5, because Table Soccer's music already peaks at
+19,354 of 32,767 in the reference and x3 would clip it. These are
+`VT369_SND_GAIN48` and `VT369_SND_GAIN3`, in halves.
+
+Table Soccer's stream is checked by waveform, not by wavcmp. wavcmp's
+envelope score stretches PocketVT's audio for its game speed (48 fps), but
+this music is the stream, which plays in real time. It scores 0.11 there,
+which means nothing. Cut into 0.5 s pieces, every piece matches the
+reference waveform at 0.94-0.95 correlation. The music is a loop of about
+1.67 s. A debug build counted ring laps, where the HLE reads a frame the
+game had not refilled: there were 151 at start-up and none after.
+
+### 84c. Speed: the loops are in IWRAM
+
+With everything in cart ROM, the HLE cost Table Soccer 35K cycles a NES
+frame for three channels, which took it from 52 fps to 43. ARM code in ROM
+costs about 4 cycles an instruction on the 16-bit bus, and switching to
+Thumb bought nothing. The four-channel carts paid 17-23K cycles a frame just
+to convert 128 zero samples, because their channels are idle most of the
+time. Four changes fixed it:
+
+1. A fill in which no channel played leaves the buffer alone once it holds
+   zeroes.
+2. The 3-bit decoder looks up one combined table (predictor delta and next
+   index, built in EWRAM at reset) and skips silent frames.
+3. Its loop and the 8-bit conversion run as ARM from IWRAM.
+4. The asm write path above.
+
+The IWRAM came from apack.s. The aPLib decompressor's loop only runs while
+a compressed game loads, and it now runs from ROM. That freed 368 bytes,
+and the two loops fit in exactly that much, so `__bss_end__` is still
+0x03007B84. (cf.s, the cheat finder's loop, was the other candidate, but it
+patches its own instructions and must stay in RAM.) The four-channel loop
+stays ARM in ROM, because it only runs while an effect plays.
+
+The HLE now costs Table Soccer about 19K cycles a NES frame. The game runs
+at 48 fps, against 52 on main, where the stream code did no work because
+sound RAM did not exist. Jewel Master and Lucky Lawn Mower VT369 run at
+their main speeds (56-60), and Fire Fighter at 44 as before.
+
+### 84d. Correction to s.83
+
+s.83 said Jewel Master's RAM matches the reference through frame 255 and
+that a frame dropped between 256 and 259 because PocketVT runs the CPU at
+1x. The first half is right, the explanation is not. On main, the game's
+frame counter $3A stops at $FD from frame 258 on, for good. The main loop is
+waiting for the sound CPU, which did not exist. With the HLE, $3A keeps
+counting, and 2K of RAM stays within 6-42 bytes of the reference through
+frame 700 (6 at frames 300 and 400), with $3A 1-4 frames behind. That slow lag may still be the missing CPU
+x3, which remains open. The picture comparison moved accordingly: Jewel
+Master is at 99.86% and 99.92% at frames 400 and 700, up from 96.9% and
+94.8%.
+
+### 84e. Regression and what is not done
+
+All fifteen test ROMs were compared at frames 150, 400 and 700. Every
+VT03/VT09 control scores exactly as on main, as do Lucky Lawn Mower VT369
+and Table Soccer VT369. Fire Fighter differs by one pixel of exact5 at
+frame 700. In the frame-set test, Lonely Island, Scramble and Lucky Lawn
+Mower VT09 are byte-identical, and Star Ally and VG Pocket are subsets of
+main. Table Soccer VT03 renders one frame main does not: frame 71, a boot
+frame caught in the middle of a tile upload, which is garbage on both
+cores. That is re-timing from the shifted ROM layout. Its settled frames
+all match.
+
+Still missing are the sound CPU's other programs ($0203, $02A0, $02E0 and
+$0250 are implemented from the reference but no test cart uses them), the
+per-channel rate divider the real $40AE program has ($188A+ch; the
+reference ignores it too), a low-level sound CPU, and CPU x3.

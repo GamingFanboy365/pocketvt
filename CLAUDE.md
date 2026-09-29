@@ -92,16 +92,22 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   NMIDBG style counters. Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.82)
-See MAINTAINERS_GUIDE.md s.82 (VT369 enhanced picture, $3000 nametable window),
+## Current state (after s.84)
+See MAINTAINERS_GUIDE.md s.84 (VT369 sound CPU HLE; corrects s.83), s.83 (bank switching), s.82 (VT369 enhanced picture, $3000 nametable window),
 s.81 (VT369 $6000 ROM, 15-bit palette), s.80 (VT369 CPU side), s.79 (Table Soccer, VG colours, real BIOS, wait
 states, sound) and s.77-78 (raster-split slots, speed).
 - Working: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower VT09, VG Pocket
   (all 50; colours now Furbtendulator's), Push the Ball, Time Pilot, Add 'em Up,
   Aero Gyrodine, Hex City X, Table Soccer VT03 (mapper 419; menus/match 96-99%),
   Table Soccer VT369 (non-enhanced renderer; select screen 99.9%, match 96.7%),
-  Lucky Lawn Mower VT369 (99.7%), Jewel Master and Fire Fighter VT369 (95-99%;
-  the rest is game-state drift) through the enhanced renderer, src/ppu_vt369.c.
+  Lucky Lawn Mower VT369 (99.7%), Jewel Master (99.9%) and Fire Fighter VT369
+  (96%; game-state drift) through the enhanced renderer, src/ppu_vt369.c.
+- VT369 sound CPU: high-level, src/vt369_snd.c (programs $40AE and $0293 are
+  exercised; host test tools/probes/vt369snd_test.c must report 0 failing).
+  Starts are rising edges; the per-sample loops are ARM in IWRAM (the space
+  apack.s gave up). DirectSound B while it runs: two DMA buffers, timer 0
+  restarted in vt_adpcm_mix_gba. Misc ROM at $1000, GPIO $4140-$415F.
+  furb_cli dumps sound RAM as `.snd`; `-DVT369_SND_OFF` turns the HLE off.
 - VT369 enhanced mode ($201E != 0) owns BG VRAM, the tilemap, the GBA palette
   and OAM (vt369_enh); PocketNES's BG writers are off via vt_bkexten_live.
   8bpp BG tiles may use 0x06008000+ after vt_prg_evict (s.77a).
@@ -114,7 +120,8 @@ states, sound) and s.77-78 (raster-split slots, speed).
   vblank (`VT_TIMER_NPLUS1`); split lines match Furbtendulator exactly.
 - WAITCNT = 0x4317 at boot (`VT_FAST_WAITCNT`): 3/1 + prefetch. Speed (NES fps):
   Time Pilot 58-60, Scramble 59-60, SA 44-56, Aero/Hex titles 41-42 then 60,
-  Table Soccer 43, LLM VT09 60, LI/VG/Add 'em Up 60.
+  Table Soccer 43, LLM VT09 60, LI/VG/Add 'em Up 60; VT369: Table Soccer 48,
+  LLM/Jewel Master 56-60, Fire Fighter 44.
 - PRG page 0 lives in OBJ VRAM until the first VT sprite slot is written, then
   moves to its ROM/EWRAM twin (vt_prg_evict_obj). Never write OBJ slots 0-7
   without it.
@@ -127,11 +134,14 @@ states, sound) and s.77-78 (raster-split slots, speed).
 
 ## Open work, in priority order
 1. VT369 leftovers (s.82): 8bpp sprites, hi-res mode ($201C bit 2), CPU x3
-   ($411C bit 7; Fire Fighter runs 44-51 NES fps), the VT369 sound CPU, and
-   Jewel Master's RNG seed ($44 differs from frame 20; s.82 end).
+   ($411C bit 7; Fire Fighter runs 44-51 NES fps; Jewel Master's $3A trails
+   the reference 1-4 frames by frame 700, s.84d). Sound CPU: the $40AE
+   per-channel rate divider, and the programs no test cart uses (s.84e).
 2. Sound (s.79d): VT ADPCM $4120-$412F only mixes while NES DMC plays; the
-   TK-8007 voice (Table Soccer) is not played; second APU $4020-$402F and the
-   VT369 sound CPU are absent. Measure with tools/probes/pvtwav + wavcmp.py.
+   TK-8007 voice (Table Soccer) is not played; second APU $4020-$402F is
+   absent. The APU plays ~2.2x louder than Furbtendulator's mix (s.84b).
+   Measure with tools/probes/pvtwav + wavcmp.py (not for real-time streams:
+   its envelope stretches for game speed, s.84b).
 3. Stale BG tile cache (item 21): Push the Ball's 20 px, and a band of missing
    tiles in a few VG games that moves with timing (nametables match exactly).
 4. Aero/Hex title speed 41-42/60 (s.78d); profile with cycprof.

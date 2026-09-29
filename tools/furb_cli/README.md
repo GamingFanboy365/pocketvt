@@ -89,7 +89,9 @@ For each dumped frame it writes `PREFIX_fNNNN.ppm` (exactly the region
 Furbtendulator's own screenshot saves), `.idx` (the PPU's raw uint16 palette
 indices), `.txt` (`$2000-$20FF`, `$4100-$41FF` and palette RAM; the full
 1024-entry palette on VT369), `.ram` (CPU RAM) and `.nt` (PPU $2000-$2FFF as the PPU
-maps it: the four 1K nametable pages, 4 KB). `--dump-palette FILE` writes the
+maps it: the four 1K nametable pages, 4 KB); on VT369 also `.snd`, the sound
+CPU's RAM $1800-$1FFF (the main CPU's $4800-$4FFF; guide s.84 diffed it
+against PocketVT's `vt369_sram` through `PVT_DUMP`). `--dump-palette FILE` writes the
 active colour tables (the 64 NES/VT01 colours and the 4096 VT03 COLCOMP colours) as
 0xRRGGBB; guide s.79b built the VG Pocket DAC from it. On VT369 in hi-res mode
 (`$201C` bit 2) the `.idx` interleaves the even/odd half-pixel arrays, as the

@@ -55,8 +55,10 @@ depack:
 
  .align
  .pool
- .section .iwram, "ax", %progbits
- .subsection 5
+@ guide s.84: the loop used to live in IWRAM (.iwram subsection 5).  It only
+@ runs while a compressed game is loaded, so it now runs from ROM and its
+@ 368 bytes of IWRAM hold the VT369 sound loops (vt369_snd.c).
+ .text
  .align
  .pool
 

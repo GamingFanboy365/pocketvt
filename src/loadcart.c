@@ -199,6 +199,15 @@ static void read_rom_header(u8 *nesheader)
 	rommask = romsize-1;
 
 	vrompages = chr_pages;
+	{	/* guide s.84: a VT369's 4K embedded ROM (the NES 2.0 misc ROM, after
+		 * PRG and CHR in the file) appears at CPU $1000-$1FFF.  The carts copy
+		 * their sound CPU's vectors from there. */
+		extern const u8 *vt369_misc;
+		extern u8 vt_console;
+		vt369_misc = 0;
+		if (vt_console == 0x0A && is_nes20 && (nesheader[14] & 0x03))
+			vt369_misc = rombase + prg_pages * 16384 + chr_pages * 8192;
+	}
 		
 	//round vrom pages up to next power of 2
 	if (vrompages>0)
