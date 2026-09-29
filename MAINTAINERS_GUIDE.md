@@ -4634,3 +4634,13 @@ VT369 sound: the host test passes (0 failing). The Docker build links
 (`__bss_end__` 0x03007B64, `.vram1` to 0x06003ED0), and its Zuma, Star Ally,
 Lonely Island and Jewel Master VT369 play ROMs boot through the real BIOS
 and reach 60 NES fps.
+
+VG Pocket, all 50 games at NES frames 900 and 1100: mean struct 99.46%
+against main's 99.48% (main's bad 0/0 pass from s.85c left out; 0/0 is 100%
+here). The one real move is the racing game at 1/1, 1/2, 1/7 and 1/8, from
+99.58% to 99.40%. The black line under its HUD split sits one row off the
+reference. On main it was one row early (96 pixels of the reference's green
+missing), and here it is one row late (144 pixels of green where the
+reference is black). That is the ±1-row split residue, and it follows timing:
+the core before s.85 also scored 99.40%. The other changes (0/5-0/6 +0.03,
+2/0 frame 900 -0.15, 4/3-4/4 frame 1100 -0.05) are gameplay positions.
