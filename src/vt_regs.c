@@ -383,8 +383,8 @@ void vt_reset(void)
     // under opcode encryption, but THIS loop is provably safe: its
     // branch byte $F0 is invariant under the bit5<->6 swap and the loop
     // has no side effects.  Verify the exact raw signature and install
-    // via set_cpu_hack (now encryption-aware: it refuses non-invariant
-    // rows and re-homes the default BNE hack to op_table[$B0]).
+    // via set_cpu_hack (encryption-aware: s.86 decodes the opcode through
+    // vt_op_dec and patches the raw byte, for every submapper).
     // Loop cost ~9 cycles/iteration; num_incs=0 (pure wait).
     {
         static const u8 sig[6] = {0xC5,0x26,0xA5,0x26,0xF0,0xFC};

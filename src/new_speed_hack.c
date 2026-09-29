@@ -476,7 +476,9 @@ void speedhack_manager(const u8* initpc, const u8* lastbank, int hacknum)
 	// the default BNE hack to op_table[0xB0] and installs the semantically
 	// correct _D0y for SA -- so it is SAFE for SA (boots, stable f2400 soak,
 	// 67%).  SA no longer hand-seeds any hack (see vt_regs.c); it relies on
-	// this finder entirely.
+	// this finder entirely.  s.86: the finder and set_cpu_hack now decode
+	// opcodes for every encryption mode (vt_op_dec), so SA's LDA $6816 /
+	// BNE wait (raw $B0, refused before) is hacked too: 55 -> 60 fps.
 	speedhack_T *sh=&speedhacks[hacknum];
 
 	hack_to_install=0;
