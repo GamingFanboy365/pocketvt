@@ -29,6 +29,7 @@ frames.
 | Cart | State |
 |------|-------|
 | Star Ally, Lonely Island, Scramble | working (regression controls); 97-99% picture |
+| Jewel Master VT03 | working (Jungletac opcode encryption, 4bpp background with BKEXTEN, 16-colour sprites); title 99.9%, gameplay 98-99% picture |
 | Lucky Lawn Mower (VT09) | working; 99.7% picture, colours match the reference exactly |
 | VG Pocket 50-in-1 (VT09) | all 50 games run; mean exact-colour match 98.3% across all 50 |
 | Push the Ball, Time Pilot | working; 97-100% picture |

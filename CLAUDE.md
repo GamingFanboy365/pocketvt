@@ -85,20 +85,24 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
 - Tile-partition matching against a reference identifies which ROM tile a
   screen cell uses independently of palette (s.68).
 - `-DFORCE_BK_REPAIR`: if a BKEXTEN screen looks scrambled, a clean result
-  here means a cache stomp, not a decode fault (s.69).
+  here means a cache stomp, not a decode fault (s.69). `-DBK_STOMP_PROBE`
+  counts slot pages that differ from a fresh assembly (vt_bk_probe), then
+  ftwatch the first address for the writer (s.85b).
 - tools/probes/: one-question mGBA harnesses (speed, frame hashes, VRAM/RAM
   dumps, live PC/lastbank, single-step watchpoints, stack depth). README there.
 - Diagnostic hooks used this project: DMA_LOG (mapVT.s video DMA), TLOG /
   NMIDBG style counters. Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.84)
-See MAINTAINERS_GUIDE.md s.84 (VT369 sound CPU HLE; corrects s.83), s.83 (bank switching), s.82 (VT369 enhanced picture, $3000 nametable window),
+## Current state (after s.85)
+See MAINTAINERS_GUIDE.md s.85 (VT369 start-up stall; Jewel Master VT03 sprites
+and BKEXTEN slot checksums), s.84 (VT369 sound CPU HLE; corrects s.83), s.83 (bank switching), s.82 (VT369 enhanced picture, $3000 nametable window),
 s.81 (VT369 $6000 ROM, 15-bit palette), s.80 (VT369 CPU side), s.79 (Table Soccer, VG colours, real BIOS, wait
 states, sound) and s.77-78 (raster-split slots, speed).
 - Working: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower VT09, VG Pocket
   (all 50; colours now Furbtendulator's), Push the Ball, Time Pilot, Add 'em Up,
   Aero Gyrodine, Hex City X, Table Soccer VT03 (mapper 419; menus/match 96-99%),
+  Jewel Master VT03 (256.15, BKEXTEN + 16-colour sprites; title 99.9%),
   Table Soccer VT369 (non-enhanced renderer; select screen 99.9%, match 96.7%),
   Lucky Lawn Mower VT369 (99.7%), Jewel Master (99.9%) and Fire Fighter VT369
   (96%; game-state drift) through the enhanced renderer, src/ppu_vt369.c.
@@ -142,8 +146,9 @@ states, sound) and s.77-78 (raster-split slots, speed).
    absent. The APU plays ~2.2x louder than Furbtendulator's mix (s.84b).
    Measure with tools/probes/pvtwav + wavcmp.py (not for real-time streams:
    its envelope stretches for game speed, s.84b).
-3. Stale BG tile cache (item 21): Push the Ball's 20 px, and a band of missing
-   tiles in a few VG games that moves with timing (nametables match exactly).
+3. Stale BG tile cache (item 21): Push the Ball's 20 px. The VG band of
+   missing tiles was a BKEXTEN slot stomp, fixed by the slot checksums (s.85c);
+   the VG games at 96-98% (3/4, 3/5, 4/1, 4/2) still have a small residue.
 4. Aero/Hex title speed 41-42/60 (s.78d); profile with cycprof.
 5. Table Soccer formation screen: two 6-line strips need a sixth char block.
 6. Scramble's shot (s.70c): one-pixel sprite on texture row 7 dropped by the
@@ -161,7 +166,7 @@ LOCAL ONLY, gitignored, never commit (the user supplies them as test.zip):
 - testroms/: Add 'em Up, Push the Ball, Scramble, Table Soccer (VT03), Time
   Pilot; supplied later: Aero Gyrodine, Hex City X, VG Pocket VT09, Lucky Lawn
   Mower VT369, Table Soccer VT369, Fire Fighter VT369, Jewel Master VT369,
-  Star Ally, Lonely Island, LLM VT09.
+  Star Ally, Lonely Island, LLM VT09, Jewel Master VT03.
 
 In git:
 - DATASHEET_DIGEST*.md: VT02/VT03 datasheet notes. Bit numbering there is
