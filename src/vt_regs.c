@@ -123,6 +123,10 @@ EWRAM_BSS u8 vt_mirror_value;
 // this fix the palette never gets initialized off the all-$3F boot value,
 // producing a black screen even though the rest of the game runs fine.
 u8 vt_dma_settings = 0;
+/* s.86: DMA source address, low byte.  $4034 bits 4-7 on VT03 (and on VT369
+ * while $201D bit 0 is clear); $4024 on VT369 in enhanced mode, as
+ * Furbtendulator's APU_VT369::IntWrite.  Used by both $4014 paths. */
+EWRAM_BSS u8 vt_dma_lo;
 
 // Index helper for vt_chr_reg[] from the raw $20xx low byte.
 static inline int vt_chr_reg_index(u8 addr_lo)
@@ -286,6 +290,7 @@ void vt_reset(void)
 {
     { extern void vt369_reset(void); vt369_reset(); }   /* guide s.82 */
     { extern void vt369_snd_reset(void); vt369_snd_reset(); }   /* guide s.84 */
+    vt_dma_lo = 0;
     // Preserve submapper across reset -- loadcart.c sets it from the iNES
     // header before mapVTinit runs.
     u8 saved_submapper = vt.submapper;
@@ -659,6 +664,7 @@ u8 vt09_decode_opcode(u8 raw)
 // below the stack top and were popping IWRAM_CANARY_2 as a return address).
 EWRAM_BSS static void *vt_optable_canonical[256];
 static u8    vt_optable_saved = 0;
+static void vt_sh_tables(void);
 
 __attribute__((target("arm")))
 void vt_rebuild_optable(void)
@@ -672,6 +678,7 @@ void vt_rebuild_optable(void)
     // Fast path: encryption off -> identity copy.
     if (!vt.encryption_active) {
         for (int i = 0; i < 256; ++i) op_table[i] = vt_optable_canonical[i];
+        vt_sh_tables();
         return;
     }
 
@@ -680,6 +687,34 @@ void vt_rebuild_optable(void)
         u8 decrypted = vt09_decode_opcode((u8)i);
         op_table[i] = vt_optable_canonical[decrypted];
     }
+    vt_sh_tables();
+}
+
+/* s.86: the speed-hack finder and set_cpu_hack read opcode bytes from PRG,
+ * which are encrypted on submappers 12-15.  vt_op_dec maps a raw byte to the
+ * opcode it runs; vt_sh_raw[n] is the raw byte that runs branch n ($10+$20n)
+ * or, for n = 8, JMP abs; vt_sh_norm[n] is the handler that byte runs with no
+ * hack installed.  A rebuild restores every op_table slot, which removes an
+ * installed hack, so the hack state is cleared for set_cpu_hack to redo. */
+EWRAM_BSS u8 vt_op_dec[256];
+EWRAM_BSS u8 vt_sh_raw[9];
+EWRAM_BSS void *vt_sh_norm[9];
+extern const u8 *_speedhack_pc, *_speedhack_pc2;
+
+__attribute__((target("arm")))
+static void vt_sh_tables(void)
+{
+    for (int i = 0; i < 256; ++i)
+        vt_op_dec[i] = vt.encryption_active ? vt09_decode_opcode((u8)i) : (u8)i;
+    for (int n = 0; n < 9; ++n) {
+        u8 canon = n < 8 ? (u8)(0x10 + 0x20 * n) : 0x4C;
+        int r = 0;
+        while (r < 255 && vt_op_dec[r] != canon) r++;
+        vt_sh_raw[n] = (u8)r;
+        vt_sh_norm[n] = vt_optable_canonical[canon];
+    }
+    _speedhack_pc = 0;
+    _speedhack_pc2 = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -980,6 +1015,7 @@ void vt_reg_write(u8 addr_lo, u8 val)
     if (vt_console == 0x0A) {
         extern void vt369_snd_ctl(u32 val);
         if (addr_lo == 0x62) vt369_snd_ctl(val);      /* s.84: sound CPU on/off */
+        else if (addr_lo == 0x2D && val == 0) vt_dma_lo = 0;   /* s.86: as the reference */
         else if (addr_lo >= 0x40 && addr_lo < 0x60) { /* s.84: GPIO mask / latch */
             const u32 port = (addr_lo >> 3) & 3, r = addr_lo & 7;
             if (r == 0) vt369_gpio_mask[port] = val;

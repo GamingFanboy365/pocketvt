@@ -479,6 +479,7 @@ write_vt4xxx:
     and     r1, r12, #0xFF
     cmp     r1, #0x34
     cmpne   r1, #0x14
+    cmpne   r1, #0x24                @ s.86: VT369 DMA source low byte
     ldrne   pc, =IO_W                @ plain APU write: no frame, no call
 
     stmfd   sp!, {r12, lr}
@@ -513,6 +514,8 @@ write_vt4xxx:
     beq     .Lvt_w_4034
     cmp     r2, #0x14
     beq     .Lvt_w_4014
+    cmp     r2, #0x24
+    beq     .Lvt_w_4024
 
     @ (Standard APU writes never reach here any more -- they tail-jumped to
     @ IO_W in the prologue above.  Kept as a safety net.)
@@ -525,6 +528,41 @@ write_vt4xxx:
 .Lvt_w_4034:
     ldr     r1, =vt_dma_settings
     strb    r0, [r1]
+    @ s.86: bits 4-7 are the DMA source's low byte, except on VT369 while
+    @ $201D bit 0 is set (Furbtendulator APU_VT369::IntWrite $4034)
+    ldr     r1, =vt_console
+    ldrb    r1, [r1]
+    cmp     r1, #0x0A
+    bne     1f
+    ldr     r1, =vt369_reg
+    ldrb    r1, [r1, #0x1D]
+    tst     r1, #1
+    bne     .Lvt_write_done
+1:
+    and     r1, r0, #0xF0
+    ldr     r2, =vt_dma_lo
+    strb    r1, [r2]
+    b       .Lvt_write_done
+
+@ ------------------------------------------------------------------
+@ $4024 W -- s.86: on VT369 in enhanced mode ($201E != 0) the DMA source's
+@ low byte (Zuma DMAs its palette from $8080 and its map from $8160; with
+@ the low byte ignored the map came from $8100 and showed palette words).
+@ Elsewhere it goes to the stock handler as before.
+@ ------------------------------------------------------------------
+.Lvt_w_4024:
+    ldr     r1, =vt_console
+    ldrb    r1, [r1]
+    cmp     r1, #0x0A
+    bne     1f
+    ldr     r1, =vt369_reg
+    ldrb    r1, [r1, #0x1E]
+    cmp     r1, #0
+    ldrne   r1, =vt_dma_lo
+    strneb  r0, [r1]
+    bne     .Lvt_write_done
+1:
+    bl_long IO_W
     b       .Lvt_write_done
 
 @ ------------------------------------------------------------------
@@ -575,9 +613,10 @@ write_vt4xxx:
     mov     r7, #1
     mov     r7, r7, lsl r2           @ r7 = length
 
-    @ Source address: (r0 << 8) | (r1 & 0xF0)
-    @ NES_RAM only goes to $07FF, so we'll mask each fetch.
-    and     r4, r1, #0xF0            @ low nibble of mid byte
+    @ Source address: (r0 << 8) | vt_dma_lo (s.86: $4034 & 0xF0, or $4024
+    @ on VT369).  NES_RAM only goes to $07FF, so we'll mask each fetch.
+    ldr     r4, =vt_dma_lo
+    ldrb    r4, [r4]
     orr     r6, r4, r0, lsl #8       @ r6 = full 16-bit source addr
 
     @ Fast path: LI (and other VT titles) blast the whole palette here every

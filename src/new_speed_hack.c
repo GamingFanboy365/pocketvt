@@ -1,4 +1,7 @@
 #include "includes.h"
+#if VT_MODE
+#include "vt_regs.h"
+#endif
 
 extern u16 SPEEDHACK_TEMP_BUF[48];
 extern u16 SPEEDHACK_INCS[64];
@@ -10,6 +13,14 @@ extern u32 speedhack_divider;
 extern int speedhack_cycles;
 
 #define LOOKBACK 18
+
+#if VT_MODE
+/* s.86: the opcode a PRG byte runs (encrypted on VT submappers 12-15). */
+extern u8 vt_op_dec[256];
+#define OP(b) (vt_active ? vt_op_dec[(u8)(b)] : (u8)(b))
+#else
+#define OP(b) ((u8)(b))
+#endif
 
 static __inline u8 ins_table(int addr);
 static __inline bool forward_branch_is_jump_back(const u8 *pc, int branchlength, int initpc_16, const u8 *lastbank);
@@ -111,7 +122,7 @@ static __inline u8 ins_table(int addr)
 static __inline bool forward_branch_is_jump_back(const u8 *pc, int branchlength, int initpc_16, const u8 *lastbank)
 {
 	const u8* branch_dest=pc+2+branchlength;
-	if ((ins_table(*branch_dest)&0x0F)==5)
+	if ((ins_table(OP(*branch_dest))&0x0F)==5)
 	{
 		int dest_addr=branch_dest[1]+branch_dest[2]*256;
 		if (dest_addr<=initpc_16 && dest_addr>=initpc_16-LOOKBACK)
@@ -125,7 +136,7 @@ static __inline bool forward_branch_is_jump_back(const u8 *pc, int branchlength,
 static __inline bool forward_branch_is_jump_back_2(const u8 *pc, int branchlength, int start_16)
 {
 	const u8* branch_dest=pc+2+branchlength;
-	if ((ins_table(*branch_dest)&0x0F)==5)
+	if ((ins_table(OP(*branch_dest))&0x0F)==5)
 	{
 		int dest_addr=branch_dest[1]+branch_dest[2]*256;
 		if (dest_addr==start_16)
@@ -148,7 +159,7 @@ static const u8 *find_first_instruction(const u8 *initpc, const u8 *lastbank, co
 	int init_pc_16=initpc-lastbank;
 	while (pc < pc_limit)
 	{
-		u8 ins=ins_table(*pc);
+		u8 ins=ins_table(OP(*pc));
 		int len=(ins>>4)&3;
 		int action=ins&0x0F;
 		if (action==0x0F) return NULL;
@@ -208,7 +219,7 @@ static const u8 *find_hack(const u8 *start_pc, const u8 *branchpc, const u8 *las
 	while (pc<branchpc)
 	{
 		//check if an instruction disqualifies
-		u8 ins=ins_table(*pc);
+		u8 ins=ins_table(OP(*pc));
 		int len=(ins>>4)&3;
 		int action=ins&0x0F;
 		int iswrite=(ins>>6);
@@ -283,7 +294,7 @@ static const u8 *find_hack(const u8 *start_pc, const u8 *branchpc, const u8 *las
 out_loop:
 	if (pc!=branchpc) return NULL;
 	
-	if ((*pc & 0x1F)==0x10) //if it's a branch
+	if ((OP(*pc) & 0x1F)==0x10) //if it's a branch
 	{
 		if (last_instruction_was_increment)
 		{
@@ -401,6 +412,10 @@ bool game_specific_hack(const u8 *initpc, const u8 *lastbank, int hacknum)
 	int jumpsize;
 	const u8 *hackbase;
 	
+#if VT_MODE
+	//these match raw bytes: not valid under VT opcode encryption
+	if (vt_active && vt.encryption_active) return false;
+#endif
 	jump=(const u8*)memchr(initpc,0x4C,22);
 	if (!jump) return false;
 	jumppc=jump-lastbank;
