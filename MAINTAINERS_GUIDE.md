@@ -4395,3 +4395,108 @@ Still missing are the sound CPU's other programs ($0203, $02A0, $02E0 and
 $0250 are implemented from the reference but no test cart uses them), the
 per-channel rate divider the real $40AE program has ($188A+ch; the
 reference ignores it too), a low-level sound CPU, and CPU x3.
+
+## 85. The VT369 start-up stall, and Jewel Master VT03
+
+### 85a. VT369 carts stalled for seconds at start-up
+
+The user saw the VT369 games "glitch up at the start, with a delay". The
+speed probe had shown it all along. Jewel Master completed 3 NES frames in its
+first second and then almost none for about five more; Fire Fighter stalled
+for about two. During the stall the ARM sat in vt369_alloc (ppu_vt369.c,
+armprobe), not in the 6502 core. At boot the enhanced background briefly
+holds more distinct tiles than there are VRAM slots. Every cell that found
+no free slot scanned all ~830 slots, and the failure forced a full rebuild
+of both screens on the next frame, which failed the same way: about a second
+of GBA time per NES frame. The half-updated screen during those frames is
+the "glitch".
+
+vt369_alloc now remembers that nothing is free. It fails at once until a
+slot's count drops to 0 (vt369_free_gen) or more slots open up (the high 8bpp
+slots after vt_prg_evict). The retry sweep waits for the same event. Jewel
+Master now runs at 52 fps in its second second, and Fire Fighter at 42. Boot
+costs three full sweeps and about 1,200 tile copies, spread over about 20
+GBA frames. The compare_furb boot frames (NES 3-40) match the reference
+exactly as before. Every cart, VT03 included, spends its first ~45 GBA frames
+in PocketVT's own start-up (bytecopy and friends in cycprof), before the
+game's first frame.
+
+### 85b. Jewel Master VT03: blank sprites, then stomped slots
+
+Jewel Master VT03 (mapper 256 submapper 15, Jungletac opcode encryption,
+which PocketVT already had) runs $2010 = $16: BK16EN, SP16EN and BKEXTEN,
+without SPEXTEN or PIX16EN. No earlier test cart combines 16-colour sprites
+with BKEXTEN. Star Ally has BKEXTEN, but its sprites are 2bpp. On the title
+the high-score digits were missing and in gameplay the playfield showed
+garbage (struct 86%).
+
+The first fault was the sprites. 16-colour sprites without the extended
+sprite path are copied into their OBJ slots from vt_chr4_buf
+(vt_obj4_overlay). Only the non-BKEXTEN branch of vt_chr4_rebuild_if_dirty
+ever filled that buffer; the BKEXTEN branch returns early. So under BKEXTEN
+the buffer stayed zero and every sprite tile was blank. The BKEXTEN branch
+now runs vt_chr4_assemble when the buffer is dirty, SP16EN is set and the
+extended sprite path is off. It fills the buffer only, since BKEXTEN owns BG
+VRAM, and runs after IME is restored because it costs about 80K cycles.
+
+The second fault was the title's background: a band of wrong tiles under
+"JEWEL", and wrong tiles by the "M", over "HI SCORE" and around the left moai.
+A -DFORCE_BK_REPAIR build drew every tile right, so by s.69b this was a stomp.
+The slots, the map and the nametable were all correct at frame 150: a new
+-DBK_STOMP_PROBE build compares each slot with a fresh assembly every frame,
+and a cell check against the dumped map showed 0 bad cells. But slot tiles
+100-124 and 533-573 differed from the probe build's. ftwatch found the
+writer: render_recent_tiles (ppu.s, render_tiles_2 in cart.s), PocketNES's
+CHR-RAM path, which converts tiles the game writes through $2007. Jewel
+Master writes to pattern space once at frame 20, and the conversion landed
+on two BKEXTEN slots. The one-word signature (s.69b) did not notice, because
+the stomp missed that word. The probe build caught the same stomps, but its
+different timing let the signature see them.
+
+Each slot now also keeps a checksum of its whole 2 KB page, taken when it is
+filled (vt_bk_page_sum). vt_bk_frame_check re-verifies one slot a frame
+against it, round robin, so any stomp is repaired within VT_BK_SLOTS (10)
+frames at about 1.5K cycles a frame. The title went from 93.0% to 99.88%.
+Gameplay went from 86% to 98.4-98.9%, and what is left there is the jewels:
+the game generates them at random, so the reference's differ.
+
+Colours are a separate matter. exact5 is 4% on the title and 22% in
+gameplay, because the default VT03 table (vt_compat_rgb555) was fitted to
+real-hardware photos of Star Ally and Lonely Island (s.57), while
+Furbtendulator uses a standard NES-style palette for VT03 (its yellow $28 is
+#BDC000, ours #909000). The photos are still the reference for that table.
+Whether VT03 follows Furbtendulator, as VG Pocket did in s.79b, is the
+user's call.
+
+### 85c. Regression
+
+Star Ally is the one control that moved. Its boot runs about 4 GBA frames
+later (the new fill-time checksum), so the partly built title frames at GBA
+56-73 differ from main's. From frame 74 every frame is one main renders.
+Measured per NES frame against the reference, the boot is as good or better:
+frame 10 is 100% against main's 99.38%. Lonely Island and Scramble are
+byte-identical over 800 frames. VG Pocket is a subset of main. Lucky Lawn
+Mower VT09 and Table Soccer VT03 each add one boot-transition frame. Speed is
+unchanged: Star Ally 55-56, Table Soccer VT03 43-44, the rest 60.
+
+The slot checksum also fixes most of open item 3 in VG Pocket. The band of
+missing background tiles "that moves with timing" (s.79b) was this same kind
+of stomp. Across all 50 games at NES frames 900 and 1100:
+
+| Game (category/game) | Before | After |
+|---|---|---|
+| 0/3 | 91.06% | 100% |
+| 1/3 and 1/9 | 95.88% | 100% |
+| 2/1 and 2/2 | 94.14% | 100% |
+| 3/1, 3/2, 3/8 and 3/9 | 97.3% | 99.4% |
+| 3/4 and 3/5 | 96.8% | 98.4% |
+| 4/3 and 4/4 (frame 1100) | 98.2% | 98.8% |
+
+Game 2/5 at frame 900 went from 99.68% to 99.05%, and the difference is where
+the enemy planes are: gameplay timing, not drawing, and frame 1100 is
+identical. (One pass also showed game 0/0 at 34.9%. It was measured while
+play ROMs were being rebuilt in the same build directory, and a clean re-run
+gives 100% at every frame from 700 to 1000 on both builds.) Every other game
+is unchanged. The picture regression over all 16 test ROMs at frames 150,
+400 and 700 is the same as PR #8 or better (Star Ally frame 400: 99.59% to
+99.64%).

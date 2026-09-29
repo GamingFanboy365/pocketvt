@@ -1274,6 +1274,7 @@ void vt_chr4_do_rebuild(void)
 // the thumb bit). Switches to a private stack so the heavy work doesn't
 // overflow the tiny vblank IRQ stack.
 extern u8 vt_split_frame;
+extern u8 vt_spr16_active;
 static void vt_split_repair(void);
 __attribute__((target("arm")))
 void vt_chr4_rebuild_if_dirty(void)
@@ -1309,6 +1310,15 @@ void vt_chr4_rebuild_if_dirty(void)
         vt_bk_frame_check();       // repair any 2bpp-cache stomps
         vt_bk_scrub();             // rotating map refresh (see below)
         *ime = saved;
+        /* s.85: 16-colour sprites without the extended sprite path
+         * (vt_obj4_overlay) are copied from vt_chr4_buf, which only the
+         * non-BKEXTEN branch below used to fill: under BKEXTEN it stayed
+         * zero and every sprite was blank (Jewel Master VT03, $2010=$16).
+         * Buffer only -- BKEXTEN owns BG VRAM -- and outside the IME mask. */
+        if (vt_chr4_dirty && (vt_reg_2010 & 0x04) && !vt_spr16_active) {
+            vt_chr4_dirty = 0;
+            vt_chr4_assemble();
+        }
         return;
     }
     // Apply any pending CHR sync exactly once per frame -- must run in ALL
@@ -1640,9 +1650,20 @@ EWRAM_BSS u16 vt_bk_slot_bank[VT_BK_SLOTS];   // extended bank last assembled
 EWRAM_BSS u32 vt_bk_slot_sig[VT_BK_SLOTS];    // value at sig word (stomp check)
 EWRAM_BSS u16 vt_bk_slot_sigoff[VT_BK_SLOTS]; // index of first NONZERO word; 0xFFFF = page all-zero
 EWRAM_BSS u8  vt_bk_slot_age[VT_BK_SLOTS];
+/* s.85: the one-word signature only sees a stomp that hits that word.
+ * PocketNES's CHR-RAM tile path (render_recent_tiles) rewrote part of two
+ * slots at Jewel Master VT03's frame 20 and left the signature word alone,
+ * so the title kept 66 wrong tiles for good.  Each slot also keeps a
+ * checksum of its whole page; vt_bk_frame_check re-verifies one slot a
+ * frame against it, so any stomp is repaired within VT_BK_SLOTS frames. */
+EWRAM_BSS u32 vt_bk_slot_sum[VT_BK_SLOTS];
+EWRAM_BSS u8  vt_bk_verify_cur;
 EWRAM_BSS u8  vt_bk_clock;
 EWRAM_BSS u8  vt_bk_pending_whole;   // whole-map rebuild deferred to vblank
 EWRAM_BSS u16 vt_bk_lut[32];         // (page<<2|attr)&31 -> slot base tile, 0xFFFF=miss
+#ifdef BK_STOMP_PROBE
+EWRAM_BSS u32 vt_bk_probe[4];        /* 0 stomped slot-checks 1 first address 2 slot 3 sig still matched */
+#endif
 EWRAM_BSS u32 vt_bk_dbg[8];          // 0 flips 1 inval 2 wholes 3 allocs 4 cells 5 attrN0 6 lastab 7 lastattr
 
 __attribute__((section(".iwram.vtbk")))
@@ -1668,6 +1689,15 @@ void vt_bk_invalidate(void)
 }
 
 void vt_bk_lut_refresh(void);
+
+static u32 vt_bk_page_sum(u32 dest)
+{
+    const volatile u32 *d = (const volatile u32 *)dest;
+    u32 sum = 0;
+    for (int w = 0; w < 512; w += 4)
+        sum = (sum << 1 | sum >> 31) + (d[w] ^ d[w + 1] * 3u ^ d[w + 2] * 5u ^ d[w + 3] * 7u);
+    return sum;
+}
 
 static void vt_bk_slot_fill(int s, u32 bank)
 {
@@ -1698,6 +1728,7 @@ static void vt_bk_slot_fill(int s, u32 bank)
     if (off == 0xFFFF) off = offnz;
     vt_bk_slot_sigoff[s] = off;
     vt_bk_slot_sig[s]    = (off == 0xFFFF) ? 0u : d[off];
+    vt_bk_slot_sum[s]    = vt_bk_page_sum(dest);
 }
 
 static inline u32 vt_bk_eva(u32 attr)
@@ -1773,12 +1804,37 @@ void vt_bk_frame_check(void)
         u16 off = vt_bk_slot_sigoff[s];
         if (off == 0xFFFF) continue;   // page genuinely all-zero: nothing to protect
         u32 dest = 0x06000000u + (u32)vt_bk_slot_idx[s] * 32u;
+#ifdef BK_STOMP_PROBE
+        {   /* DIAGNOSTIC (s.85): full compare against a fresh assembly */
+            static EWRAM_BSS u32 tmp[512];
+            extern u32 vt_bk_probe[4];
+            vt_assemble_page_to((u32)tmp, vt_bk_slot_bank[s], VT_BG_SWAP16);
+            const volatile u32 *v = (const volatile u32 *)dest;
+            for (int w = 0; w < 512; w++) if (v[w] != tmp[w]) {
+                vt_bk_probe[0]++;
+                if (!vt_bk_probe[1]) { vt_bk_probe[1] = dest + w * 4; vt_bk_probe[2] = s; vt_bk_probe[3] = v[w] != tmp[w] && (v[off] == vt_bk_slot_sig[s]); }
+                break;
+            }
+        }
+#endif
 #ifdef FORCE_BK_REPAIR
         if (1)   /* DIAGNOSTIC: re-assemble every extension slot every frame */
 #else
         if (((const volatile u32*)dest)[off] != vt_bk_slot_sig[s])
 #endif
             { vt_asm_from_framecheck++; vt_assemble_page_to(dest, vt_bk_slot_bank[s], VT_BG_SWAP16); }
+    }
+    {   /* s.85: one whole slot a frame, round robin */
+        const int s = vt_bk_verify_cur;
+        vt_bk_verify_cur = (u8)(s + 1 >= VT_BK_SLOTS ? 0 : s + 1);
+        const u8 k = vt_bk_slot_key[s];
+        if (k != 0 && k != 0xFF) {
+            const u32 dest = 0x06000000u + (u32)vt_bk_slot_idx[s] * 32u;
+            if (vt_bk_page_sum(dest) != vt_bk_slot_sum[s]) {
+                vt_asm_from_framecheck++;
+                vt_assemble_page_to(dest, vt_bk_slot_bank[s], VT_BG_SWAP16);
+            }
+        }
     }
 }
 

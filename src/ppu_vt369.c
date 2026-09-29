@@ -66,6 +66,16 @@ EWRAM_BSS u16 vt369_alloc_cur;
 EWRAM_BSS u16 vt369_verify_cur;
 EWRAM_BSS u8  vt369_full;              /* re-derive every map cell */
 EWRAM_BSS u8  vt369_retry;             /* a cell found no slot: sweep again */
+/* s.85: when no slot is free, say so at once until one is freed (a count
+ * drops to 0) or more slots open up.  Each failing cell used to scan all
+ * ~830 slots and force a full rebuild the next frame, which failed the
+ * same way: ~1 s of GBA time per NES frame while a screen holds more
+ * distinct tiles than there are slots (the boot screens of Jewel Master
+ * and Fire Fighter). */
+EWRAM_BSS u16 vt369_free_gen;          /* bumps when a slot's count drops to 0 */
+EWRAM_BSS u16 vt369_full_gen;          /* free_gen when alloc last found none */
+EWRAM_BSS u16 vt369_full_n;            /* slot count then */
+EWRAM_BSS u8  vt369_nofree;
 EWRAM_BSS u32 vt369_cfg;               /* cfg the cache was built for */
 EWRAM_BSS u16 vt369_gba_pal[384] __attribute__((aligned(4)));   /* 256 BG + 128 OBJ */
 
@@ -124,6 +134,7 @@ static void vt369_cache_reset(void)
     vt369_alloc_cur = 0;
     vt369_verify_cur = 0;
     vt369_full = 1;
+    vt369_nofree = 0;
 }
 
 static void vt369_copy_tile(u32 s, u32 tile)
@@ -148,11 +159,13 @@ static u32 vt369_nslot_now(void)
 static u32 vt369_alloc(void)
 {
     const u32 n = vt369_nslot_now();
+    if (vt369_nofree && vt369_full_gen == vt369_free_gen && vt369_full_n == n) return 0xFFFF;
     u32 s = vt369_alloc_cur;
     for (u32 k = 0; k < n; k++, s++) {
         if (s >= n) s = 0;
         if (vt369_rc[s] == 0) { vt369_alloc_cur = (u16)(s + 1); return s; }
     }
+    vt369_nofree = 1; vt369_full_gen = vt369_free_gen; vt369_full_n = (u16)n;
     return 0xFFFF;
 }
 
@@ -163,7 +176,7 @@ static void vt369_cell_set(u32 o, u32 tile)
     if (old == tile) return;
     if (old != 0xFFFF) {
         const u32 so = vt369_t2s[old];
-        if (so != 0xFFFF && vt369_rc[so]) vt369_rc[so]--;
+        if (so != 0xFFFF && vt369_rc[so] && --vt369_rc[so] == 0) vt369_free_gen++;
     }
     u32 s = vt369_t2s[tile];
     if (s == 0xFFFF) {
@@ -242,7 +255,8 @@ static void vt369_bg_update(void)
     u32 *sh = (u32 *)vt369_nt_shadow;
     const u32 *cur = (const u32 *)nt;
 
-    if (vt369_full || vt369_retry) {
+    if (vt369_full || (vt369_retry && (!vt369_nofree || vt369_free_gen != vt369_full_gen
+                                       || vt369_nslot_now() != vt369_full_n))) {
         vt369_full = vt369_retry = 0;
         vt369_dbg[0]++;
         for (u32 i = 0; i < 0x200; i++) sh[i] = cur[i];
