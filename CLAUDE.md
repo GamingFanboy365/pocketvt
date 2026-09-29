@@ -127,7 +127,8 @@ states, sound) and s.77-78 (raster-split slots, speed).
 
 ## Open work, in priority order
 1. VT369 leftovers (s.82): 8bpp sprites, hi-res mode ($201C bit 2), CPU x3
-   ($411C bit 7; Fire Fighter runs 44-51 NES fps), the VT369 sound CPU.
+   ($411C bit 7; Fire Fighter runs 44-51 NES fps), the VT369 sound CPU, and
+   Jewel Master's RNG seed ($44 differs from frame 20; s.82 end).
 2. Sound (s.79d): VT ADPCM $4120-$412F only mixes while NES DMC plays; the
    TK-8007 voice (Table Soccer) is not played; second APU $4020-$402F and the
    VT369 sound CPU are absent. Measure with tools/probes/pvtwav + wavcmp.py.

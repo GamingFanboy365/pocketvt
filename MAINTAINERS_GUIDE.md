@@ -4183,3 +4183,12 @@ Table Soccer VT03, Lucky Lawn Mower VT09 and Table Soccer VT369 have 1, 1 and
 frame, and frame 700 is identical in every case. Not done: 8bpp sprites,
 hi-res mode ($201C bit 2), sprite priority against 8bpp BG colour 0 (GBA
 priority 3 behind BG0 is used), CPU x3, and the sound CPU.
+
+Why Jewel Master drifts. Its CPU RAM matches Furbtendulator's from frame 20
+on, apart from frame counters one frame apart (capture alignment) and $44,
+which differs from the start (7E against 57 at frame 20) and looks like the
+random-number state. From about frame 300 the attract-mode games differ,
+and at frame 1500 the reference is already in its game-over fill while
+PocketVT's game is still running. The seed source is not found yet. Reading
+uninitialised RAM, the sound CPU's registers and the timer are the
+candidates to trace first.
