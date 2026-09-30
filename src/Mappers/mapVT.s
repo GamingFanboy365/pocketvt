@@ -197,13 +197,16 @@ mapVTinit:
     bl_long vt_set_mirroring
 
     @ Install the $4100-$41FF write hook ------------------------------
-    adr     r1, write_vt4xxx
+    ldr     r1, =write_vt4xxx
     ldr     r2, =vt_tk8007          @ mapper 419: $4016 also clocks the ADPCM MCU
     ldrb    r2, [r2]
     cmp     r2, #0
-    adrne   r1, write_tk4xxx
+    ldrne   r1, =write_tk4xxx
     str_    r1, writemem_4
-    ldreq   r2, =vt_w4_next         @ s.87: the VRAM fast entry goes first
+    ldreq   r2, =vt_w4_slow         @ s.87: the VRAM fast entry goes first,
+    streq   r1, [r2]                @ s.89: then vt_w4_bank, then this
+    ldreq   r2, =vt_w4_next
+    ldreq   r1, =vt_w4_bank
     streq   r1, [r2]
     ldreq   r1, =write_vt4xxx_v
     streq_  r1, writemem_4
@@ -242,7 +245,10 @@ mapVTinit:
     ldr     r1, =read_vt369_4xxx
     str_    r1, readmem_4
     ldr     r1, =write_vt369_4xxx
-    ldr     r2, =vt_w4_next         @ s.87: behind the VRAM fast entry
+    ldr     r2, =vt_w4_slow         @ s.87: behind the VRAM fast entry
+    str     r1, [r2]                @ s.89: and vt_w4_bank
+    ldr     r2, =vt_w4_next
+    ldr     r1, =vt_w4_bank
     str     r1, [r2]
     ldr     r1, =write_vt4xxx_v
     str_    r1, writemem_4
@@ -524,13 +530,13 @@ write_vt4xxx:
     cmpne   r1, #0x24                @ s.86: VT369 DMA source low byte
     ldrne   pc, =IO_W                @ plain APU write: no frame, no call
 
-    stmfd   sp!, {r12, lr}
+    stmfd   sp!, {r3, r12, lr}
     b       .Lvt_w_40_special
 
 .Lvt_w_maybe41:
     cmp     r1, #0x41
     ldrne   pc, =IO_W                @ $42xx-$4Fxx: stock, no frame
-    stmfd   sp!, {r12, lr}
+    stmfd   sp!, {r3, r12, lr}
     b       .Lvt41xx
 
 .Lvt_w_40_special:
@@ -767,8 +773,102 @@ write_vt4xxx:
     bl_long vt_set_mirroring
 
 .Lvt_write_done:
-    ldmfd   sp!, {r12, pc}
+    ldmfd   sp!, {r3, r12, pc}
 
+
+@ ============================================================================
+@ vt_w4_bank -- s.89: $4107/$4108 with a new value (write_vt4xxx_v returns at
+@ once for the old value) maps its one window here, from the mask, OR and
+@ window order vt_recompute_prg_banks caches in vt_q.  Fire Fighter VT369
+@ writes them ~60 times a NES frame; through vt_reg_write, the recompute and
+@ vt_apply_prg_dirty that cost ~25K cycles.  Anything else, or before the
+@ timer has armed the fast paths, goes to vt_w4_slow.  r0 = value,
+@ r12 = address.  r3 is the 6502's N/Z (m6502_nz): writemem handlers may only
+@ clobber r0-r2 and addy, so it is saved here and on the C paths below.
+@ ============================================================================
+    .global vt_w4_bank
+vt_w4_bank:
+#ifdef VT_NO_W4_BANK
+    b       8f
+#endif
+    and     r1, r12, #0xFF00
+    cmp     r1, #0x4100
+    bne     8f
+    and     r1, r12, #0xFF
+    sub     r2, r1, #0x36
+    cmp     r2, #1
+    bls     5f                       @ $4136/$4137: the divider
+    sub     r1, r1, #0x07
+    cmp     r1, #1
+    bhi     8f
+    ldr     r2, =vt_w41_fast
+    ldrb    r2, [r2]
+    tst     r2, #2
+    beq     8f
+    ldr     r2, =vt
+    add     r2, r2, r1
+    strb    r0, [r2, #0x07]          @ vt.reg[7 + r1]
+    stmfd   sp!, {r3, r12, lr}
+    ldr     r2, =vt_q
+    ldr     r3, [r2]                 @ mask
+    and     r0, r0, r3
+    ldr     r3, [r2, #4]             @ OR
+    orr     r0, r0, r3
+    add     r3, r2, #8
+    ldrb    r1, [r3, r1]             @ window: 0/1, or 2 for $4107 under COMR6
+    ldr     r2, =vt_prg_banks
+    add     r2, r2, r1, lsl #1
+    ldrh    r3, [r2]
+    cmp     r3, r0
+    ldmeqfd sp!, {r3, r12, pc}
+    strh    r0, [r2]
+    cmp     r1, #1
+    bhi     3f
+    beq     2f
+    bl_long map89_
+    ldmfd   sp!, {r3, r12, pc}
+2:  bl_long mapAB_
+    ldmfd   sp!, {r3, r12, pc}
+3:  bl_long mapCD_
+    ldmfd   sp!, {r3, r12, pc}
+@ s.89: $4136/$4137, the divisor (VT32/VT369 ALU, as vt_reg_write).  Jewel
+@ Master VT369 divides ~220 times in some frames; through vt_reg_write and
+@ two libgcc divisions one such frame took four GBA frames.  $4136 only
+@ stores its byte ($4136 reads 0: the result is ready at once); $4137 divides
+@ with the BIOS Div (signed, so a dividend with bit 31 set goes to C).
+5:  ldr     r1, =vt_w41_fast
+    ldrb    r1, [r1]
+    tst     r1, #1
+    beq     8f
+    ldr     r1, =vt_alu67
+    strb    r0, [r1, r2]
+    cmp     r2, #0
+    moveq   pc, lr
+    ldrh    r1, [r1]                 @ divisor
+    ldr     r0, =vt_alu14
+    ldr     r0, [r0]                 @ dividend
+    cmp     r1, #0
+    moveq   pc, lr                   @ / 0: nothing changes (vt_reg_write)
+    cmp     r0, #0
+    blt     8f
+    stmfd   sp!, {r3, r12, lr}
+    swi     0x060000                 @ Div: r0 = quotient, r1 = remainder
+    ldr     r2, =vt_alu14
+    str     r0, [r2]
+    ldr     r2, =vt_alu56
+    strh    r1, [r2]
+    ldr     r2, =vt_alu_rd           @ read-back: +0 and +8 mirror
+    str     r0, [r2]
+    str     r0, [r2, #8]
+    strb    r1, [r2, #4]
+    strb    r1, [r2, #12]
+    mov     r1, r1, lsr #8
+    strb    r1, [r2, #5]
+    strb    r1, [r2, #13]
+    ldmfd   sp!, {r3, r12, pc}
+8:  ldr     r1, =vt_w4_slow
+    ldr     pc, [r1]
+    .ltorg
 
 @ ============================================================================
 @ write_vt_rom  (writemem_8 / writemem_A / writemem_C / writemem_E hook)
@@ -787,7 +887,7 @@ write_vt4xxx:
 @ ============================================================================
     .global write_vt_rom
 write_vt_rom:
-    stmfd   sp!, {r12, lr}
+    stmfd   sp!, {r3, r12, lr}
     stmfd   sp!, {r0}
     
     mov     r1, r0              @ r1 = val (C arg 2)
@@ -819,7 +919,7 @@ write_vt_rom:
     bl      vt_apply_prg_dirty
 
 .Lvt_rom_write_done:
-    ldmfd   sp!, {r12, pc}
+    ldmfd   sp!, {r3, r12, pc}
 
 
 @ ============================================================================
@@ -912,7 +1012,7 @@ write_vt4xxx_v:
     .global vt369_ram_R
 vt369_ram_R:
     tst     r12, #0x1000
-    ldreq   pc, =ram_R_mask
+    ldreq   pc, =ram_R_mask          @ patched for 2K or 4K RAM (loadcart.c)
     ldr     r0, =vt369_misc
     ldr     r0, [r0]
     mov     r1, r12, lsl #20
@@ -1043,11 +1143,41 @@ vt369_pal_W:
     ldr     r1, =vt369_pal
     mov     addy, addy, lsl #22
     strb    r0, [r1, addy, lsr #22]
+    str     r2, [sp, #-4]!
+    mov     r2, #1
+    ldr     r1, =vt369_pal_dw       @ s.89: this palette word changed
+    strb    r2, [r1, addy, lsr #24]
     ldr     r1, =vt369_pal_dirty
-    mov     addy, #1
-    strb    addy, [r1]
+    strb    r2, [r1]
+    ldr     r2, [sp], #4
     mov     pc, lr
     .pool
+
+@ ============================================================================
+@ vt369_nt_mark -- s.89: while VT369 enhanced mode is on, writeBG's spare
+@ slot (writeBG_mapper_9_mod, ppu.s; only mapper 9/10 use it) branches here
+@ right after the nametable byte is stored (vt369_nt_hook).  It marks the
+@ nametable word for vt369_nt_diff instead of logging the write in the
+@ PocketNES BG cache ring, which nothing reads in enhanced mode.  In EWRAM
+@ because a B from IWRAM reaches it (ROM is out of range).
+@ In: addy = offset in the 1K screen, r2 = screen base (0/0x400); returns
+@ to writeBG's caller.  Clobbers r1, r2 and addy, like writeBG.
+@ ============================================================================
+    .section .ewram, "ax", %progbits
+    .arm
+    .align 2
+    .global vt369_nt_mark
+vt369_nt_mark:
+    add     addy, addy, r2
+    bic     addy, addy, #0x800      @ 4-screen: a spare mark, harmless
+    ldr     r1, =vt369_nt_dw
+    mov     r2, #1
+    strb    r2, [r1, addy, lsr #2]
+    ldr     r1, =vt369_nt_any
+    strb    r2, [r1]
+    bx      lr
+    .pool
+    .previous
 
     MAPPER_VT = 253
 

@@ -32,7 +32,7 @@ frames.
 | Jewel Master VT03 | working (Jungletac opcode encryption, 4bpp background with BKEXTEN, 16-colour sprites); title 99.9%, gameplay 98-99% picture |
 | Zuma (VT369) | working (Cube Tech opcode encryption, enhanced picture, sound CPU); title 99.6%, gameplay 98% picture (ball colours are random), 60 fps |
 | Jumper (VT369, a Super Mario Bros. hack) | working (CPU x3, 8bpp sprites, sprite-0 split, opcode encryption toggled four times a frame); 99.9% picture, 43-60 NES fps (lowest in the death sequence) |
-| Sky Fighter (VT369) | working (CPU x3, 16x16 sprites, 8bpp scrolling background); title 100%, gameplay 96-98% picture (enemy waves drift from the reference), title 60 and gameplay 49-55 NES fps |
+| Sky Fighter (VT369) | working (CPU x3, 16x16 sprites, 8bpp scrolling background); title 100%, gameplay 96-98% picture (enemy waves drift from the reference), 60 NES fps |
 | Lucky Lawn Mower (VT09) | working; 99.7% picture, colours match the reference exactly |
 | VG Pocket 50-in-1 (VT09) | all 50 games run; mean exact-colour match 98.3% across all 50 |
 | Push the Ball, Time Pilot | working; 97-100% picture |
@@ -41,7 +41,7 @@ frames.
 | Table Soccer (VT03, mapper 419) | working; menus and match 96-99%, 60 NES fps; no voice samples |
 | Table Soccer VT369 | working, with its streamed music; team select 99.9%, match 96.7%, 60 NES fps |
 | Lucky Lawn Mower VT369 | working (VT369 enhanced renderer, 4bpp); 99.7% picture, full speed |
-| Fire Fighter VT369, Jewel Master VT369 | working (enhanced renderer, 8bpp) with sound effects; Jewel Master 99.9% picture, Fire Fighter 96% (game-state drift). Both run the CPU at x3 as the hardware does; Jewel Master 57-60 NES fps, Fire Fighter 53-57 with its game logic now updating every frame (at 1x it updated on 70% of frames) |
+| Fire Fighter VT369, Jewel Master VT369 | working (enhanced renderer, 8bpp) with sound effects; Jewel Master 99.9% picture, Fire Fighter 96% (game-state drift). Both run the CPU at x3 as the hardware does; Jewel Master 60 NES fps, Fire Fighter 54-60 in gameplay with its game logic updating every frame (at 1x it updated on 70% of frames); Fire Fighter's HUD digits no longer drop out (too many sprites on a GBA line) |
 | Mapper 405 (VT168, zero-vector boot) | does not boot yet |
 
 Raster splits (a game switching CHR banks partway down the screen from a

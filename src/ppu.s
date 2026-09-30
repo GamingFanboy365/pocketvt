@@ -132,6 +132,7 @@
 	global_func newframe
 	.global ppustate
 	global_func writeBG
+	.global writeBG_mapper_9_mod	@ s.89: vt369_nt_hook (ppu_vt369.c) patches it
 	.global wtop
 	.global gammavalue
 	global_func ctrl0_W

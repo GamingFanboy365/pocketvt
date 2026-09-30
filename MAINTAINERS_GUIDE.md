@@ -4974,3 +4974,133 @@ with `__bss_end__` 0x03007B64 and `.vram1` to 0x06003FF0; Docker-built
 Jumper, Sky Fighter, Zuma, Fire Fighter and Star Ally boot through the real
 BIOS. The lowest user stack pointer is 0x03007C14, in libgcc's 64-bit divide
 under the speed-hack finder; PR #11 reaches 0x03007C1C on the same run.
+
+## 89. VT369 slowdown and flicker
+
+The user reported the VT369 carts as running but "buggy as in some
+slowdown, flickering". Measured with the gameplay input used below (Start at
+NES frame 320, A at 400, Start at 500, A held from 600), PR #12 ran Fire
+Fighter at 38-46 NES fps, Sky Fighter's gameplay at 50-51 and Jewel Master at
+57, and one missing-sprite problem turned out to be the GBA's sprite line
+budget. Every fix below came from a profile (tools/probes/cycprof with
+WARMFT and KEYS) or a probe; the speeds are compare_furb's NES frames per 60
+GBA frames.
+
+### 89a. Sprites: the line budget and reference-counted slots
+
+Fire Fighter parks about 70 of its 128 enhanced sprites at (0,0) with blank
+tile 0. PocketVT drew them as affine double-size objects, and on GBA lines
+0-9 they cost 5254 cycles of the 1210-cycle OBJ line budget (H-blank free
+off), so the hardware dropped whatever came after them in OAM: the HUD digits
+and the fires in the windows. A slot whose converted tile is all zero is now
+hidden (vt369_oblank), and a normal-size affine box replaces the double-size
+one (2w+10 cycles a line instead of 4w+10); Lucky Lawn Mower VT369 moves from
+99.66% to 99.59% on the mower row from the box's different sampling, which
+was accepted. The same per-line cost sum over OAM dumps (PVT_DUMP of
+0x07000000) of Sky Fighter and Jumper found no line over budget; the flicker option in the menu already
+defaults to off (cart.s _flicker).
+
+vt369_sprites stamped every sprite every frame to age its tile slots, which
+cost Fire Fighter ~25K cycles a frame. Slots are now reference-counted
+(vt369_orc, released by vt369_orel), a group of four sprites whose OAM words
+did not change is skipped (vt369_oshadow, compared with XOR/OR), the sprite-0
+hit answer is cached by its key (vt369_s0_key), and the entries are four
+halfwords so the OAM copy is one word and one halfword a sprite. Together:
+34K to 14.5K cycles a NES frame in Fire Fighter's heaviest stretch.
+
+### 89b. Palette and nametables: marks instead of compares
+
+The palette went to palette RAM in full every frame (13.7K cycles in Fire
+Fighter and Jewel Master); it became incremental, and then the 256-word
+compare that found the changes was itself the cost (Thumb from ROM with EWRAM
+loads). The writers now mark the changed words in vt369_pal_dw: the DMA fast
+path in vt369_dma_4014 compares four words at a time as it copies, and
+vt369_pal_W ($2007) marks its word. vt369_pal_upload converts only marked
+words.
+
+vt369_nt_diff compared both 2K nametables every vblank (~12K cycles). The
+nametable writer is writeBG in IWRAM (ppu.s), which has a spare self-modify
+slot, writeBG_mapper_9_mod, used only by mappers 9 and 10. While enhanced
+mode is on, vt369_nt_hook patches that slot into a B to vt369_nt_mark, a
+six-instruction routine in the `.ewram` section (a B from IWRAM reaches EWRAM;
+ROM is out of range and `.vram1` has no room). It marks the word in
+vt369_nt_dw and the flag vt369_nt_any, and returns without logging the write
+in the BG cache ring, which nothing reads in enhanced mode. Leaving enhanced
+mode puts the old instruction back; the vblank re-installs the hook if the
+mapper-9 set-up in ppu.s overwrote it. A write that bypasses writeBG is still
+caught by a scrub that compares one eighth of the map each frame. With
+nothing marked the diff costs the scrub only.
+
+The marker costs ~50 cycles a byte from EWRAM, and Sky Fighter's title
+video-DMAs about 1.5K nametable bytes a frame through $4014 -> vmdata_W ->
+writeBG: 76K cycles, and its title fell from 60 to 46 fps. vt369_dma_nt now
+takes a nametable DMA whose quadrants map to NES_VRAM2 (vram_write_tbl entry
+VRAM_name0 or VRAM_name1): it stores straight into the nametable, marks only
+bytes that change, and advances vramaddr as vmdata_W's strh does. Anything
+else (the four-screen quadrants, a source in $2000-$7FFF, a range that reaches
+$3C00) returns 0 and takes the old per-byte path.
+
+### 89c. $4107/$4108 and the divider in vt_w4_bank
+
+Fire Fighter writes $4107/$4108 about 60 times a NES frame; through
+vt_reg_write, vt_recompute_prg_banks and vt_apply_prg_dirty that cost ~25K
+cycles. vt_w4_bank (mapVT.s, ROM, behind write_vt4xxx_v) maps the one window
+directly from the mask, OR and window order that vt_recompute_prg_banks
+caches in vt_q. It must preserve r3 (m6502_nz): writemem handlers may clobber
+only r0-r2 and addy, and the push/pop of r3 was added on the C paths of
+write_vt4xxx and write_vt_rom too. `-DVT_NO_W4_BANK` turns it off.
+
+Jewel Master VT369 ran at 57 although the CPU idled 44% of the time: one NES
+frame in about twenty took four GBA frames, and the pacer drops a backlog of
+more than three (s.87a). That frame divides 222 times through $4136/$4137,
+each through write_vt4xxx, vt_reg_write and two libgcc divisions. vt_w4_bank
+now stores $4136 and, on $4137, divides with the BIOS Div SWI (signed, so a
+dividend with bit 31 set still goes to C). Checked on 207 divisions of that
+frame against Python's; Jewel Master is 60 at every checkpoint, through the
+real BIOS as well.
+
+### 89d. The poll-loop finder and where the vblank lands
+
+After vt_w4_bank went in, Sky Fighter's title fell to 14 fps. Nothing was
+wrong with the bank switch: find_poll_loop (s.88e) starts at the pc the
+vblank interrupted, and only succeeded when that pc was the LDA of a test.
+Landing on the AND or the branch, where A and the flags are unknown, it gave
+up, and the new timing always landed there. It now backs up to the load that
+feeds the pc (a straight run of LDA/AND/CMP ending at it) and closes the loop
+there. The lesson: a speed that depends on the finder can change with any
+change of timing; after a core change, check the titles as well as gameplay.
+
+### 89e. Dead end: vt369_ram_R inline
+
+vt369_ram_R (readmem_0 with the misc ROM) jumps to ram_R_mask for $0000-$0FFF;
+inlining its `bic addy,#0x1f800` looked like a free 6K cycles. It is not the
+same: loadcart.c patches ram_R_mask to 0xFFF on carts with 4K of RAM, and
+Fire Fighter keeps a VRAM update queue at $0C00. The inline copy read the
+mirror at $0400, the queue never emptied and the game ran at 8 fps from boot.
+Reverted; the comment there now says why.
+
+### 89f. Regression
+
+Gameplay input, PR #12 to now: Fire Fighter 38-46 to 54-60 (picture 96.4-96.6%
+to 96.7-96.9%), Sky Fighter gameplay 50-51 to 60, Jewel Master 57 to 60; Jumper,
+Zuma, Lucky Lawn Mower VT369 and Table Soccer VT369 stay at 60 with the same
+scores within 0.2 points. The test ROMs at NES 150, 400 and 700 with
+Start only, against PR #12: Fire Fighter 49-55 to 60, Lucky Lawn Mower VT369
+99.66/99.61/99.67 to 99.59/99.61/99.67 (89a), Push the Ball 150 97.24 to
+97.49, Aero Gyrodine and Hex City X titles 42/43 to 41/42 (present since the
+first build of this round; not chased), the rest identical. The frame-set
+test (800 GBA frames) shows new frames only in the boot transition (GBA
+frames 55-75) on Star Ally, Lonely Island, Scramble, VG Pocket, Aero Gyrodine
+and Table Soccer VT03, none on LLM VT09. VG Pocket games 0/4, 1/3, 2/2, 3/4 and
+4/1 at NES 900 and 1100 match PR #12 within 0.02 points (0/4 at 900 is the
+one-frame raster glitch of s.88f). The sound host test reports 0 failing
+trials. The Docker build links with `__bss_end__` 0x03007B64 and `.vram1` to
+0x06003FF0 (`.ewram` grows by 40 bytes); its core boots Fire Fighter, Sky
+Fighter, Jewel Master, Zuma, Jumper and Star Ally through the real BIOS with
+the build_pvt.sh pictures, at 60 except Fire Fighter 54 and Sky Fighter 58
+at NES 800 (a different GCC; the build_pvt.sh core gives 59 and 60 there). The
+lowest user stack pointer is 0x03007C14, as in s.88f.
+
+tools/probes: `peek` and `bpcount` take `FT=<frametotal>` and
+`KEYS="first-last:mask,..."` like nestrace; bpcount also `FROMFT=<n>` and
+`PEEK=<addr>` (a word printed at every hit).

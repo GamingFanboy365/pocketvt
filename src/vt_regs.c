@@ -151,6 +151,9 @@ EWRAM_BSS u32 vt_w41_now;          /* s.87: exact time of the current $41xx writ
 EWRAM_BSS u8 vt_bank_nomangle;   /* s.87: $4107/$4108 not swapped */
 EWRAM_BSS u8 vt_w41_fast;        /* s.87: write_vt4xxx_v fast paths (mapVT.s) */
 EWRAM_BSS void *vt_w4_next;      /* s.87: the ROM writemem_4 behind it */
+EWRAM_BSS void *vt_w4_slow;      /* s.89: behind vt_w4_bank (mapVT.s) */
+/* s.89: for vt_w4_bank: PRG mask, OR, and the window $4107/$4108 map */
+EWRAM_BSS struct { u32 msk, orr; u8 win[2]; } vt_q __attribute__((aligned(4)));
 _Static_assert(offsetof(VTState, timer_period)  == 0x68, "sound.s vt_timer asm uses +0x68");
 _Static_assert(offsetof(VTState, timer_ctrl)    == 0x6C, "sound.s vt_timer asm uses +0x6C");
 _Static_assert(offsetof(VTState, want_timer_irq)== 0x6D, "sound.s vt_timer asm uses +0x6D");
@@ -503,6 +506,8 @@ void vt_recompute_prg_banks(void)
     if (vt.reg[0x05] & 0x40) {          // COMR6: slots 8 and C trade places
         u32 t = b[0]; b[0] = b[2]; b[2] = t;
     }
+    vt_q.msk = msk; vt_q.orr = orr;
+    vt_q.win[0] = (vt.reg[0x05] & 0x40) ? 2 : 0; vt_q.win[1] = 1;
     u32 dirty = 0;
     for (int i = 0; i < 4; ++i)
         if (vt_prg_banks[i] != b[i]) { vt_prg_banks[i] = (u16)b[i]; dirty |= 1u << i; }

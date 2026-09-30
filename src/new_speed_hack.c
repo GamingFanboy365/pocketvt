@@ -365,6 +365,28 @@ static bool find_poll_loop(const u8 *initpc, const u8 *lastbank, int hacknum)
 	const u8 *back=NULL;
 	const int bank=(initpc-lastbank)>>13;
 	int a=-1, z=-1, n=-1, c=-1, total=0, steps;
+	/* s.89: the vblank can land on the AND/CMP or the branch after the load,
+	 * where A and the flags are unknown.  Back up to the load that feeds it
+	 * (a straight run of LDA/AND/CMP ending at initpc) and close the loop
+	 * there.  Before, only a vblank on the LDA found Sky Fighter's loop, so
+	 * a timing change left its title at 14 fps. */
+	if (OP(*initpc)!=0xA5 && OP(*initpc)!=0xAD)
+	{
+		int k;
+		for (k=2;k<=7;k++)
+		{
+			const u8 *s=initpc-k, *q=s;
+			if (OP(*s)!=0xA5 && OP(*s)!=0xAD) continue;
+			while (q<initpc)
+			{
+				const u8 o=OP(*q);
+				if (o==0xA5 || o==0x29 || o==0xC9) q+=2;
+				else if (o==0xAD) q+=3;
+				else break;
+			}
+			if (q==initpc) { initpc=s; pc=s; break; }
+		}
+	}
 	for (steps=0; steps<48; steps++)
 	{
 		const u8 op=OP(*pc);

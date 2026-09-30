@@ -95,8 +95,11 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   (frame end never waits) and -DVT_TIMER_LOG (VT timer expiry/re-arm ring). Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.88)
-See MAINTAINERS_GUIDE.md s.88 (Jumper and Sky Fighter: VT369 CPU x3 by
+## Current state (after s.89)
+See MAINTAINERS_GUIDE.md s.89 (VT369 slowdown and flicker: the GBA OBJ line
+budget, reference-counted sprite slots, palette and nametable dirty marks,
+the writeBG hook, nametable DMA, $4107/$4108 and the divider in vt_w4_bank,
+the poll-loop finder's back-up), s.88 (Jumper and Sky Fighter: VT369 CPU x3 by
 patching the op-cost immediates, $2007 CHR reads, VT369 sprite-0 hit, NES
 OAM layout and 8bpp sprites, the Cross River tile rule, BG tiles shared by
 content, $4169 toggles without a table rebuild, poll-loop speed hacks), s.87 (frame pacing with vblank credits; VRAM fast
@@ -115,7 +118,7 @@ states, sound) and s.77-78 (raster-split slots, speed).
   (96%; game-state drift) through the enhanced renderer, src/ppu_vt369.c.
   Zuma (VT369, 256.13; title 99.6%, gameplay 98% -- its ball colours are
   random, like Jewel Master's jewels), Jumper (VT369 SMB hack, 99.9%, 43-60
-  fps) and Sky Fighter (VT369, gameplay 96-98%, 49-55 fps).
+  fps) and Sky Fighter (VT369, gameplay 96-98%, 60 fps).
 - CPU x3 ($411C bit 7, every VT369 test cart sets it): vt_cpu_x3_set
   rewrites every `cyc`-recorded cost immediate in RAM (section vt_cycpatch,
   6502mac.h) between 3 and 1 dots a cycle. New cycle charges in RAM code
@@ -140,8 +143,8 @@ states, sound) and s.77-78 (raster-split slots, speed).
 - WAITCNT = 0x4317 at boot (`VT_FAST_WAITCNT`): 3/1 + prefetch. Speed (NES fps):
   Time Pilot 57-60, Scramble 60, SA 60 (47 in its heaviest stretch), Aero/Hex
   titles 42-43 then 60, Table Soccer VT03 60 (s.88), LLM VT09 60, LI/VG/Add 'em Up 60;
-  VT369 (all at CPU x3): Table Soccer, LLM, Zuma 60, Jewel Master 57-60,
-  Fire Fighter 53-57, Jumper 43-60, Sky Fighter 49-60.
+  VT369 (all at CPU x3): Table Soccer, LLM, Zuma, Jewel Master, Sky Fighter
+  60, Fire Fighter 54-60 in gameplay, Jumper 43-60 (s.89).
 - Frame pacing (s.87a): every GBA vblank is a credit, every NES frame spends
   one; the frame end waits only without credit (vt_vsync_ahead). Speed probes
   can show 61-62 while a slow stretch is made up; the average stays 60.
@@ -150,7 +153,13 @@ states, sound) and s.77-78 (raster-split slots, speed).
   set-up, and run_palette skips itself while vt_pal_owned. Anything heavy
   added before the DMA set-up brings back shifted frames and grey lines.
 - writemem_4 on VT carts (not 419) is write_vt4xxx_v in .vram1 (s.87b);
-  ROM handler in vt_w4_next. `.vram1` ends at 0x06003FF0: 16 bytes left.
+  ROM handler in vt_w4_next = vt_w4_bank ($4107/$4108 and $4136/$4137, s.89c),
+  then vt_w4_slow. Write handlers may clobber only r0-r2 and addy: r3 is
+  m6502_nz. `.vram1` ends at 0x06003FF0: 16 bytes left.
+- VT369 enhanced mode patches writeBG_mapper_9_mod (ppu.s) into a B to
+  vt369_nt_mark (`.ewram`) to mark nametable writes (s.89b); nametable video
+  DMA goes through vt369_dma_nt. readmem_0 must keep jumping to ram_R_mask:
+  loadcart.c patches it for 4K RAM (s.89e).
 - Speed hacks: the finder and set_cpu_hack decode opcodes through vt_op_dec
   (filled by vt_rebuild_optable) and patch op_table at the RAW byte, for any
   encryption submapper (s.86d). They run from ROM.
@@ -167,9 +176,9 @@ states, sound) and s.77-78 (raster-split slots, speed).
 ## Open work, in priority order
 1. VT369 leftovers (s.82): 8bpp 16-row sprites through $201D bit 2 are done
    but untested, hi-res mode ($201C bit 2), CPU x3 in ROM handlers (s.88d).
-   Speed at x3: Fire Fighter 53-57 (vt369_sprites ~30K cycles a frame, Thumb
-   spills), Jumper's death sequence 43, Sky Fighter gameplay 49-55 (sound
-   HLE vt369_play48 runs from ROM). Sound CPU: the $40AE per-channel rate
+   Speed at x3: Fire Fighter 54-60 (remaining: sound HLE play48 ~25K, sprites
+   ~15K cycles a frame, s.89), Jumper's death sequence 43 (not re-measured
+   in s.89). Sound CPU: the $40AE per-channel rate
    divider, and the programs no test cart uses (s.84e).
 2. Sound (s.79d): VT ADPCM $4120-$412F only mixes while NES DMC plays; the
    TK-8007 voice (Table Soccer) is not played; second APU $4020-$402F is
