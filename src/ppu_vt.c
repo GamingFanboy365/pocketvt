@@ -2215,7 +2215,21 @@ __attribute__((target("arm")))
  * every mode) or the VT369 enhanced upload.  run_palette (ppu.s) then skips
  * its legacy 4-entry copy, and its mid-frame VCOUNT switches stay off. */
 EWRAM_BSS u8 vt_pal_owned;
+static void vt_16c_palette_fixup_body(void);
+/* s.90: last call of a top-level vblank handler (ppu.s, on the EWRAM stack):
+ * a VT369 sound fill that timer1interrupt deferred because it came during the
+ * handler (vt_adpcm_mix_gba) runs here, after the HBlank DMA set-up and the
+ * picture work.  The DMA already plays the previous block; the next restart
+ * is ~218 lines away. */
 void vt_16c_palette_fixup(void)
+{
+    extern u8 vt369_fill_pending;
+    extern void vt369_snd_fill(void);
+    vt_16c_palette_fixup_body();
+    if (vt369_fill_pending) { vt369_fill_pending = 0; vt369_snd_fill(); }
+}
+
+static void vt_16c_palette_fixup_body(void)
 {
     vt_pal_owned = vt_active && (vt369_enh || (vt_reg_2010 & 0x02));
     if (vt_pal_owned) *(volatile u16 *)0x04000004 &= (u16)~0x0020;   /* DISPSTAT: no VCOUNT IRQ */

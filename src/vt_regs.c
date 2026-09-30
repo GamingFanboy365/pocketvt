@@ -1260,6 +1260,18 @@ void vt_adpcm_mix_gba(void)
            * restart it before anything else (vt369_snd.c, vt369_snd_timer) */
           volatile u16 *tm0cnt_h = (volatile u16 *)0x04000102;
           if (!(*tm0cnt_h & 0x80)) *tm0cnt_h = 0x80;
+          /* s.90: rendering 128 samples takes ~55 scanlines.  Inside a vblank
+           * handler (it re-enables IME before its HBlank DMA set-up) the
+           * render waits for the end of that handler (vt_16c_palette_fixup);
+           * run here it pushed the set-up into the next picture, whose table
+           * then started a few lines late: Sky Fighter's black line at the
+           * nametable seam.  Elsewhere the vblank IRQ may now nest in the
+           * render: timer1interrupt masks it, and a render running at the
+           * start of vblank held the whole handler back the same way. */
+          extern u8 _inside_gba_vblank, vt369_fill_pending;
+          if (_inside_gba_vblank) { vt369_fill_pending = 1; return; }
+          vt369_fill_pending = 0;
+          *(volatile u16 *)0x04000200 |= 1;                 /* IE: vblank */
           vt369_snd_fill_stacked();
           return;
       } }

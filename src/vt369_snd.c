@@ -77,6 +77,7 @@ EWRAM_BSS const u8 *vt369_misc;          /* 4K embedded ROM, CPU $1000-$1FFF (lo
 #define VT369_PCM_GUARD 128
 EWRAM_BSS s8  vt369_pcm[2][128 + VT369_PCM_GUARD] __attribute__((aligned(4)));
 EWRAM_BSS u8  vt369_pcm_next;             /* the block the next fill writes */
+EWRAM_BSS u8  vt369_fill_pending;         /* s.90: a fill waits for the vblank handler's end */
 EWRAM_BSS u8  vt369_pcm_silent[2];        /* that block holds only zeroes */
 EWRAM_BSS u16 vt369_snd_n;                /* timer period in sound-CPU units */
 EWRAM_BSS u32 vt369_adpcm_frame[3][2];    /* 3-bit ADPCM: 64-bit frame */

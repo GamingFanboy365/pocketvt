@@ -5104,3 +5104,61 @@ lowest user stack pointer is 0x03007C14, as in s.88f.
 tools/probes: `peek` and `bpcount` take `FT=<frametotal>` and
 `KEYS="first-last:mask,..."` like nestrace; bpcount also `FROMFT=<n>` and
 `PEEK=<addr>` (a word printed at every hit).
+
+## 90. Sky Fighter's black line: the sound refill and the vblank DMA set-up
+
+The user saw black lines flicker during Sky Fighter's gameplay. A frame-by-
+frame capture (tools/probes/fgrab, every GBA frame from 400 to 1000 with the
+gameplay input) of the shipped core found a one-frame black row about every
+22 frames, stepping down the screen (row 29, 41, 46, 54, ... 155), in time
+with the background scroll. The row is the nametable seam: in the per-line
+scroll table the vertical offset jumps by 16 there (0xBA to 0xCA) to skip the
+two unused rows of the 32-row GBA map. The table was right; it was started a
+few lines late, so the pre-seam offsets landed on the lines after the seam,
+and those lines showed the empty rows. The build_pvt.sh cores of PR #12 and
+s.89 showed none over the same 600 frames; the Docker core, which the release
+uses, did.
+
+Probing VCOUNT at the vblank handler's entry and at its DMA set-up (vbl5)
+found the cause. The handler normally sets the DMA up at line ~170. In about
+one frame in ten its entry was held back to line 180-212, and in 24 of 461
+frames on the Docker core the set-up slipped past line 227 into the next
+picture. Both come from the VT369 sound refill. timer1interrupt masks the
+vblank interrupt while it runs, and with the sound HLE on it renders 128
+samples, ~55 scanlines of work, every ~218 lines. Its phase drifts about ten
+lines a frame against the picture. A refill running at the start of vblank
+held the handler back, and one arriving just after the handler re-enabled
+IME (before its DMA set-up) ran inside it. On the build_pvt.sh core both
+cases still finished before line 227, narrowly; on the slower Docker core
+they did not.
+
+The render now waits when it comes during a vblank handler: vt_adpcm_mix_gba
+still restarts the sample timer at once, but if `_inside_gba_vblank` is set
+(ppu.s, now exported) it sets vt369_fill_pending and returns, and
+vt_16c_palette_fixup, the last call of a top-level vblank handler on VT
+carts, runs the fill after the DMA set-up and vt369_vblank. The DMA is already
+playing the previous block, and the next restart is ~218 lines away. A render
+that starts outside a vblank handler re-enables the vblank bit of IE first,
+so the vblank interrupt nests in it rather than waiting. If a pending fill is
+ever left (a vblank handler that skips the fixup, as before the first frame),
+the next refill renders as usual and the DMA replays one old block.
+
+Results on the Docker core: all 461 vblanks of the Sky Fighter window set the
+DMA up at lines 170-179, none late, none delayed; no transient black row in
+the 600 frames except the title-to-game switch at NES 328, which the
+reference shows too (100% at 327-329). Fire Fighter, Jumper and Zuma had 10-16
+delayed entries in a 20M-step window and now have none; no VT369 cart sets
+the DMA up late. About a fifth of the refills (106 of 481) take the deferred
+path. Audio against the reference is unchanged: Sky Fighter envelope 0.26 to
+0.25, level 2.74 both; Table Soccer VT369 0.31 to 0.29; Fire Fighter 0.70
+both; no new large sample jumps. The EWRAM stack reaches 552 of its 3072
+bytes (396 before), the IWRAM user stack 0x03007C3C. On the control carts the
+frame sequences are identical except new frames in the boot transition (Star
+Ally 68-70, VG Pocket 55), as in s.88f and s.89f. The test ROMs at NES 150,
+400 and 700 score exactly as with the s.89 core. With the gameplay input,
+Sky Fighter at NES 800 goes from 96.47% to 97.02%, and Fire Fighter reads
+58-59 NES fps at 800 and 900 where the s.89 core read 59-60 (one frame in
+60, within the run-to-run spread of this measurement; not chased).
+
+tools/probes/fgrab writes every GBA frame of a span, with FT/KEYS input, for
+one-frame glitches that compare_furb's NES-frame-keyed captures step over.
