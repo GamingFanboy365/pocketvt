@@ -1,4 +1,5 @@
-/* peek PLAY.gba EVERY TO ADDR[:n] ... -- every EVERY GBA frames up to TO, print n bytes (default 4, as a word) at each ADDR */
+/* peek PLAY.gba EVERY TO ADDR[:n] ... -- every EVERY GBA frames up to TO, print n bytes (default 4, as a word) at each ADDR.
+ * With FT=<frametotal addr>, KEYS="first-last:mask,..." presses GBA keys over NES frames (as nestrace). */
 #include <mgba/core/core.h>
 #include <mgba/gba/core.h>
 #include <mgba/core/log.h>
@@ -17,8 +18,17 @@ int main(int argc, char **argv) {
 	static unsigned buf[256*256]; c->setVideoBuffer(c, (void*)buf, w);
 	c->reset(c);
 	int every = atoi(argv[2]), to = atoi(argv[3]);
+	const char *ks = getenv("KEYS"); unsigned fta = getenv("FT") ? strtoul(getenv("FT"), 0, 16) : 0;
 	for (int i = 1; i <= to; i++) {
-		c->setKeys(c, 0); c->runFrame(c);
+		unsigned keys = 0;
+		if (ks && fta) {
+			unsigned ft = c->busRead32(c, fta); const char *q = ks;
+			while (*q) { unsigned f0, f1, m; int used;
+				if (sscanf(q, "%u-%u:%u%n", &f0, &f1, &m, &used) != 3) break;
+				if (ft >= f0 && ft <= f1) keys |= m;
+				q += used; if (*q == ',') q++; }
+		}
+		c->setKeys(c, keys); c->runFrame(c);
 		if (i % every) continue;
 		printf("%d", i);
 		for (int a = 4; a < argc; a++) {

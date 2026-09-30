@@ -612,6 +612,39 @@ static inline u32 vt_chr_bank_byte_offset(u32 onebus_1k_bank)
     return vt_compute_chr_bank(onebus_1k_bank) * 1024u;
 }
 
+/* s.88: a $2007 read of pattern memory ($0000-$1FFF) on VT369, straight
+ * from the CHR banks as h_OneBus.cpp setCHR(0x00, ...) maps them.  The
+ * NES_VRAM copy is not kept up in enhanced mode, and Jumper (an SMB hack)
+ * copies its VRAM update lists out of CHR at $1EC0 this way; reading zeros
+ * it never drew a picture.  Called from vt369_ppu_R (mapVT.s) on the IWRAM
+ * stack: keep it a leaf. */
+u32 vt_chr_read(u32 addr)
+{
+    static const u8 vb0s_tab[8] = { 0, 1, 2, 0, 3, 4, 5, 0 };
+    const u32 b4 = (vt_reg_2010 & 0x06) != 0;           /* BK16EN || SP16EN */
+    const u32 ext = (vt_reg_2010 & 0x18) != 0;          /* BKEXTEN || SPEXTEN */
+    const u32 chr_and = 0xFFu >> vb0s_tab[vt_chr_reg_201A & 7];
+    const u32 chr_or = vt_chr_reg_201A & 0xF8u & ~chr_and;
+    const u32 n = ((addr >> 10) & 7) ^ ((vt.reg[0x05] & 0x80) ? 4 : 0);   /* COMR7 */
+    u32 r;
+    switch (n) {
+        case 0:  r = vt_chr_reg[4] & ~1u; break;
+        case 1:  r = vt_chr_reg[4] | 1u;  break;
+        case 2:  r = vt_chr_reg[5] & ~1u; break;
+        case 3:  r = vt_chr_reg[5] | 1u;  break;
+        default: r = vt_chr_reg[n - 4];   break;
+    }
+    const u32 va21 = vt_chr_outer_4100 & 0x0F;
+    u32 bank = ext ? (((r & chr_and) | chr_or) << 3) | (vt_chr_reg_2018 & 7) | va21 << 11
+                   : (r & chr_and) | chr_or | ((u32)(vt_chr_reg_2018 >> 4) & 7) << 8 | va21 << 11;
+    const u32 mask = vt_chr_mask_get();
+    bank &= b4 ? 0x3FFF : 0x7FFF;                       /* mapper 256: AND $7FFF */
+    u32 j = (bank << 10 | (addr & 0x3FF)) & (b4 ? mask >> 1 : mask);
+    if (b4)                                             /* chrLow16 / chrLow */
+        j = (vt_reg_2010 & 0x40) ? j << 1 : (j & 0xF) | (j & ~0xFu) << 1;
+    return vt_chr_base()[j & mask];
+}
+
 static u8 vt_chr_sync_pending = 0;
 
 void vt_chr_sync_from_prg(void)

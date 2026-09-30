@@ -17,6 +17,7 @@ static uint8_t R[8192];
 static uint64_t rframe[3];
 static uint8_t rcount[3];
 static uint8_t rprev;
+static uint32_t racc;
 static const int16_t rstep[16][16] ={
 	{0,14,28,42,56,70,84,97,-111,-97,-84,-70,-56,-42,-28,-14},{0,13,26,39,52,65,78,91,-104,-91,-78,-65,-52,-39,-26,-13},
 	{0,11,21,32,43,54,64,75,-86,-75,-64,-54,-43,-32,-21,-11},{0,9,18,27,35,44,53,62,-71,-62,-53,-44,-35,-27,-18,-9},
@@ -83,7 +84,8 @@ static int32_t ref_tick(const uint8_t *prg, uint32_t pmask) {
 		case 0x1C4C: case 0x40AE: m =0x18A4; break;
 		default: return 0;
 	}
-	R[0x18F6]++;
+	/* $18F6 counts timer IRQs, one per ~25.78 ticks (guide s.88) */
+	racc +=159; if (racc >=4096) { racc -=4096; R[0x18F6]++; }
 	R[m+1] =R[m+1] &~R[m+2];
 	const uint8_t edge =R[m] &~rprev;
 	rprev =R[m];
@@ -135,6 +137,7 @@ int main(void) {
 		uint16_t m =(rv ==0x40AE || rv ==0x1C4C)? 0x18A4: 0x184C;
 		if (rv !=0x0293) { R[m] =rnd() %4 ==0? (uint8_t)rnd(): 0; R[m+2] =rnd() %4 ==0? (uint8_t)rnd(): 0; }
 		rprev =vt369_st_prev =rnd() %2? (uint8_t)rnd(): 0;
+		racc =vt369_irq_acc =rnd() %4096;
 		memcpy(vt369_sram, &R[0x1800], 0x800);
 		for (int ch =0; ch <3; ch++) { rframe[ch] =0; rcount[ch] =0; vt369_adpcm_left[ch] =0; vt369_adpcm_frame[ch][0] =vt369_adpcm_frame[ch][1] =0; }
 		for (int f =0; f <6; f++) {

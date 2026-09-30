@@ -151,6 +151,9 @@ EWRAM_BSS u32 vt_w41_now;          /* s.87: exact time of the current $41xx writ
 EWRAM_BSS u8 vt_bank_nomangle;   /* s.87: $4107/$4108 not swapped */
 EWRAM_BSS u8 vt_w41_fast;        /* s.87: write_vt4xxx_v fast paths (mapVT.s) */
 EWRAM_BSS void *vt_w4_next;      /* s.87: the ROM writemem_4 behind it */
+EWRAM_BSS void *vt_w4_slow;      /* s.89: behind vt_w4_bank (mapVT.s) */
+/* s.89: for vt_w4_bank: PRG mask, OR, and the window $4107/$4108 map */
+EWRAM_BSS struct { u32 msk, orr; u8 win[2]; } vt_q __attribute__((aligned(4)));
 _Static_assert(offsetof(VTState, timer_period)  == 0x68, "sound.s vt_timer asm uses +0x68");
 _Static_assert(offsetof(VTState, timer_ctrl)    == 0x6C, "sound.s vt_timer asm uses +0x6C");
 _Static_assert(offsetof(VTState, want_timer_irq)== 0x6D, "sound.s vt_timer asm uses +0x6D");
@@ -222,7 +225,12 @@ void vt_timer_tick_frame(void)
     //      through an f2400 soak).  The finder must therefore NOT be gated off
     //      for VT carts (see new_speed_hack.c) -- doing so also removed the
     //      hack Lonely Island genuinely relies on and dropped LI 100% -> ~22%.
-    if (vt_active && speedhacks[1].hack_pc) {
+    /* s.88: only the hand-installed Lonely Island hack below (hack_pc
+     * 0x0600E098).  Re-arming whatever the finder put in slot 1 fired at a
+     * random point of the NES frame: in Jumper slot 1 is the sprite-0 wait,
+     * so the main loop's idle JMP ran unhacked until the next sprite-0 hit
+     * (90K cycles a frame). */
+    if (vt_active && speedhacks[1].hack_pc == (const u8 *)0x0600E098u) {
         set_cpu_hack(1);
     }
 
@@ -498,6 +506,8 @@ void vt_recompute_prg_banks(void)
     if (vt.reg[0x05] & 0x40) {          // COMR6: slots 8 and C trade places
         u32 t = b[0]; b[0] = b[2]; b[2] = t;
     }
+    vt_q.msk = msk; vt_q.orr = orr;
+    vt_q.win[0] = (vt.reg[0x05] & 0x40) ? 2 : 0; vt_q.win[1] = 1;
     u32 dirty = 0;
     for (int i = 0; i < 4; ++i)
         if (vt_prg_banks[i] != b[i]) { vt_prg_banks[i] = (u16)b[i]; dirty |= 1u << i; }
@@ -717,6 +727,8 @@ u8 vt09_decode_opcode(u8 raw)
 EWRAM_BSS static void *vt_optable_canonical[256];
 static u8    vt_optable_saved = 0;
 static void vt_sh_tables(void);
+static void vt_optable_load(void);
+extern const u8 *_speedhack_pc, *_speedhack_pc2;
 
 __attribute__((target("arm")))
 void vt_rebuild_optable(void)
@@ -726,20 +738,74 @@ void vt_rebuild_optable(void)
         for (int i = 0; i < 256; ++i) vt_optable_canonical[i] = op_table[i];
         vt_optable_saved = 1;
     }
+    vt_optable_load();
+    _speedhack_pc = 0;
+    _speedhack_pc2 = 0;
+}
 
-    // Fast path: encryption off -> identity copy.
-    if (!vt.encryption_active) {
-        for (int i = 0; i < 256; ++i) op_table[i] = vt_optable_canonical[i];
+/* s.88: the encrypted table, its decode and the speed-hack bytes are built
+ * once per encryption mode and copied in on each $4169 toggle.  Jumper
+ * toggles four times per NES frame; rebuilding (256 decodes, the raw-byte
+ * searches) cost about 300K cycles a frame, and dropping the idle-loop hack
+ * each time let the main loop spin: 12 NES fps. */
+EWRAM_BSS static void *vt_optable_enc[256];
+EWRAM_BSS static u8 vt_op_dec_enc[256];
+EWRAM_BSS static u8 vt_sh_raw_c[2][9];
+EWRAM_BSS static u8 vt_enc_cache_mode;       /* encryption_mode + 1, 0 = none */
+extern u8 vt_op_dec[256];
+extern u8 vt_sh_raw[9];
+extern void *vt_sh_norm[9];
+
+__attribute__((target("arm")))
+static void vt_optable_load(void)
+{
+    const int on = vt.encryption_active != 0;
+    if (on && vt_enc_cache_mode != (u8)(vt.encryption_mode + 1)) {
+        for (int i = 0; i < 256; ++i) {
+            const u8 d = vt09_decode_opcode((u8)i);
+            vt_op_dec_enc[i] = d;
+            vt_optable_enc[i] = vt_optable_canonical[d];
+        }
+        vt_enc_cache_mode = (u8)(vt.encryption_mode + 1);
         vt_sh_tables();
-        return;
+    } else if (!vt_sh_norm[0]) {
+        vt_sh_tables();
     }
+    void *const *src = on ? (void *const *)vt_optable_enc : (void *const *)vt_optable_canonical;
+    /* DMA3, 256 words: the loop became a libc memcpy call at ~3.5K cycles */
+    {   /* ldm/stm, 8 words at a time (a plain loop became a libc memcpy call) */
+        const u32 *sp = (const u32 *)src;
+        u32 *dp = (u32 *)op_table;
+        for (int i = 0; i < 32; ++i, sp += 8, dp += 8)
+            __asm__ volatile ("ldmia %0, {r2-r9}\n\tstmia %1, {r2-r9}"
+                              : : "r"(sp), "r"(dp) : "r2","r3","r4","r5","r6","r7","r8","r9","memory");
+    }
+    if (on) {
+        const u32 *d = (const u32 *)vt_op_dec_enc;
+        for (int i = 0; i < 64; ++i) ((u32 *)vt_op_dec)[i] = d[i];
+    } else {
+        u32 v = 0x03020100u;                            /* identity, a word at a time */
+        for (int i = 0; i < 64; ++i, v += 0x04040404u) ((u32 *)vt_op_dec)[i] = v;
+    }
+    for (int n = 0; n < 9; ++n) vt_sh_raw[n] = vt_sh_raw_c[on][n];
+}
 
-    // Encrypted: working_table[encrypted_index] = canonical[decrypted_index]
-    for (int i = 0; i < 256; ++i) {
-        u8 decrypted = vt09_decode_opcode((u8)i);
-        op_table[i] = vt_optable_canonical[decrypted];
-    }
-    vt_sh_tables();
+/* $4169: swap tables and keep an installed idle-loop hack.  The raw byte at
+ * the hack's address gets the hack handler again if it decodes to a branch
+ * or JMP in the new state (set_cpu_hack's rule); the default BNE hack goes
+ * back on the byte that now decodes to $D0. */
+extern void *speedhackops[9];
+extern void _D0y(void);
+__attribute__((target("arm")))
+static void vt_optable_toggle(void)
+{
+    vt_optable_load();
+    const u8 *p = _speedhack_pc2;
+    if (!p) return;
+    op_table[vt_sh_raw[6]] = (void *)_D0y;
+    const u8 raw = *p, dec = vt_op_dec[raw];
+    const int n = dec == 0x4C ? 8 : (dec & 0x1F) == 0x10 ? (dec - 0x10) >> 5 : -1;
+    if (n >= 0) op_table[raw] = speedhackops[n];
 }
 
 /* s.86: the speed-hack finder and set_cpu_hack read opcode bytes from PRG,
@@ -751,22 +817,20 @@ void vt_rebuild_optable(void)
 EWRAM_BSS u8 vt_op_dec[256];
 EWRAM_BSS u8 vt_sh_raw[9];
 EWRAM_BSS void *vt_sh_norm[9];
-extern const u8 *_speedhack_pc, *_speedhack_pc2;
 
+/* s.88: fills vt_sh_raw_c for both states (encrypted from vt_op_dec_enc,
+ * when built) and vt_sh_norm; vt_optable_load copies the live row. */
 __attribute__((target("arm")))
 static void vt_sh_tables(void)
 {
-    for (int i = 0; i < 256; ++i)
-        vt_op_dec[i] = vt.encryption_active ? vt09_decode_opcode((u8)i) : (u8)i;
     for (int n = 0; n < 9; ++n) {
         u8 canon = n < 8 ? (u8)(0x10 + 0x20 * n) : 0x4C;
         int r = 0;
-        while (r < 255 && vt_op_dec[r] != canon) r++;
-        vt_sh_raw[n] = (u8)r;
+        if (vt_enc_cache_mode) while (r < 255 && vt_op_dec_enc[r] != canon) r++;
+        vt_sh_raw_c[1][n] = (u8)r;
+        vt_sh_raw_c[0][n] = canon;
         vt_sh_norm[n] = vt_optable_canonical[canon];
     }
-    _speedhack_pc = 0;
-    _speedhack_pc2 = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -832,6 +896,38 @@ static inline s16 _adpcm_advance(VTAdpcmChan *ch)
 // ---------------------------------------------------------------------------
 // Register write dispatcher
 // ---------------------------------------------------------------------------
+/* s.88: CPU x3 (VT369 $411C bit 7; h_OneBus/OneBus_VT369.cpp: the CPU
+ * runs one cycle per PPU dot instead of one per three).  PocketNES charges
+ * each 6502 cycle as 3 dots with immediates (6502mac.h fetch & co.); every
+ * such instruction is listed in section vt_cycpatch, and this rewrites the
+ * ones in RAM (IWRAM, .vram1) between k*3 and k dots.  ROM handlers (the VT
+ * extra opcodes and unofficial ones) keep 3 dots a cycle.  The timeline, the
+ * APU, the VT timer and the sound HLE count dots, so they keep their speed,
+ * as in the reference (APU->Run every third CPU cycle).  Jumper (an SMB
+ * hack) sets it at boot; at 1x its NMI landed inside the main loop's
+ * encrypted OAM copy and ran its own code through the opcode swap. */
+EWRAM_BSS u8 vt_cpu_x3;
+extern const u32 __start_vt_cycpatch[], __stop_vt_cycpatch[];
+__attribute__((target("arm")))
+void vt_cpu_x3_set(int on)
+{
+    on = on != 0;
+    if (on == vt_cpu_x3) return;
+    for (const u32 *p = __start_vt_cycpatch; p < __stop_vt_cycpatch; p++) {
+        const u32 a = *p;
+        if (a >= 0x08000000u || a < 0x02000000u) continue;   /* ROM: fixed */
+        volatile u32 *ins = (volatile u32 *)a;
+        const u32 w = *ins;
+        const u32 rot = (w >> 8 & 0xF) * 2, imm8 = w & 0xFF;
+        const u32 v = rot ? (imm8 >> rot | imm8 << (32 - rot)) : imm8;
+        if (v & 0xFF) continue;                       /* not a dot count */
+        const u32 k = on ? v / 3 : v * 3;             /* in CYCLE units << 8 */
+        if ((k >> 8) > 0xFF) continue;
+        *ins = (w & ~0xFFFu) | 0xC00u | (k >> 8);     /* imm8 ror 24 = << 8 */
+    }
+    vt_cpu_x3 = (u8)on;
+}
+
 void vt_reg_write(u8 addr_lo, u8 val)
 {
     /* s21b59: mapper 256 submapper 2 swaps $4107/$4108 (NintendulatorNRS
@@ -888,7 +984,10 @@ void vt_reg_write(u8 addr_lo, u8 val)
                 break;
             case 0x12:                  // VT369: $6000 ROM bank (s.81)
             case 0x1C:                  // VT369: bit 6 maps ROM at $6000
-                if (vt_console == 0x0A) vt_recompute_prg_banks();
+                if (vt_console == 0x0A) {
+                    vt_recompute_prg_banks();
+                    if (addr_lo == 0x1C) vt_cpu_x3_set((val & 0x80) != 0);   /* s.88: bit 7, CPU x3 */
+                }
                 break;
             default:
                 break;
@@ -1061,7 +1160,7 @@ void vt_reg_write(u8 addr_lo, u8 val)
             u8 new_active = (val & 1) ? 0 : 1;
             if (new_active != vt.encryption_active) {
                 vt.encryption_active = new_active;
-                vt_rebuild_optable();
+                vt_optable_toggle();          /* s.88 */
             }
         }
         return;

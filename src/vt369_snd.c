@@ -64,6 +64,8 @@
 
 EWRAM_BSS u8  vt369_sram[0x800] __attribute__((aligned(4)));  /* $1800-$1FFF */
 EWRAM_BSS u8  vt369_snd_on;
+EWRAM_BSS u32 vt369_irq_acc;             /* s.88: $18F6 counter fraction (1/4096 IRQs) */
+#define VT369_IRQ_PER_TICK 159           /* 4096 / 25.78: one timer IRQ per 25.78 sample ticks */
 EWRAM_BSS const u8 *vt369_misc;          /* 4K embedded ROM, CPU $1000-$1FFF (loadcart.c) */
 /* DMA2 sources, two of them: timer1interrupt restarts DMA2 on entry, from
  * the block the previous fill wrote, while this fill writes the other one.
@@ -424,7 +426,14 @@ static u32 vt369_render(s32 *mix, u32 n)
     if (!vt369_prog_for(rv, &p)) { vt369_snd_dbg[2]++; return 0; }
     const s16 per = (s16)(SR(p.period) | SR(p.period + 4) << 8);
     vt369_snd_n = (u16)-per;
-    SR(0x18F6) = (u8)(SR(0x18F6) + n);               /* timer IRQ counter */
+    /* s.88: $18F6 counts the program's timer IRQs.  Against the reference's
+     * real sound CPU (Zuma and Jumper, program $02A0, period $FAC2) it
+     * advances 5.16 per NES frame, once per ~25.8 of these sample ticks, not
+     * once per tick: +128 a fill ran it 26x fast in steps a game polling
+     * for a given value could step over (Jumper hung on a black screen). */
+    vt369_irq_acc += n * VT369_IRQ_PER_TICK;
+    SR(0x18F6) = (u8)(SR(0x18F6) + (vt369_irq_acc >> 12));
+    vt369_irq_acc &= 0xFFF;
     const u32 stl = SR(p.masks), sp = SR(p.masks + 2);
     const u32 st = stl & ~vt369_st_prev;             /* rising edges */
     vt369_st_prev = (u8)stl;
@@ -580,6 +589,7 @@ void vt369_snd_reset(void)
 #endif
     vt369_snd_on = 0;
     vt369_st_prev = 0;
+    vt369_irq_acc = 0;
     for (int i = 0; i < 0x800; i++) vt369_sram[i] = 0;
     vt369_snd_n = 0;
 }

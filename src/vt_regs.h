@@ -191,6 +191,8 @@ extern u8 vt_prg_dirty;
 
 // Called on any write to $4100-$41FF
 void vt_reg_write(u8 addr_lo, u8 val);
+void vt_cpu_x3_set(int on);   /* s.88: VT369 $411C bit 7 */
+extern u8 vt_cpu_x3;
 
 // Called on any read from $4100-$41FF
 u8   vt_reg_read(u8 addr_lo);

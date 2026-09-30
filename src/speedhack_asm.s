@@ -55,6 +55,7 @@
 
 normalops:
 	.word _10,_30,_50,_70,_90,_B0,_D0,_F0,_4C
+	.global speedhackops	@ s.88: vt_regs.c re-installs a hack after a $4169 toggle
 speedhackops:
 #if VT09_ENCRYPTION
 	@ s.86: JMP keeps the VT09 encryption commit (op_vt_JMP_abs)

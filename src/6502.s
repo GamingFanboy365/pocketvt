@@ -164,7 +164,7 @@ _10:@   BPL *
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 _10y:
 	tst m6502_nz,#0x80000000
@@ -177,7 +177,7 @@ branchhack_back:
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 @----------------------------------------------------------------------------
 _11:@   ORA ($nn),Y
@@ -264,7 +264,7 @@ _28:@   PLP
 @----------------------------------------------------------------------------
 	pop8 r0
 	decodeP
-	sub cycles,cycles,#4*3*CYCLE
+	cyc sub cycles,cycles,#4*3*CYCLE
 	b check_irq
 @	fetch 4
 
@@ -314,7 +314,7 @@ _30:@   BMI *
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 _30y:
 	tst m6502_nz,#0x80000000
@@ -326,7 +326,7 @@ _30y:
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 @----------------------------------------------------------------------------
 _31:@   AND ($nn),Y
@@ -376,7 +376,7 @@ _40:@   RTI
 	decodeP
 	pop16		@pop the return address
 	encodePC
-	sub cycles,cycles,#6*3*CYCLE
+	cyc sub cycles,cycles,#6*3*CYCLE
 	b check_irq			@Fixes Dragon Quest
 @	fetch 6
 
@@ -459,7 +459,7 @@ _50:@   BVC *
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 _50y:
 	tst cycles,#CYC_V
@@ -471,7 +471,7 @@ _50y:
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 @----------------------------------------------------------------------------
 _51:@   EOR ($nn),Y
@@ -495,7 +495,7 @@ _56:@   LSR $nn,X
 _58:@   CLI
 @----------------------------------------------------------------------------
 	bic cycles,cycles,#CYC_I
-	sub cycles,cycles,#2*3*CYCLE	@???
+	cyc sub cycles,cycles,#2*3*CYCLE	@???
 	b check_irq			@Fixes Dragon Quest
 @	fetch 2
 
@@ -609,7 +609,7 @@ _70:@   BVS *
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 _70y:
 	tst cycles,#CYC_V
@@ -621,7 +621,7 @@ _70y:
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 @----------------------------------------------------------------------------
 _71:@   ADC ($nn),Y
@@ -729,7 +729,7 @@ _90:@   BCC *
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 _90y:
 	tst cycles,#CYC_C			@Test Carry
@@ -741,7 +741,7 @@ _90y:
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 @----------------------------------------------------------------------------
 _91:@   STA ($nn),Y
@@ -874,7 +874,7 @@ _B0:@   BCS *
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 _B0y:
 	tst cycles,#CYC_C			@Test Carry
@@ -886,7 +886,7 @@ _B0y:
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 @----------------------------------------------------------------------------
 _B1:@   LDA ($nn),Y
@@ -1029,7 +1029,7 @@ _D0:@   BNE *
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 _D0y:
 	tst m6502_nz,#0xff
@@ -1041,7 +1041,7 @@ _D0y:
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 @----------------------------------------------------------------------------
 _D1:@   CMP ($nn),Y
@@ -1163,7 +1163,7 @@ _F0:@   BEQ *
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 _F0y:
 	tst m6502_nz,#0xff
@@ -1175,7 +1175,7 @@ _F0y:
 	add m6502_pc,m6502_pc,r0
 	and r2,m6502_pc,#0xFF00
 	cmp r1,r2
-	subne cycles,cycles,#3*CYCLE
+	cyc subne cycles,cycles,#3*CYCLE
 	fetch_branch 3
 nobranch:	
 	add m6502_pc,m6502_pc,#1
@@ -1354,7 +1354,7 @@ _xC:@	;3 byte nop, 4 cycles, plus 1 for page cross
 @----------------------------------------------------------------------------
 	ldrb addy,[m6502_pc],#2
 	adds r0,m6502_x,addy,lsl#24
-	subcs cycles,cycles,#CYCLE*3
+	cyc subcs cycles,cycles,#CYCLE*3
 	fetch 4
 
 @----------------------------------------------------------------------------
@@ -1443,7 +1443,7 @@ CPU_reset:	@called by loadcart (r0-r9 are free to use)
 
 	ldr r12,=RES_VECTOR
 	bl_long Vec6502
-	sub cycles,cycles,#7*3*CYCLE
+	cyc sub cycles,cycles,#7*3*CYCLE
 	
 
 @	mov r11,r11

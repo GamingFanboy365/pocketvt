@@ -338,13 +338,118 @@ out_loop:
 		speedhack_T *hack=&speedhacks[hacknum];
 		hack->hack_pc=branchpc;
 		hack->num_incs=num_incs;
+#if VT_MODE
+		total_cycles*=vt_cpu_x3?1:3;	//s.88: dots per cycle, 1 at VT369 CPU x3
+#else
 		total_cycles*=3;
+#endif
 		hack->cycles_per_iteration=total_cycles;
 		hack->divider=(u32)((u64)0x100000000LL/(u64)total_cycles)+1;
 	}
 	memcpy32(&SPEEDHACK_INCS[hacknum*16],&incs[0],16*sizeof(u16));
 	return branchpc;
 }
+
+#if VT_MODE
+/* s.88: a poll loop followed along the path the current RAM values take:
+ * LDA zp/abs (RAM only), AND/CMP #imm, conditional branches and JMP abs, back
+ * to the starting PC with no writes.  Sky Fighter's title waits in four
+ * LDA $30 / AND #m / BEQ tests joined by forward branches, which
+ * find_first_instruction cannot follow; at CPU x3 it spun ~900K cycles a
+ * frame (13 NES fps).  The hack goes on the loop's backward branch or JMP. */
+extern u32 vt_nes_ram_mask;
+static bool find_poll_loop(const u8 *initpc, const u8 *lastbank, int hacknum)
+{
+	const u8 *ram=(const u8 *)NES_RAM;
+	const u8 *pc=initpc;
+	const u8 *back=NULL;
+	const int bank=(initpc-lastbank)>>13;
+	int a=-1, z=-1, n=-1, c=-1, total=0, steps;
+	/* s.89: the vblank can land on the AND/CMP or the branch after the load,
+	 * where A and the flags are unknown.  Back up to the load that feeds it
+	 * (a straight run of LDA/AND/CMP ending at initpc) and close the loop
+	 * there.  Before, only a vblank on the LDA found Sky Fighter's loop, so
+	 * a timing change left its title at 14 fps. */
+	if (OP(*initpc)!=0xA5 && OP(*initpc)!=0xAD)
+	{
+		int k;
+		for (k=2;k<=7;k++)
+		{
+			const u8 *s=initpc-k, *q=s;
+			if (OP(*s)!=0xA5 && OP(*s)!=0xAD) continue;
+			while (q<initpc)
+			{
+				const u8 o=OP(*q);
+				if (o==0xA5 || o==0x29 || o==0xC9) q+=2;
+				else if (o==0xAD) q+=3;
+				else break;
+			}
+			if (q==initpc) { initpc=s; pc=s; break; }
+		}
+	}
+	for (steps=0; steps<48; steps++)
+	{
+		const u8 op=OP(*pc);
+		int addr=-1, cyc=0, len=0, flag=-1;
+		switch (op)
+		{
+		case 0xA5: addr=pc[1]; cyc=3; len=2; break;
+		case 0xAD: addr=pc[1]|pc[2]<<8; if (addr>=0x2000) return false; cyc=4; len=3; break;
+		case 0x29: if (a<0) return false; a&=pc[1]; z=a==0; n=a>>7; cyc=2; len=2; break;
+		case 0xC9: if (a<0) return false; c=a>=pc[1]; z=a==pc[1]; n=((a-pc[1])>>7)&1; cyc=2; len=2; break;
+		case 0xF0: flag=z; break;
+		case 0xD0: flag=z<0?-1:!z; break;
+		case 0x30: flag=n; break;
+		case 0x10: flag=n<0?-1:!n; break;
+		case 0xB0: flag=c; break;
+		case 0x90: flag=c<0?-1:!c; break;
+		case 0x4C:
+		{
+			int dest=pc[1]|pc[2]<<8;
+			if (dest<0x8000 || (dest>>13)!=bank) return false;
+			back=pc; pc=lastbank+dest; total+=3;
+			goto next;
+		}
+		default: return false;
+		}
+		if (addr>=0)
+		{
+			a=ram[addr&vt_nes_ram_mask]; z=a==0; n=a>>7;
+		}
+		if ((op&0x1F)==0x10)
+		{
+			if (flag<0) return false;
+			if (flag)
+			{
+				const int rel=gets8(pc,1);
+				const u8 *dest=pc+2+rel;
+				if (((dest-lastbank)>>13)!=bank) return false;
+				total+=3+((((pc-lastbank)+2)^(dest-lastbank))>>8&1);
+				if (rel<0) back=pc;
+				pc=dest;
+				goto next;
+			}
+			cyc=2; len=2;
+		}
+		total+=cyc; pc+=len;
+	next:
+		if (pc==initpc)
+		{
+			speedhack_T *hack=&speedhacks[hacknum];
+			int i;
+			if (!back || total<=0) return false;
+			hack->hack_pc=back;
+			hack->num_incs=0;
+			total*=vt_cpu_x3?1:3;
+			hack->cycles_per_iteration=total;
+			hack->divider=0xFFFFFFFFu/(u32)total+1;	//32-bit: a 64-bit divide went deep into the IWRAM stack
+			for (i=0;i<16;i++) SPEEDHACK_INCS[hacknum*16+i]=0;
+			return true;
+		}
+	}
+	return false;
+}
+#endif
 
 bool quickhackfinder(const u8 *initpc, const u8 *lastbank, int hacknum)
 {
@@ -353,8 +458,10 @@ bool quickhackfinder(const u8 *initpc, const u8 *lastbank, int hacknum)
 	const u8 *pc;
 	
 	pc=find_first_instruction(initpc,lastbank,&branchpc);
-	if (!pc) return false;
-	hackpc=find_hack(pc,branchpc,lastbank,hacknum);
+	hackpc=pc?find_hack(pc,branchpc,lastbank,hacknum):NULL;
+#if VT_MODE
+	if (!hackpc && vt_active) return find_poll_loop(initpc,lastbank,hacknum);
+#endif
 	if (!hackpc) return false;
 	return true;
 }
