@@ -1995,7 +1995,41 @@ screen_on_sprite0:
 	bxne lr
 	
 	@FIXME: NEED TO HANDLE BACKDATED SPRITES (ie. turning screen on late, and sprite starts above our position)
-	
+
+#if VT_MODE
+	@ s.88: VT369 enhanced mode hits on sprite 0's first opaque pixel,
+	@ found in C (vt369_spr0_hit: -1, or line << 8 | x)
+	ldr r0,=vt369_enh
+	ldrb r0,[r0]
+	cmp r0,#0
+	beq 1f
+	stmfd sp!,{r3,lr}
+	ldrb_ r0,ppuctrl1
+	ldr r1,=vt369_spr0_hit
+	mov lr,pc
+	bx r1
+	ldmfd sp!,{r3,lr}
+	movs r1,r0,asr#8
+	bxmi lr
+	and r2,r0,#0xFF
+	add r1,r1,#2
+	ldr_ r12,timestamp_mult
+	mul r1,r12,r1
+	ldrb_ r12,timestamp_mult_2
+	mla r1,r2,r12,r1
+	ldr_ r0,frame_timestamp
+	add r1,r0,r1,asr#4
+	ldr_ r2,cycles_to_run
+	sub r2,r2,cycles,asr#CYC_SHIFT
+	ldr_ r12,timestamp
+	add r2,r2,r12
+	cmp r1,r2
+	bxmi lr
+	ldr r0,=sprite_zero_handler_3
+	adrl_ r12,sprite_zero_timeout
+	b_long replace_timeout_2
+1:
+#endif
 	@read sprite Y
 	ldr_ r0,nesoambuff
 	ldrb r1,[r0]
@@ -3638,9 +3672,17 @@ dma_W:	@(4014)		sprite DMA transfer
 	umull r12,r1,r2,r1
 	tst r1,#1
 	
-	ldr r1,=3*513*CYCLE
-	sub cycles,cycles,r1
-	subeq cycles,cycles,#3*CYCLE
+	ldr r1,=513
+	addeq r1,r1,#1
+	mov r2,#3
+#if VT_MODE
+	ldr r12,=vt_cpu_x3		@ s.88: 1 dot a cycle at CPU x3
+	ldrb r12,[r12]
+	cmp r12,#0
+	movne r2,#1
+#endif
+	mul r12,r1,r2
+	sub cycles,cycles,r12,lsl#CYC_SHIFT
 	
 	mov r1,#1
 	strb_ r1,nesoamdirty

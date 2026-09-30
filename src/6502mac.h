@@ -52,8 +52,22 @@ N = 0x80
 	eor m6502_nz,m6502_nz,#Z
 .endm
 
+@ s.88: CPU x3 (VT369 $411C bit 7).  Every instruction that charges 6502
+@ cycles (3 PPU dots each) is recorded in section vt_cycpatch; vt_cpu_x3_set
+@ (vt_regs.c) rewrites the immediates in RAM to 1 dot a cycle and back.
+.macro cycrec lbl
+	.pushsection vt_cycpatch, "a", %progbits
+	.word \lbl
+	.popsection
+.endm
+
+.macro cyc insn:vararg
+.Lcz\@:	\insn
+	cycrec .Lcz\@
+.endm
+
 .macro fetch count
-	subs cycles,cycles,#\count*3*CYCLE
+	cyc subs cycles,cycles,#\count*3*CYCLE
 	.if DEBUG
 	ldr_ pc,fetch_function
 	.else
@@ -64,7 +78,7 @@ N = 0x80
 .endm
 
 .macro fetch_branch count
-	subs cycles,cycles,#\count*3*CYCLE
+	cyc subs cycles,cycles,#\count*3*CYCLE
 	.if DEBUG
 	ldr_ pc,fetch_function
 	.else
@@ -77,7 +91,7 @@ N = 0x80
 .macro fetch_c count	@same as fetch except it adds the Carry (bit 0) also.
 						@This is unsafe because writemem can change processor flags. 
 						@(It's only safe if it's a write to the zero page or register A)
-	sbcs cycles,cycles,#\count*3*CYCLE
+	cyc sbcs cycles,cycles,#\count*3*CYCLE
 	.if DEBUG
 	ldr_ pc,fetch_function
 	.else
@@ -243,7 +257,7 @@ _ABS	= 4						@absolute
 	_type	=      _ABS
 	ldrb addy,[m6502_pc],#1
 	adds r0,m6502_x,addy,lsl#24
-	subcs cycles,cycles,#CYCLE*3	@waste a cycle if address crosses a page (for Battletoads)
+	cyc subcs cycles,cycles,#CYCLE*3	@waste a cycle if address crosses a page (for Battletoads)
 	ldrb r0,[m6502_pc],#1
 	orr addy,addy,r0,lsl#8
 	add addy,addy,m6502_x,lsr#24
@@ -265,7 +279,7 @@ _ABS	= 4						@absolute
 	_type	=      _ABS
 	ldrb addy,[m6502_pc],#1
 	adds r0,m6502_y,addy,lsl#24
-	subcs cycles,cycles,#CYCLE*3	@waste a cycle if address crosses a page (for Battletoads)
+	cyc subcs cycles,cycles,#CYCLE*3	@waste a cycle if address crosses a page (for Battletoads)
 	ldrb r0,[m6502_pc],#1
 	orr addy,addy,r0,lsl#8
 	add addy,addy,m6502_y,lsr#24
@@ -318,7 +332,7 @@ _ABS	= 4						@absolute
 @	.endif
 	
 	adds r2,m6502_y,addy,lsl#24
-	subcs cycles,cycles,#3*CYCLE	@waste a cycle if address crosses a page
+	cyc subcs cycles,cycles,#3*CYCLE	@waste a cycle if address crosses a page
 	
 	orr addy,addy,r1,lsl#8
 	add addy,addy,m6502_y,lsr#24

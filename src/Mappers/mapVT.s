@@ -956,7 +956,7 @@ write_vt369_4xxx:
     .global vt369_ppu_R
 vt369_ppu_R:
     tst     addy, #0x1000
-    ldreq   pc, =PPU_R
+    beq     vt369_ppu_R_reg
     mov     r0, addy, lsr #10
     and     r0, r0, #3
     add     r0, r0, #8               @ vram_map[8..11] = $2000-$2FFF pages
@@ -965,6 +965,62 @@ vt369_ppu_R:
     mov     r0, addy, lsl #22
     ldrb    r0, [r1, r0, lsr #22]
     mov     pc, lr
+
+@ s.88: $2007 with the screen off and the address in $0000-$1FFF reads CHR
+@ through the VT banks (vt_chr_read): vmdata_R runs first for the address
+@ increment and returns the old read buffer, then the buffer gets the byte.
+vt369_ppu_R_reg:
+    and     r0, addy, #7
+    cmp     r0, #2
+    beq     vt369_stat_R
+    cmp     r0, #7
+    ldrne   pc, =PPU_R
+    ldrb_   r0, screen_off
+    cmp     r0, #0
+    ldreq   pc, =PPU_R
+    ldr_    r0, vramaddr
+    mov     r0, r0, lsl #18
+    cmp     r0, #0x80000000          @ $2000 << 18
+    ldrhs   pc, =PPU_R
+    mov     r0, r0, lsr #18
+    stmfd   sp!, {r0, r3, r12, lr}
+    adr     lr, 1f
+    ldr     pc, =PPU_R
+1:  ldr     r1, [sp]
+    str     r0, [sp]                 @ the value this read returns
+    mov     r0, r1
+    ldr     r1, =vt_chr_read
+    mov     lr, pc
+    bx      r1
+    strb_   r0, readtemp
+    ldmfd   sp!, {r0, r3, r12, pc}
+
+@ s.88: a $2002 read that a poll loop will repeat (LDA $2002 / AND #m /
+@ BNE or BEQ back to it, the branch taken) ends the time slice: the value
+@ can only change at a PPU event.  Jumper's NMI waits out vblank this way
+@ (sprite-0 flag clear, from line 246 to the pre-render line), which at CPU
+@ x3 was ~570 iterations a frame.  Opcodes decode through vt_op_dec.
+vt369_stat_R:
+    stmfd   sp!, {lr}
+    adr     lr, 1f
+    ldr     pc, =PPU_R               @ r0 = $2002, side effects as usual
+1:  ldr     r2, =vt_op_dec
+    ldrb    r1, [m6502_pc]
+    ldrb    r1, [r2, r1]
+    cmp     r1, #0x29                @ AND #imm
+    ldmnefd sp!, {pc}
+    ldrb    r1, [m6502_pc, #3]
+    cmp     r1, #0xF9                @ back to the LDA abs
+    ldmnefd sp!, {pc}
+    ldrb    r1, [m6502_pc, #2]
+    ldrb    r1, [r2, r1]
+    ldrb    r2, [m6502_pc, #1]
+    ands    r2, r2, r0
+    movne   r2, #0xD0                @ the branch that is taken
+    moveq   r2, #0xF0
+    cmp     r1, r2
+    andeq   cycles, cycles, #CYC_MASK
+    ldmfd   sp!, {pc}
 
     .global vt369_ppu_W
 vt369_ppu_W:

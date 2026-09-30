@@ -462,6 +462,11 @@ lc2:
 	ldr r0,=vt_active
 	mov r1,#0
 	strb r1,[r0]
+	@ s.88: back to 1x CPU timing (VT369 $411C bit 7 patches the op costs)
+	stmfd sp!,{r0-r3,r12}
+	mov r0,#0
+	bl_long vt_cpu_x3_set
+	ldmfd sp!,{r0-r3,r12}
 #endif
 
 	ldrb_ r0,mapper_number

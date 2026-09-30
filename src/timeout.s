@@ -506,7 +506,15 @@ nmi_handler:
 	bic cycles,cycles,#BRANCH
 	ldr r12,=NMI_VECTOR
 	bl_long Vec6502
+#if VT_MODE
+	ldr r0,=vt_cpu_x3		@ s.88: 1 dot a cycle at CPU x3
+	ldrb r0,[r0]
+	cmp r0,#0
+	subne cycles,cycles,#7*CYCLE
+	subeq cycles,cycles,#3*7*CYCLE
+#else
 	sub cycles,cycles,#3*7*CYCLE
+#endif
 	b_long _GO
 	
 	

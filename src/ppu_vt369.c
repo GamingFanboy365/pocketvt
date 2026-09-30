@@ -52,6 +52,7 @@ EWRAM_BSS u8  vt369_pal[1024] __attribute__((aligned(4)));
 EWRAM_BSS u8  vt369_pal_dirty;
 EWRAM_BSS u8  vt369_oam[512] __attribute__((aligned(4)));
 EWRAM_BSS u8  vt369_oam_hi;            /* $2008 bit 0: which 256-byte OAM half */
+EWRAM_BSS u8  vt369_oam_live;          /* s.88: a fast DMA has filled vt369_oam */
 EWRAM_BSS u32 vt369_saved_palW;        /* vram_write_tbl[15] before we took it */
 EWRAM_BSS u32 vt369_dbg[8];            /* 0 full sweeps 1 tile copies 2 alloc fails 3 stomps 4 cells 5 cfg */
 
@@ -77,7 +78,7 @@ EWRAM_BSS u16 vt369_full_gen;          /* free_gen when alloc last found none */
 EWRAM_BSS u16 vt369_full_n;            /* slot count then */
 EWRAM_BSS u8  vt369_nofree;
 EWRAM_BSS u32 vt369_cfg;               /* cfg the cache was built for */
-EWRAM_BSS u16 vt369_gba_pal[384] __attribute__((aligned(4)));   /* 256 BG + 128 OBJ */
+EWRAM_BSS u16 vt369_gba_pal[512] __attribute__((aligned(4)));   /* 256 BG + 256 OBJ (s.88) */
 
 /* Slot ranges, as GBA tile indices from char base 0.  8bpp tiles are 64
  * bytes, 4bpp 32.  Skipped: 0x0000-0x003F (the UI layer's off-screen cells
@@ -98,6 +99,24 @@ static inline u16 vt369_col(u32 lo, u32 hi)
 }
 
 static inline int vt369_bpp8(void) { return (vt369_reg[0x1C] & 3) == 2; }
+/* s.88: ProcessSpritesEnhanced's "Cross River" rule, which Sky Fighter
+ * meets too ($201E = $0F, $201D = $0B, BKEXTEN): tile bits 8-10 move down
+ * to 6-8.  Without it every sprite from tile 256 up (Sky Fighter's ship and
+ * enemies) drew someone else's pattern as striped blocks. */
+static inline u32 vt369_tile_fix(u32 tile)
+{
+    if (vt369_reg[0x1E] == 0x0F && vt369_reg[0x1D] == 0x0B && (vt_reg_2010 & 0x10))
+        tile = (tile & 0x3F) | ((tile >> 2) & ~0x3Fu);
+    return tile;
+}
+
+/* s.88: 8bpp sprites, 8 wide, a byte a pixel: $201D bit 2 (one 16-row tile)
+ * or $201C bit 5, unless $201D bit 1 makes them 16 wide 4bpp
+ * (ProcessSpritesEnhanced).  Jumper and Sky Fighter use $201C = $22. */
+static inline int vt369_spr8(void)
+{
+    return !(vt369_reg[0x1D] & 2) && ((vt369_reg[0x1D] & 4) || (vt369_reg[0x1C] & 0x20));
+}
 
 /* Byte offset in PRG of tile 0 (OneBus_VT369.cpp: vt369bgData when $201E
  * bit 0 is set, else the $2012/$2016 bank).  The outer-bank terms
@@ -126,8 +145,37 @@ static u32 vt369_slot_idx(u32 s)
     }
 }
 
+/* s.88: tiles with identical pattern bytes share one slot.  Each tile
+ * number maps to the first tile seen with its 32/64 bytes (hash table,
+ * reset with the cache).  Sky Fighter's 8bpp forest uses 960 tile numbers
+ * but only 603 distinct tiles; the pool holds at most 831, so its last map
+ * rows found no slot and showed stale tiles as a smeared band. */
+EWRAM_BSS u16 vt369_canon[1024];
+EWRAM_BSS u16 vt369_chash[2048];
+
+static u32 vt369_canon_tile(u32 tile)
+{
+    const u32 c = vt369_canon[tile];
+    if (c != 0xFFFF) return c;
+    const u32 tsz = vt369_bpp8() ? 64u : 32u, base = vt369_bg_base(), m = vt369_prg_mask();
+    const u8 *prg = vt369_prg();
+    const u32 *d = (const u32 *)(prg + ((base + tile * tsz) & m));
+    u32 h = 0;
+    for (u32 i = 0; i < tsz / 4; i++) h = (h ^ d[i]) * 0x9E3779B1u;
+    for (u32 k = h >> 21;; k = (k + 1) & 2047) {
+        const u32 t = vt369_chash[k];
+        if (t == 0xFFFF) { vt369_chash[k] = (u16)tile; vt369_canon[tile] = (u16)tile; return tile; }
+        const u32 *e = (const u32 *)(prg + ((base + t * tsz) & m));
+        u32 i = 0;
+        while (i < tsz / 4 && e[i] == d[i]) i++;
+        if (i == tsz / 4) { vt369_canon[tile] = (u16)t; return t; }
+    }
+}
+
 static void vt369_cache_reset(void)
 {
+    for (int i = 0; i < 1024; i++) vt369_canon[i] = 0xFFFF;
+    for (int i = 0; i < 2048; i++) vt369_chash[i] = 0xFFFF;
     for (int i = 0; i < 1024; i++) vt369_t2s[i] = 0xFFFF;
     for (int i = 0; i < 0x800; i++) vt369_cell[i] = 0xFFFF;
     for (int i = 0; i < VT369_NSLOT; i++) { vt369_s2t[i] = 0xFFFF; vt369_rc[i] = 0; }
@@ -203,7 +251,7 @@ static inline u32 vt369_cell_tile(const u8 *nt, u32 o)
         const u32 ab = nt[(o & 0x400) + 0x3C0 + ((row >> 2) << 3) + (col >> 2)];
         tile |= ((ab >> (((row & 2) << 1) | (col & 2))) & 3) << 8;
     }
-    return tile;
+    return vt369_canon_tile(tile);
 }
 
 /* One changed nametable word: 4 name cells, or 4 attribute bytes (16 cells
@@ -284,7 +332,7 @@ static void vt369_bg_update(void)
     }
 }
 
-EWRAM_BSS u32 vt369_pal_seen[192];     /* vt369_pal[0..0x2FF] last converted */
+EWRAM_BSS u32 vt369_pal_seen[256];     /* vt369_pal[0..0x3FF] last converted */
 
 __attribute__((noinline))
 static void vt369_pal_upload(void)
@@ -293,7 +341,7 @@ static void vt369_pal_upload(void)
         vt369_pal_dirty = 0;
         const u32 *p = (const u32 *)vt369_pal;
         u32 *g = (u32 *)vt369_gba_pal;
-        for (int i = 0; i < 192; i++) {
+        for (int i = 0; i < 256; i++) {
             const u32 v = p[i];
             if (v == vt369_pal_seen[i]) continue;
             vt369_pal_seen[i] = v;
@@ -306,7 +354,8 @@ static void vt369_pal_upload(void)
     const int nbg = vt369_bpp8() ? 128 : 8;          /* words: 256 or 16 colours */
     for (int i = 0; i < nbg; i++) bg[i] = src[i];
     volatile u32 *obj = (volatile u32 *)0x05000200;
-    for (int i = 0; i < 64; i++) obj[i] = src[128 + i];
+    const int nobj = vt369_spr8() ? 128 : 64;       /* s.88: 8bpp sprites use all 256 */
+    for (int i = 0; i < nobj; i++) obj[i] = src[128 + i];
 }
 
 /* ---- sprites ----------------------------------------------------------- */
@@ -328,6 +377,8 @@ EWRAM_BSS u8  vt369_oframe;
 EWRAM_BSS u16 vt369_ocur;
 EWRAM_BSS u32 vt369_ocfg;
 EWRAM_BSS u32 vt369_oparam;
+EWRAM_BSS u8  vt369_ohi_clean;      /* s.88: OAM 64-127 written hidden */
+EWRAM_BSS u32 vt369_oshadow[128];    /* s.88: OAM words at the last pass 1 */
 
 static void vt369_obj_reset(void)
 {
@@ -371,9 +422,11 @@ static void vt369_sprite_build(int n, u32 key, u32 r1d, u32 w, u32 h, u32 base, 
         pal = at & 3;
     }
     if (vt369_reg[0x1C] & 0x80) tile &= 0xFF;
+    tile = vt369_tile_fix(tile);
     /* s.86: 16 rows through $2000 bit 5 (NES 8x16) use tiles t & ~1 and
      * t | 1 (64-byte stride); through $201D bit 2, one 128-byte tile. */
-    const u32 tstride = (w / 2) * 8 * ((r1d & 4) ? 2u : 1u);
+    const int s8 = vt369_spr8();                       /* s.88: a byte a pixel */
+    const u32 tstride = (s8 ? 8u : w / 2) * 8 * ((r1d & 4) ? 2u : 1u);
     if (h == 16 && !(r1d & 4)) tile &= ~1u;
     if (y >= 240 || y <= -(int)h || x >= 256 || x <= -(int)w) return;
 
@@ -386,13 +439,17 @@ static void vt369_sprite_build(int n, u32 key, u32 r1d, u32 w, u32 h, u32 base, 
         s = c; vt369_ocur = (u16)((c + 1) & (VT369_OSLOT - 1));
         if (vt369_os2t[s] != 0xFFFF) vt369_ot2s[vt369_os2t[s]] = 0xFFFF;
         vt369_os2t[s] = (u16)tile; vt369_ot2s[tile] = (u16)s;
-        /* row r, 8-pixel half q -> GBA tile (r/8)*(w/8) + q, row r%8 */
-        const u32 rowb = w / 2;
         const u32 *src = (const u32 *)(vt369_prg() + ((base + tile * tstride) & vt369_prg_mask()));
         volatile u32 *dst = (volatile u32 *)(0x06010000u + s * 128u);
-        for (u32 r = 0; r < h; r++)
-            for (u32 q = 0; q < w / 8; q++)
-                dst[((r >> 3) * (w / 8) + q) * 8 + (r & 7)] = src[r * (rowb / 4) + q];
+        if (s8) {                                      /* 8 wide: GBA 8bpp rows as they are */
+            for (u32 i = 0; i < h * 2; i++) dst[i] = src[i];
+        } else {
+            /* row r, 8-pixel half q -> GBA tile (r/8)*(w/8) + q, row r%8 */
+            const u32 rowb = w / 2;
+            for (u32 r = 0; r < h; r++)
+                for (u32 q = 0; q < w / 8; q++)
+                    dst[((r >> 3) * (w / 8) + q) * 8 + (r & 7)] = src[r * (rowb / 4) + q];
+        }
         vt369_dbg[6]++;
     }
     vt369_ostamp[s] = f;
@@ -412,7 +469,7 @@ static void vt369_sprite_build(int n, u32 key, u32 r1d, u32 w, u32 h, u32 base, 
         a0 = (vt369_yscale(yk, scaled) & 0xFF) | shape;
         a1 = ((u32)(x - 8) & 0x1FF) | size | flip << 12;
     }
-    ent[0] = (u16)a0;
+    ent[0] = (u16)(a0 | (s8 ? 0x2000u : 0));          /* 256-colour */
     ent[1] = (u16)a1;
     ent[2] = (u16)(s * 4 | (behind ? 3u : 2u) << 10 | pal << 12);
 }
@@ -426,40 +483,61 @@ static void vt369_sprites(void)
      * too (Furbtendulator ProcessSpritesEnhanced: spriteHeight); Zuma's balls
      * showed their top halves only. */
     const int tall = (r1d & 4) != 0 || (_ppuctrl0 & 0x20) != 0;
-    /* Only 4bpp shapes: 16x16, 16x8, 8x16 ($2000 bit 5) and 8x8.  8 wide
-     * with $201D bit 2 is the 8bpp format (8 bytes a row): not done. */
-    const int ok = vt369_obj_ok() && (vt369_reg[0x1E] & 4) && (wide || !(r1d & 4));
+    /* 4bpp 16x16, 16x8, 8x16 and 8x8, and (s.88) 8bpp 8x8 and 8x16.  The
+     * NES OAM arrangement ($201E bit 2 clear) is read once a fast DMA has
+     * filled vt369_oam; before that PocketNES's own sprite path has them. */
+    const int planar = (vt369_reg[0x1E] & 4) != 0;
+    const int ok = vt369_obj_ok() && (planar || vt369_oam_live);
     const u32 w = wide ? 16 : 8, h = tall ? 16 : 8;
     const u32 base = (u32)(vt369_reg[0x22] | vt369_reg[0x23] << 8) << 13;
-    const u32 cfg = (u32)r1d << 24 | (vt369_reg[0x1E] & 1) << 23 | (u32)tall << 22 | (base >> 13);
+    const u32 cfg = (u32)r1d << 24 | (vt369_reg[0x1E] & 1) << 23 | (u32)tall << 22 | (base >> 13)
+                  ^ ((u32)vt369_spr8() << 21);
     if (cfg != vt369_ocfg) { vt369_ocfg = cfg; vt369_obj_reset(); }
     const int stype = (emuflags >> 8) & 0xFF;
     const int affine = stype == 3, scaled = stype >= 2;
     const int nspr = (r1d & 1) ? 128 : 64;
     const u32 param = cfg ^ (u32)stype << 8 ^ (u32)(u8)wtop << 12 ^ (u32)ok << 20
-                    ^ (u32)(vt369_reg[0x1C] & 0x80) << 13;
+                    ^ (u32)(vt369_reg[0x1C] & 0x80) << 13 ^ (u32)planar << 31;
     if (param != vt369_oparam) {
         vt369_oparam = param;
         for (int n = 0; n < 128; n++) vt369_oslot[n] = 0xFFFE;
+        vt369_ohi_clean = 0;
     }
     const u8 f = ++vt369_oframe;
     u32 todo[4] = { 0, 0, 0, 0 };
 
     /* pass 1: unchanged sprites keep their slot (refresh its stamp first,
-     * so a changed sprite below cannot evict it) */
-    for (int n = 0; n < 128; n++) {
-        const u32 key = vt369_oam[n] | vt369_oam[0x80 + n] << 8
-                      | vt369_oam[0x100 + n] << 16 | (u32)vt369_oam[0x180 + n] << 24;
-        const u32 s = vt369_oslot[n];
-        if (s != 0xFFFE && key == vt369_okey[n]) {
-            if (s < VT369_OSLOT) vt369_ostamp[s] = f;
-        } else {
-            todo[n >> 5] |= 1u << (n & 31);
-            vt369_okey[n] = key;
+     * so a changed sprite below cannot evict it).  s.88: only the nspr
+     * sprites in use; 64-127 are hidden once below. */
+    const u32 *ow = (const u32 *)vt369_oam;
+    for (int n = 0; n < nspr; n += 4) {
+        /* s.88: four sprites a step; a group whose OAM words did not change
+         * (vt369_oshadow) only refreshes its slots' stamps */
+        const u32 g = (u32)n >> 2;
+        const u32 i0 = planar ? g : (u32)n, st = planar ? 32 : 1;
+        const u32 w0 = ow[i0], w1 = ow[i0 + st], w2 = ow[i0 + 2 * st], w3 = ow[i0 + 3 * st];
+        u32 *sh = &vt369_oshadow[i0];
+        const int same = sh[0] == w0 && sh[st] == w1 && sh[2 * st] == w2 && sh[3 * st] == w3;
+        sh[0] = w0; sh[st] = w1; sh[2 * st] = w2; sh[3 * st] = w3;
+        for (int j = 0; j < 4; j++) {
+            const u32 s = vt369_oslot[n + j];
+            if (same && s != 0xFFFE) {
+                if (s < VT369_OSLOT) vt369_ostamp[s] = f;
+                continue;
+            }
+            const u32 key = planar ? ((w0 >> (8 * j) & 0xFF) | (w1 >> (8 * j) & 0xFF) << 8
+                                      | (w2 >> (8 * j) & 0xFF) << 16 | (w3 >> (8 * j)) << 24)
+                                   : ow[n + j];         /* y, tile, attr, x */
+            if (s != 0xFFFE && key == vt369_okey[n + j]) {
+                if (s < VT369_OSLOT) vt369_ostamp[s] = f;
+            } else {
+                todo[(n + j) >> 5] |= 1u << ((n + j) & 31);
+                vt369_okey[n + j] = key;
+            }
         }
     }
     /* pass 2: changed sprites */
-    for (int n = 0; n < 128; n++) {
+    for (int n = 0; n < nspr; n++) {
         if (!(todo[n >> 5] & (1u << (n & 31)))) continue;
         if (!ok || n >= nspr) {
             vt369_oslot[n] = 0xFFFF;
@@ -472,7 +550,16 @@ static void vt369_sprites(void)
      * attr3 holds PocketNES's affine matrices and is left alone */
     volatile u16 *oam = (volatile u16 *)0x07000000;
     const u16 *e = vt369_oent;
-    for (int n = 0; n < 128; n++, oam += 4, e += 3) {
+    /* s.88: PocketNES rewrites 0-63 every vblank; 64-127 only change with
+     * the sprite count or a rebuild (vt369_ohi_clean) */
+    const int nw = (nspr == 128 || !vt369_ohi_clean) ? 128 : 64;
+    if (nspr == 64 && !vt369_ohi_clean) {
+        for (int n = 64; n < 128; n++) {
+            vt369_oslot[n] = 0xFFFF; vt369_oent[n * 3] = 0x0200; vt369_okey[n] = 0;
+        }
+        vt369_ohi_clean = 1;
+    } else if (nspr == 128) vt369_ohi_clean = 0;
+    for (int n = 0; n < nw; n++, oam += 4, e += 3) {
         oam[0] = e[0]; oam[1] = e[1]; oam[2] = e[2];
     }
 }
@@ -491,7 +578,7 @@ static void vt369_set_mode(int on)
         vt369_ocfg = 0xFFFFFFFFu;
         vt369_oparam = 0xFFFFFFFFu;
         vt369_pal_dirty = 1;
-        for (int i = 0; i < 192; i++) vt369_pal_seen[i] = ~((const u32 *)vt369_pal)[i];
+        for (int i = 0; i < 256; i++) vt369_pal_seen[i] = ~((const u32 *)vt369_pal)[i];
     } else {
         if (vt369_saved_palW) _vram_write_tbl[15] = vt369_saved_palW;
         vt_bkexten_live = (vt_reg_2010 & 0x12) == 0x12;
@@ -504,7 +591,9 @@ void vt369_reset(void)
     if (vt369_enh) vt369_set_mode(0);
     for (int i = 0; i < 0x40; i++) vt369_reg[i] = 0;
     vt369_oam_hi = 0;
+    vt369_oam_live = 0;
     vt369_cfg = 0xFFFFFFFFu;
+    { extern u32 vt369_s0_key[3]; vt369_s0_key[2] = 0xFFFFFFFFu; }   /* s.88: no cached sprite-0 answer */
 }
 
 /* $2000-$203F writes (vt_ppu_reg_write, VT369 carts only). */
@@ -555,7 +644,13 @@ int vt369_dma_4014(u32 val)
         _vramaddr = (_vramaddr & ~0x3FFFu) | (a & 0x3FFF);
         vt369_pal_dirty = 1;
     } else {
+        /* s.88: with 64 sprites ($201D bit 0 clear) the high half stays 0
+         * (OneBus_VT369.cpp $2004: SprAddrHigh = 0).  Toggling it per
+         * 256-byte transfer put every other frame's sprites where nothing
+         * reads them. */
+        if (!(vt369_reg[0x1D] & 1)) vt369_oam_hi = 0;
         u32 a = (u32)vt369_oam_hi << 8;
+        vt369_oam_live = 1;
         if (inram && !((src | len) & 3) && a + len <= 0x200 && src + len <= rmask + 1) {
             u32 *d = (u32 *)&vt369_oam[a];
             const u32 *sw = (const u32 *)&ram[src];
@@ -570,6 +665,80 @@ int vt369_dma_4014(u32 val)
         for (int i = 0; i < 64; i++) nes[i] = 0xFFFFFFFFu;
     }
     return 1;
+}
+
+/* s.88: sprite 0 hit on VT369 in enhanced mode, as OneBus_VT369.cpp does it
+ * (ProcessSpritesEnhanced, then the pixel loop): the first opaque pixel of
+ * sprite 0, whatever the background has there.  PocketNES's test reads the
+ * sprite and BG patterns from NES_VRAM, which enhanced mode does not fill,
+ * and the fast $4014 DMA leaves its OAM copy at Y = $FF: Jumper (an SMB
+ * hack) waited for the hit forever on a black screen.  Called from
+ * screen_on_sprite0 (ppu.s) with $2001; returns (line << 8 | x), line being
+ * the sprite's Y plus the row, or -1 for no hit this frame. */
+EWRAM_BSS u32 vt369_s0_key[3];
+EWRAM_BSS int vt369_s0_res;
+
+int vt369_spr0_hit(u32 ctrl1)
+{
+    if (!vt369_enh || !(ctrl1 & 0x10)) return -1;
+    const u32 r1d = vt369_reg[0x1D], r1c = vt369_reg[0x1C], r1e = vt369_reg[0x1E];
+    const u8 *nes = (const u8 *)_nesoambuff;
+    int y, x;
+    u32 tile, at;
+    if (*(const u32 *)nes != 0xFFFFFFFFu) {            /* normal $4014 DMA */
+        y = nes[0]; tile = nes[1] | (nes[2] << 6 & 0x700); at = nes[2]; x = nes[3];
+    } else if (!(r1e & 4)) {                           /* NES OAM layout */
+        y = vt369_oam[0]; tile = vt369_oam[1] | (vt369_oam[2] << 6 & 0x700);
+        at = vt369_oam[2]; x = vt369_oam[3];
+    } else {
+        y = vt369_oam[0]; tile = vt369_oam[0x80] | (vt369_oam[0x100] << 6 & 0x700);
+        at = vt369_oam[0x100]; x = vt369_oam[0x180];
+    }
+    u32 fx = 0, fy = 0;
+    if (r1d & 8) { if (at & 0x40) x -= 256; if (at & 0x80) y -= 256; }
+    else { fx = at & 0x40; fy = at & 0x80; }
+    if (y >= 240 || y <= -16 || x > 255 || x <= -16) return -1;    /* off screen */
+    if (r1c & 0x80) tile &= 0xFF;
+    tile = vt369_tile_fix(tile);
+    const u32 right = (_ppuctrl0 & 0x20) ? (tile & 1) : (_ppuctrl0 & 0x08);
+    if (_ppuctrl0 & 0x20) tile &= ~1u;
+    const int h = ((r1d & 4) || (_ppuctrl0 & 0x20)) ? 16 : 8;
+    const int w = (r1d & 2) ? 16 : 8;
+    const int nib = (r1d & 2) || !((r1d & 4) || (r1c & 0x20));   /* 4bpp rows */
+    u32 base;
+    if (r1e & 1) base = ((u32)(vt369_reg[0x22] | vt369_reg[0x23] << 8) & 0xFFF) << 13;
+    else base = (u32)vt_chr_reg[right ? 0 : 4] << ((r1c & 0x80) ? 10 : 13) << ((r1c >> 4) & 3);
+    const u8 *prg = vt369_prg();
+    const u32 m = vt369_prg_mask();
+    /* the same sprite 0 as last time: the same answer (it is scanned from
+     * ROM, pixel by pixel, ~20K cycles when mostly transparent) */
+    const u32 k0 = ((u32)y & 0x1FF) | ((u32)x & 0x1FF) << 9 | tile << 18 | (ctrl1 & 0x14) << 25;
+    const u32 k1 = at | r1c << 8 | r1d << 16 | (u32)(_ppuctrl0 & 0x28) << 24;
+    if (vt369_s0_key[0] == k0 && vt369_s0_key[1] == k1 && vt369_s0_key[2] == base)
+        return vt369_s0_res;
+    vt369_s0_key[0] = k0; vt369_s0_key[1] = k1; vt369_s0_key[2] = base;
+    vt369_s0_res = -1;
+    const u32 rb = nib ? (u32)w >> 1 : (u32)w;          /* bytes a row */
+    for (int sl = 0; sl < h; sl++) {
+        if (y + sl < 0 || y + sl >= 240) continue;
+        u32 a = tile << 6;
+        if (r1d & 4) a <<= 1;
+        a += (u32)(fy ? h - 1 - sl : sl) << 3;
+        if (!(r1d & 2) && !(r1d & 4) && !(r1c & 0x20)) a >>= 1;
+        a += base;
+        {   u32 any = 0;                                /* a transparent row: next */
+            for (u32 j = 0; j < rb; j++) any |= prg[(a + j) & m];
+            if (!any) continue; }
+        for (int i = 0; i < w; i++) {
+            const int c = fx ? w - 1 - i : i;          /* source pixel at screen i */
+            const u32 b = prg[(a + (nib ? (u32)c >> 1 : (u32)c)) & m];
+            const u32 px = nib ? ((c & 1) ? b >> 4 : b & 0x0F) : b;
+            const int sx = x + i;
+            if (!px || sx < 0 || sx > 255 || (sx < 8 && !(ctrl1 & 0x04))) continue;
+            return vt369_s0_res = (y + sl) << 8 | sx;
+        }
+    }
+    return -1;
 }
 
 /* NES line 242, before the effect buffers swap (vt_palette_rebuild_gba):

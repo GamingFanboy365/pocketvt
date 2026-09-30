@@ -1,4 +1,5 @@
-/* bpcount PLAY.gba FROMFRAME NSTEPS ADDR1 [ADDR2...] -- count hits of each pc address (thumb bit ignored), print step of first/last */
+/* bpcount PLAY.gba FROMFRAME NSTEPS ADDR1 [ADDR2...] -- count hits of each pc address (thumb bit ignored), print step of first/last.
+ * VERBOSE=1 also prints r0-r2 and lr at every hit. */
 #include <mgba/core/core.h>
 #include <mgba/gba/core.h>
 #include <mgba/core/log.h>
@@ -23,7 +24,8 @@ int main(int argc, char **argv) {
 	for (long k = 0; k < ns; k++) {
 		c->step(c);
 		unsigned pc = (cpu->gprs[15] - (cpu->cpsr.t ? 4 : 8)) & ~1u;
-		for (int i = 0; i < na; i++) if (pc == a[i]) { cnt[i]++; if (first[i] < 0) first[i] = k; last[i] = k; }
+		for (int i = 0; i < na; i++) if (pc == a[i]) { cnt[i]++; if (first[i] < 0) first[i] = k; last[i] = k;
+			if (getenv("VERBOSE")) printf("hit %08X step %ld r0=%08X r1=%08X r2=%08X lr=%08X\n", a[i], k, cpu->gprs[0], cpu->gprs[1], cpu->gprs[2], cpu->gprs[14]); }
 	}
 	for (int i = 0; i < na; i++) printf("%08X hits=%ld first=%ld last=%ld\n", a[i], cnt[i], first[i], last[i]);
 	return 0;

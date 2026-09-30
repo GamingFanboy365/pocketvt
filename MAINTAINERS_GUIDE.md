@@ -4804,3 +4804,173 @@ with `__bss_end__` 0x03007B64 and `.vram1` to 0x06003FF0; the lowest user
 stack pointer is 0x03007C88 (Zuma) and 0x03007CA8 (Star Ally), still above
 .bss. Docker-built Star Ally, Zuma, Fire Fighter and VG Pocket play ROMs
 boot through the real BIOS and run at 60.
+
+## 88. Jumper and Sky Fighter (VT369), and CPU x3
+
+The user supplied two more VT369 carts, both mapper 256 submapper 13 (Cube
+Tech opcode encryption): Jumper, a Super Mario Bros. hack, which stayed on a
+black screen, and Sky Fighter, a vertical shooter whose select screen matched
+but whose enemies were garbled striped blocks, with a band of wrong tiles near
+the top of the playfield. Both turned out to need the same missing piece, the
+VT369 CPU at three times the NES clock, and several VT369 features no earlier
+cart had used.
+
+A new probe did most of the finding. tools/probes/nestrace single-steps the
+GBA and logs the 6502 PC and registers at every opcode-handler entry, in a
+form that lines up with `furb_cli --trace`; a small aligner (tolerant of the
+speed hack, which collapses loops) then finds the first instruction where the
+two CPUs part. `FT=`, `FROMFT=` and `KEYS=` start it at a NES frame and press
+keys. bpcount gained `VERBOSE=1`, which prints r0-r2 and lr at every hit.
+
+### 88a. Jumper's black screen: three missing pieces in a row
+
+The first divergence was a wait on the sound CPU's timer-IRQ counter, $18F6
+(seen by the main CPU at $48F6). The HLE advanced it by one every sample
+tick, 128 a fill; the reference's real sound CPU advances it about 5.16 times
+a NES frame for program $02A0, once per 25.78 ticks. Jumper waits for it to
+change and copes with any step, so this was not the hang, but Zuma's music
+now lines up better (wavcmp envelope 0.67 to 0.76, lag -260 ms to -40 ms) and
+Zuma's gameplay picture rose from 96-97% to 98%. The rate is a 12-bit
+fraction (VT369_IRQ_PER_TICK, 159/4096 per tick); the host test's model
+counts the same way and passes with 0 failing trials.
+
+The second was a $2007 read of pattern memory. Jumper copies its VRAM update
+lists out of CHR at $1EC0 through $2007, and PocketVT returned zeros: in VT369
+enhanced mode the NES_VRAM CHR copy is not maintained. The reference reads
+CHRPointer, which h_OneBus.cpp setCHR(0x00, ...) points at the planes-0-1 half
+of the 4bpp data (or chrLow16) with the extended bank formula when BKEXTEN or
+SPEXTEN is set. vt_chr_read (ppu_vt.c) computes the same byte, and
+vt369_ppu_R (mapVT.s, ROM, readmem_2 on VT369) calls it for a screen-off $2007
+read below $2000, after vmdata_R has done the increment and buffer swap. IWRAM
+is untouched.
+
+The third was the sprite-0 hit. SMB's NMI waits for it before its status-bar
+split, and PocketNES's test reads sprite and background patterns from
+NES_VRAM, which enhanced mode leaves empty; worse, the fast $4014 DMA sets
+PocketNES's OAM copy to Y = $FF. OneBus_VT369.cpp sets the hit on the first
+opaque pixel of sprite 0 whatever the background has there, so
+vt369_spr0_hit (ppu_vt369.c) finds that pixel from VT369 sprite memory in
+either OAM layout, and screen_on_sprite0 (ppu.s, ROM) installs
+sprite_zero_handler_3 at its time. The answer is cached while sprite 0 and
+the registers stay the same (a scan from ROM cost ~20K cycles), and a row of
+all-transparent bytes is skipped whole.
+
+### 88b. VT369 sprites: the OAM half, the NES layout, 8bpp
+
+With 64 sprites ($201D bit 0 clear) the reference's $2004 keeps the high OAM
+half at 0; vt369_dma_4014 flipped halves on every 256-byte transfer, so every
+other frame's sprites went where nothing read them. The enhanced sprite path
+only read the new planar layout ($201E bit 2); Jumper uses the NES layout,
+y/tile/attr/x per sprite, which is now read once a fast DMA has filled
+vt369_oam (vt369_oam_live). Jumper's sprites are also 8bpp, 8 wide ($201C bit
+5; $201D bit 2 selects 8bpp 16-row tiles too): the source rows are already
+the GBA's 8bpp layout, so a slot is a straight copy, the GBA entry sets the
+256-colour bit, and the OBJ palette upload grows to all 256 sprite colours
+(vt369_gba_pal and vt369_pal_seen now cover 512 colours). The 16-row 8bpp
+form is untested; no cart uses it.
+
+### 88c. Sky Fighter: the "Cross River" tile rule, and tiles shared by content
+
+Sky Fighter's broken sprites were every sprite from tile 256 up.
+ProcessSpritesEnhanced has a rule commented "Needed for Cross River": with
+$201E = $0F, $201D = $0B and BKEXTEN, tile bits 8-10 move down to 6-8. Sky
+Fighter meets that condition; vt369_tile_fix applies it in the sprite path
+and the sprite-0 search.
+
+The band of wrong tiles was the BG slot pool running out. Sky Fighter's
+forest is an 8bpp picture in which all 960 cells of the nametable have
+different tile numbers; about 896 are on screen at once in the default scaled
+mode, and the pool holds at most 831 8bpp slots (BG VRAM minus the tilemap,
+.vram1 and the debug screen). The cells the full rebuild reached last, the
+bottom rows of the nametable, found no slot and kept stale tiles, which the
+0.75 vertical scaling smeared into a band. Only 603 of the 960 tiles are
+different, though: vt369_canon_tile maps each tile number to the first tile
+with the same pattern bytes (a hash table, reset with the cache when the BG
+base or depth changes), and the cell and slot code works in those. Sky
+Fighter's gameplay picture went from 83-86% to 96-98%; the rest is enemy
+waves drifting from the reference, which the input harness starts a frame
+apart.
+
+### 88d. CPU x3
+
+With the picture fixed, Jumper still died strangely: after its first death
+it never left a blue screen. The trace showed why. The game turns opcode
+encryption on ($4169) for a short OAM copy in its main loop, and at PocketVT's
+speed the NMI arrived inside that copy and ran the NMI handler through the
+opcode swap, into $2D30. The reference's trace advances one PPU dot per CPU
+cycle: Jumper writes $411C = $C0 at boot, and bit 7 runs the VT369 CPU at
+three times the NES rate (OneBus_VT369.cpp RunCycle: the PPU runs one dot a
+cycle, the APU every third). Every VT369 test cart sets it. Before, the
+games' logic simply lagged: Fire Fighter's per-frame counter $3A advanced 42
+times in 60 NES frames on PR #11 against 60 on the reference, so PR #11's "60
+fps" was a game running at 70% of its speed.
+
+PocketNES's timeline is in PPU dots, and every opcode handler charges its
+cycles as an immediate, `subs cycles,cycles,#n*3*CYCLE` (6502mac.h fetch,
+fetch_branch, fetch_c, the page-cross penalties and 21 sites in 6502.s).
+Those are now written through a `cyc` macro that records the instruction's
+address in section vt_cycpatch (GNU ld provides __start_/__stop_), and
+vt_cpu_x3_set (vt_regs.c), called on a $411C write, rewrites every recorded
+immediate that lives in RAM between 3n and n dots. 227 sites are recorded;
+the table is in ROM. The timeline, the APU, the VT timer and the sound HLE
+keep counting dots, so they keep their speed, as in the reference. The NMI
+entry (timeout.s) and the OAM DMA cost (ppu.s) read vt_cpu_x3; cart reset
+switches it off (cart.s). What x3 does not reach: handlers in ROM, which are
+the VT extra opcodes and the unofficial ones, still charge 3 dots a cycle,
+and the speed hacks' per-iteration costs for loops found before a switch.
+A first version switched x3 off again on the $4112 write, through a missing
+case label; watch for fall-through in that switch.
+
+With x3 Jumper's frame counter stays within one frame of the reference's
+through 1200 NES frames and its death and restart play as in the reference.
+Hidden costs showed up at 3x: loops spin three times as often. vt369_stat_R
+(mapVT.s) ends the time slice when a $2002 read is followed by AND #m and a
+BNE/BEQ back to it that will be taken (Jumper waits out vblank that way, ~570
+iterations a frame), and the speed-hack finder gained find_poll_loop, which
+follows a poll loop along the path the current RAM values take (LDA zp/abs,
+AND/CMP #, branches, JMP; no writes, RAM only) and puts the hack on its
+backward branch. Sky Fighter's title waits in four chained LDA $30 / AND #m /
+BEQ tests the old finder could not follow: 13 NES fps before, 60 after.
+
+### 88e. Encryption toggles and the speed hack
+
+Jumper writes $4169 four times a NES frame (encryption on and off twice).
+Each write rebuilt the whole op table (256 decodes), rebuilt the speed-hack
+byte tables and dropped the installed idle-loop hack. The encrypted table,
+its decode and the hack bytes are now built once per encryption mode and
+copied in (vt_optable_load, ldm/stm), and a toggle re-installs the current
+hack at its raw byte if that byte still decodes to a branch or JMP
+(vt_optable_toggle). A DMA3 copy was tried first and stalled the game; not
+investigated.
+
+vt_timer_tick_frame re-armed speed hack 1 on every GBA vblank for every VT
+cart. That was for Lonely Island's hand-installed hack; for the finder's
+entries it fired at a random point of the NES frame, and in Jumper slot 1 is
+the sprite-0 wait, so the main loop's idle JMP ran unhacked until the next
+hit (~90K cycles a frame). It is now limited to Lonely Island's entry.
+Table Soccer VT03 went from 44 to 60 NES fps in the same build; the re-arm is
+the only change on its path, so it is the likely cause, not proven.
+
+### 88f. Regression
+
+Test ROMs at NES 150, 400 and 700 against PR #11: identical scores except
+Zuma (98.9/96.2/96.8% to 99.6/98.3/98.0%), Table Soccer VT369 (98.68% to
+98.59%), Push the Ball frame 150 (97.38% to 97.24%, its timing-exposed stale
+tile) and Fire Fighter within 0.15 points. Speed: Table Soccer VT03 44 to 60,
+Fire Fighter 60 to 53-57 (its logic now runs every frame), Jewel Master VT369
+57-60, the others unchanged. Jumper 99.9% at the regression frames and
+98.4-100% in a run to NES 1200 with input, Sky Fighter
+title 100% and gameplay 96-98%. VG Pocket, all 50 games at NES 900 and 1100:
+mean 99.46% against 99.49%; the largest move, game 0/4 at frame 900 (100% to
+97.0%), is a one-frame palette-raster glitch that the harness catches or not
+from run to run: over 100 frames sampled every third frame both cores score
+identically, frame for frame.
+
+The frame-set test (800 GBA frames, no input): Star Ally identical frame for
+frame; Lonely Island, LLM VT09, Aero Gyrodine and Table Soccer VT03 show new
+frames only in the boot transition (GBA frames 56-75); Scramble and VG Pocket
+none. The sound host test reports 0 failing trials. The Docker build links
+with `__bss_end__` 0x03007B64 and `.vram1` to 0x06003FF0; Docker-built
+Jumper, Sky Fighter, Zuma, Fire Fighter and Star Ally boot through the real
+BIOS. The lowest user stack pointer is 0x03007C14, in libgcc's 64-bit divide
+under the speed-hack finder; PR #11 reaches 0x03007C1C on the same run.
