@@ -133,6 +133,7 @@
 	.global ppustate
 	global_func writeBG
 	.global writeBG_mapper_9_mod	@ s.89: vt369_nt_hook (ppu_vt369.c) patches it
+	.global _inside_gba_vblank	@ s.90: vt_adpcm_mix_gba (vt_regs.c) reads it
 	.global wtop
 	.global gammavalue
 	global_func ctrl0_W

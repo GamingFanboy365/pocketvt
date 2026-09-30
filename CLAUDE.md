@@ -95,8 +95,10 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   (frame end never waits) and -DVT_TIMER_LOG (VT timer expiry/re-arm ring). Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.89)
-See MAINTAINERS_GUIDE.md s.89 (VT369 slowdown and flicker: the GBA OBJ line
+## Current state (after s.90)
+See MAINTAINERS_GUIDE.md s.90 (Sky Fighter's black line: the VT369 sound
+refill delayed the vblank HBlank DMA set-up; the render now waits for the end
+of a vblank handler), s.89 (VT369 slowdown and flicker: the GBA OBJ line
 budget, reference-counted sprite slots, palette and nametable dirty marks,
 the writeBG hook, nametable DMA, $4107/$4108 and the divider in vt_w4_bank,
 the poll-loop finder's back-up), s.88 (Jumper and Sky Fighter: VT369 CPU x3 by
@@ -156,6 +158,10 @@ states, sound) and s.77-78 (raster-split slots, speed).
   ROM handler in vt_w4_next = vt_w4_bank ($4107/$4108 and $4136/$4137, s.89c),
   then vt_w4_slow. Write handlers may clobber only r0-r2 and addy: r3 is
   m6502_nz. `.vram1` ends at 0x06003FF0: 16 bytes left.
+- The VT369 sound refill (~55 scanlines) must never run between a vblank
+  handler's entry and its HBlank DMA set-up (s.90): vt_adpcm_mix_gba defers it
+  to vt_16c_palette_fixup while `_inside_gba_vblank` is set. Measure the set-up
+  line with bpcount PEEK=04000004 on vblankinterrupt and vbl5.
 - VT369 enhanced mode patches writeBG_mapper_9_mod (ppu.s) into a B to
   vt369_nt_mark (`.ewram`) to mark nametable writes (s.89b); nametable video
   DMA goes through vt369_dma_nt. readmem_0 must keep jumping to ram_R_mask:
