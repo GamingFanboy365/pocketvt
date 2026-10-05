@@ -71,10 +71,34 @@ Docker build runs devkitARM's `gbafix`, and `build_pvt.sh` runs
 warns if a play ROM's header would not boot. Every test ROM has been booted
 through a real GBA BIOS dump in mGBA (`compare_furb.py --bios`), including the
 BIOS intro and header check, and renders the same as under mGBA's built-in
-BIOS. At start-up the core sets the cartridge wait states to 3/1 with the
-prefetch buffer (`WAITCNT = 0x4317`, the setting retail games use), which is
-worth up to 70% speed on some carts. None of this has been tried on a
-physical GBA yet.
+BIOS. None of this has been tried on a physical GBA yet.
+
+### Cartridge speed, flash carts and reproduction carts
+
+Since September 28 the core runs the cartridge at the faster timing retail
+games use (3/1 wait states with the prefetch buffer, `WAITCNT = 0x4317`),
+which is worth up to 70% speed on some carts. Some flash carts and
+reproduction carts use memory too slow for that timing, and on real
+hardware with such a cart those builds can fail to boot or crash. This is
+the most likely reason a September 24 build (which left the GBA's slower
+power-on timing in place) was reported to boot on a flash cart where a
+later one did not; it has not been confirmed on hardware.
+
+Since October 5 the core checks this itself at start-up: it reads its own
+image at the power-on timing, switches to the faster one, reads it again
+four times, and keeps the slow timing if anything differs. Holding SELECT
+while the GBA starts skips the check and keeps the slow timing, for a cart
+that passes the check but still misbehaves. The slow timing is the same as
+the September 24 builds and plays the same pictures, but slower (in mGBA:
+Time Pilot 45 instead of 59 NES fps, Star Ally 49-51 instead of 60, Scramble
+53-56 instead of 60). Building with `VT_FAST_WAITCNT 0` in `src/config.h`
+never tries the fast timing. The check costs about a quarter of a second at
+start-up.
+
+The ROM also carries the `SRAM_V` save-type marker, so flash carts that pick
+a save type from the ROM give it the SRAM it keeps settings and saves in.
+Without one the core still starts (it re-initialises a blank or foreign save
+area), but settings and saves are not kept.
 
 ## Building
 
