@@ -52,14 +52,9 @@ start_vector:
 @---------------------------------------------------------------------------------
 	mov	r0, #0x4000000			@ REG_BASE
 	str	r0, [r0, #0x208]
-#if VT_FAST_WAITCNT
-	@ guide s.79: cart ROM at 3/1 wait states with the prefetch buffer
-	@ (0x4317, what retail games set).  Power-on is 4/2 without prefetch, and
-	@ PocketVT's VT paths are Thumb C executing from ROM.
-	ldr	r1, =0x4317
-	add	r2, r0, #0x200
-	strh	r1, [r2, #4]			@ REG_WAITCNT (strh offsets are 8-bit)
-#endif
+	@ guide s.91: the faster cart timing (WAITCNT 0x4317) is no longer set
+	@ here, blind, but by vt_waitcnt_probe below, once it has checked that the
+	@ cart returns the same data at that timing.
 
 	mov	r0, #0x12			@ Switch to IRQ Mode
 	msr	cpsr, r0
@@ -183,6 +178,13 @@ CEW0Skip:
 @---------------------------------------------------------------------------------
 	ldr	r3, =__libc_init_array
 	bl	_blx_r3_stub
+#if VT_FAST_WAITCNT
+@---------------------------------------------------------------------------------
+@ guide s.91: pick the cart timing (vt_waitcnt_probe, in EWRAM below)
+@---------------------------------------------------------------------------------
+	ldr	r3, =vt_waitcnt_probe
+	bl	_blx_r3_stub
+#endif
 @---------------------------------------------------------------------------------
 @ Jump to user code
 @---------------------------------------------------------------------------------
@@ -262,5 +264,91 @@ CIDExit:
 
 	.align
 	.pool
-	.end
 
+#if VT_FAST_WAITCNT
+@---------------------------------------------------------------------------------
+@ vt_waitcnt_probe -- guide s.91.  Cart ROM at 3/1 wait states with the
+@ prefetch buffer (WAITCNT 0x4317, what retail games set) is worth up to 70%
+@ speed (s.79), but some flash carts and reproduction carts have memory too
+@ slow for it, and the core then crashed before its first frame.  This runs
+@ from EWRAM, so a cart that cannot keep up only returns wrong data here.  It
+@ sums the core image at the power-on timing, switches to 0x4317 and sums it
+@ four more times; any difference puts the power-on timing back.  Holding
+@ SELECT at power-on skips the test and keeps the power-on timing.
+@ vt_waitcnt_mode: 1 fast, 2 test failed (slow), 3 SELECT (slow).
+@---------------------------------------------------------------------------------
+	.section .ewram, "ax", %progbits
+	.arm
+	.align 2
+	.global vt_waitcnt_probe
+vt_waitcnt_probe:
+	stmfd	sp!, {r4-r11, lr}
+	mov	r11, #0x04000000
+	add	r10, r11, #0x200		@ [r10, #4] = REG_WAITCNT
+	ldr	r9, =vt_waitcnt_mode
+	add	r0, r11, #0x100
+	ldrh	r0, [r0, #0x30]			@ REG_KEYINPUT: a 0 bit is a pressed key
+	tst	r0, #4				@ SELECT
+	moveq	r0, #3
+	beq	9f
+	bl	vt_waitcnt_sum			@ reference, at the power-on timing
+	mov	r8, r0
+#ifdef VT_WAITCNT_TEST_FAIL
+	eor	r8, r8, #1			@ test build: act as a cart that fails
+#endif
+	ldr	r0, =0x4317
+	strh	r0, [r10, #4]
+	mov	r7, #4
+0:	bl	vt_waitcnt_sum
+	cmp	r0, r8
+	bne	8f
+	subs	r7, r7, #1
+	bne	0b
+	mov	r0, #1
+	b	9f
+8:	mov	r0, #0
+	strh	r0, [r10, #4]			@ back to the power-on timing
+	mov	r0, #2
+9:	strb	r0, [r9]
+	ldmfd	sp!, {r4-r11, lr}
+	bx	lr
+
+@ Checksum of the core image (0x08000000 to __rom_end__): 4-word bursts
+@ (sequential accesses), then 4096 scattered halfword and byte reads in its
+@ first 64K (non-sequential).  r0 = sum; clobbers r1-r6, r12.
+vt_waitcnt_sum:
+	mov	r0, #0
+	mov	r1, #0x08000000
+	ldr	r2, =__rom_end__
+	bic	r2, r2, #15
+1:	ldmia	r1!, {r3-r6}
+	add	r0, r3, r0, ror #31
+	add	r0, r4, r0, ror #31
+	add	r0, r5, r0, ror #31
+	add	r0, r6, r0, ror #31
+	cmp	r1, r2
+	blo	1b
+	mov	r3, #4096
+	ldr	r4, =0x2468ACE1			@ seed
+	ldr	r5, =1103515245
+	ldr	r12, =12345
+	ldr	r6, =0xFFFE
+2:	mla	r4, r5, r4, r12
+	and	r1, r6, r4, lsr #8
+	add	r1, r1, #0x08000000
+	ldrh	r2, [r1]
+	add	r0, r2, r0, ror #31
+	ldrb	r2, [r1, #1]
+	add	r0, r2, r0, ror #31
+	subs	r3, r3, #1
+	bne	2b
+	bx	lr
+	.ltorg
+
+	.section .sbss, "aw", %nobits
+	.global vt_waitcnt_mode
+vt_waitcnt_mode:
+	.space	4
+#endif
+
+	.end

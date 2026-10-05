@@ -95,8 +95,10 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   (frame end never waits) and -DVT_TIMER_LOG (VT timer expiry/re-arm ring). Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.90)
-See MAINTAINERS_GUIDE.md s.90 (Sky Fighter's black line: the VT369 sound
+## Current state (after s.91)
+See MAINTAINERS_GUIDE.md s.91 (flash carts: WAITCNT is set by a start-up
+read test, vt_waitcnt_probe, not blindly; SELECT at power-on keeps the slow
+timing; SRAM_V marker), s.90 (Sky Fighter's black line: the VT369 sound
 refill delayed the vblank HBlank DMA set-up; the render now waits for the end
 of a vblank handler), s.89 (VT369 slowdown and flicker: the GBA OBJ line
 budget, reference-counted sprite slots, palette and nametable dirty marks,
@@ -142,7 +144,9 @@ states, sound) and s.77-78 (raster-split slots, speed).
   bands too. `-DVT_SPLIT_SLOTS=0` turns them off.
 - VT timer: N+1 lines free-running, N+2 after an in-picture rephase, N from
   vblank (`VT_TIMER_NPLUS1`); split lines match Furbtendulator exactly.
-- WAITCNT = 0x4317 at boot (`VT_FAST_WAITCNT`): 3/1 + prefetch. Speed (NES fps):
+- WAITCNT = 0x4317 (`VT_FAST_WAITCNT`): 3/1 + prefetch, set by vt_waitcnt_probe
+  (gba_crt0_my.s, EWRAM) only if the cart reads back the same at that timing
+  (s.91); measure speeds on the normal path (vt_waitcnt_mode 1). Speed (NES fps):
   Time Pilot 57-60, Scramble 60, SA 60 (47 in its heaviest stretch), Aero/Hex
   titles 42-43 then 60, Table Soccer VT03 60 (s.88), LLM VT09 60, LI/VG/Add 'em Up 60;
   VT369 (all at CPU x3): Table Soccer, LLM, Zuma, Jewel Master, Sky Fighter

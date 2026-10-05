@@ -5162,3 +5162,67 @@ Sky Fighter at NES 800 goes from 96.47% to 97.02%, and Fire Fighter reads
 
 tools/probes/fgrab writes every GBA frame of a span, with FT/KEYS input, for
 one-frame glitches that compare_furb's NES-frame-keyed captures step over.
+
+## 91. Booting on flash carts and reproduction carts
+
+A user relayed that a September 24 build booted on a flash cart (a
+SuperCard) and the newest did not. Nothing could be tested on hardware here;
+this section records an audit of the start-up path and of everything the
+core does to the cartridge bus, and the changes that came out of it.
+
+The one change since September 24 that touches the cartridge is s.79's
+WAITCNT 0x4317 (3/1 wait states with the prefetch buffer), set by crt0 at the
+first instruction since September 28. Carts that run a game from their own
+RAM, and some reproduction carts, can be too slow for that timing; the core
+then fetches wrong instructions and crashes before its first frame. Nothing
+else that touches the bus changed. The memory layout is as it was (.bss
+now ends 32 bytes lower), the September 24 core performs the same writes
+outside RAM, and the play ROMs are 0.6-4.3 MB.
+
+crt0 no longer sets WAITCNT. After the sections are copied, it calls
+vt_waitcnt_probe, ARM code in `.ewram` (gba_crt0_my.s), so a cart that cannot
+keep up only returns wrong data to it and cannot crash it. The probe
+checksums the core image (4-word bursts over 0x08000000 to __rom_end__, then
+4096 scattered halfword and byte reads in the first 64K) at the power-on
+timing, sets 0x4317, and checksums it four more times; any difference
+restores the power-on timing (0). SELECT held at power-on skips the test and
+keeps the power-on timing, for a cart that passes but still misbehaves (the
+test reads data, so it cannot see trouble that only shows in instruction
+fetches through the prefetch buffer). vt_waitcnt_mode records the outcome:
+1 fast, 2 test failed, 3 SELECT. `-DVT_WAITCNT_TEST_FAIL` makes the test
+fail, for checking the fallback in mGBA, which cannot model slow cart memory.
+
+Checked in mGBA: the normal build ends with WAITCNT 0x4317 and mode 1; the
+test-fail build with 0 and mode 2; SELECT held from power-on gives 0 and mode
+3 in both; all three play. Under the real BIOS the Docker core keeps the fast
+timing (Time Pilot, Scramble, Star Ally, Sky Fighter, Fire Fighter, VG Pocket
+at 59-62 NES fps, the usual pictures). The slow fallback gives the same
+pictures at the s.79 speeds (Time Pilot 45 at NES 700, Star Ally 49-51,
+Scramble 53-56, Sky Fighter 59-60). The test adds about 17 GBA frames
+(0.28 s) to start-up, mostly the five passes over the 127K image from EWRAM.
+Regression against the s.90 core: the test ROMs at NES 150, 400 and 700 and
+the VT369 gameplay runs score identically, speed included. On the control
+carts the start-up delay shifts every frame sequence, and the only new
+frames are in the boot transition (GBA frames 74-89).
+
+The ROM now also carries `SRAM_V113` (bindata.s, word-aligned), the marker
+EverDrive, EZ-Flash and other carts use to choose the save memory they give
+a ROM. Without it such a cart may give none. That does not stop the core
+from booting: getsram re-initialises a save area whose signature is missing.
+But settings and saves are then lost.
+
+The rest of the audit, for the record. These were all present on
+September 24 and none should stop a boot. mGBA's log flags a 4-byte overrun
+of the LZ77 font (font2.lz77, unchanged since July). The font ends exactly
+at 0x06003000, so those bytes land on the first word of .vram1. Both
+loadfont calls (C_entry and splash) run before main copies .vram1 in, so the
+copy always overwrites them; a new loadfont after that copy would not be
+safe. The log also flags one RTC probe write to 0x080000C8 (header padding). Scramble writes 0x0680-0x069F through a stale pointer (the BIOS
+area, so the GBA ignores the writes; the September 24 core does the same; not
+chased). The reset-to-menu and crash paths send the reset sequences of
+several flash carts (visoly.s), so a crash on a flash cart can look like
+"back to the cart's menu". The core runs code from VRAM and EWRAM and rewrites
+some of it (writeBG's slot, s.89; the x3 cost immediates, s.88). That is fine
+on a GBA, on a DS in GBA mode and in mGBA, but may not be on emulators with
+recompilers (gpSP).
+
