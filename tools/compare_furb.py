@@ -162,6 +162,15 @@ def consistency(ref_ids, pv_ids):
     rev, _ = one_way(pv_ids, ref_ids)
     return min(fwd, rev), fmap
 
+def ref_ids5(img):
+    """Reference colours keyed in 5-bit RGB, like PocketVT's (s.93).  Keying them
+    at 24 bits split a PocketVT colour that matched two reference colours that
+    differ only below 5 bits (Furbtendulator's #FEFEFE and #FFFFFF whites), so an
+    exact palette scored lower in struct than a wrong one."""
+    i = img.astype(np.int64) >> 3
+    return i[..., 0] << 10 | i[..., 1] << 5 | i[..., 2]
+
+
 def screen_rows(vofs, top=16):
     """NES screen row shown on each GBA line.  dma0buff's vofs = NES scroll +
     (source row - line), so line-to-line steps are scale75's decimation (1 or
@@ -197,7 +206,7 @@ for t in targets:
     # nearest frames first; strict '>' keeps the nearest on ties (static screens)
     for f in sorted(range(max(0, t - a.window), t + a.window + 1), key=lambda f: (abs(f - t), f)):
         ref = read_ppm(os.path.join(tmp, 'fb_f%04d.ppm' % f))
-        ref_ids_full = (ref[..., 0].astype(np.int64) << 16 | ref[..., 1].astype(np.int64) << 8 | ref[..., 2])
+        ref_ids_full = ref_ids5(ref)
         for dy in range(-a.search, a.search + 1):
             for dx in range(-a.search, a.search + 1):
                 ry, rx = rows0 + dy, cols0 + dx
@@ -213,7 +222,7 @@ for t in targets:
     # each raster-split segment has its own vertical scroll: refine its offset
     seg_dy = {k: dy for k in range(segs.max() + 1)}
     if segs.max() > 0:
-        ref_ids_full = (ref[..., 0].astype(np.int64) << 16 | ref[..., 1].astype(np.int64) << 8 | ref[..., 2])
+        ref_ids_full = ref_ids5(ref)
         def eval_offsets(offs):
             ry = rows0 + np.array([offs[k] for k in segs])[:, None]
             rx = cols0 + dx
@@ -230,8 +239,15 @@ for t in targets:
                     seg_dy = trial
     mapped = ref[ry_c, rx_c]
     mapped[~ok] = 0
-    ids = (mapped[..., 0].astype(np.int64) << 16 | mapped[..., 1].astype(np.int64) << 8 | mapped[..., 2])
+    ids = ref_ids5(mapped)
     expect = np.vectorize(lambda c: fmap.get(c, -1))(ids)
+    # a 24-bit reference colour to print for each 5-bit key (its commonest)
+    m24 = mapped[ok].astype(np.int64)
+    m24 = m24[:, 0] << 16 | m24[:, 1] << 8 | m24[:, 2]
+    u24, n24 = np.unique(m24, return_counts=True)
+    rep24 = {}
+    for c, n in sorted(zip(u24.tolist(), n24.tolist()), key=lambda cn: cn[1]):
+        rep24[(c >> 19 & 31) << 10 | (c >> 11 & 31) << 5 | (c >> 3 & 31)] = c
     struct_bad = ok & (expect != pv_ids)
     exact = ((mapped >> 3) == (pv_rgb >> 3)).all(-1) & ok
 
@@ -239,7 +255,7 @@ for t in targets:
     # becomes, colour it became instead, pixels).  black<->colour pairs are
     # usually positional (a row or sprite off); colour<->colour pairs point at
     # a palette difference.
-    hexrgb = lambda c: '#%06x' % c
+    hexrgb = lambda c: '#%06x' % rep24.get(c, (c >> 10 & 31) << 19 | (c >> 5 & 31) << 11 | (c & 31) << 3)
     pv24 = lambda c: '#%02x%02x%02x' % ((c >> 10 & 31) << 3, (c >> 5 & 31) << 3, (c & 31) << 3)
     bad_pairs = {}
     for rc, pc in zip(ids[struct_bad].tolist(), pv_ids[struct_bad].tolist()):

@@ -402,8 +402,10 @@ vt_apply_prg_dirty:
 @ With no read hook at all, the stock empty_R returned open bus (addy>>8 =
 @ $41), whose bits 3-4 are clear, so every palette entry landed one slot late
 @ and backgrounds sampled the wrong colours -- the "glitched palette".
-@ These carts are PAL/50Hz VT03 boards (the reference capture matches the
-@ $3F00 upload), so report XPORN|XF5OR6.  See vt_reg_read() for the same note.
+@ s.93: CORRECTED -- that cart is NTSC, and an NTSC VT03 lands a video DMA's
+@ palette bytes one entry early, which the $3F01 routine compensates for.
+@ $4119 now reads vt_4119 (loadcart.c, from the NES 2.0 region; $18 when the
+@ header names no console), and the DMA paths model the early landing.
 @ Everything else falls through to the stock IO_R, preserving old behaviour.
 @ ============================================================================
     .global read_vt4xxx
@@ -413,11 +415,8 @@ read_vt4xxx:
     ldrhs   pc, =IO_R               @ stock handler, no extra compares (s.80)
     cmp     r1, #0x19
     bne     2f
-    ldr     r0, =vt_console         @ VT369 reports no TV-system bits (NRS
-    ldrb    r0, [r0]                @ APU_VT369::IntRead $4119 = 0)
-    cmp     r0, #0x0A
-    moveq   r0, #0
-    movne   r0, #0x18               @ XPORN | XF5OR6
+    ldr     r0, =vt_4119            @ TV system: $18 PAL/Dendy, $00 NTSC,
+    ldrb    r0, [r0]                @ $00 on VT32/VT369 (loadcart.c)
     mov     pc, lr
 2:
     @ guide s.80: VT32/VT369 multiply/divide results, $4130-$413D
@@ -674,13 +673,49 @@ write_vt4xxx:
     @ It returns 0 when the transfer doesn't qualify, and we fall through.
     mov     r0, r6                   @ r0 = source addr
     mov     r1, r7                   @ r1 = length
+    @ s.93: on an NTSC VT03 the bytes land one entry early.  vt_pal_dma_fast
+    @ (IWRAM, which has no room to grow) gets the shifted start, and the
+    @ address is set to the real one + length afterwards; if it declines,
+    @ the real address goes back and the loop below shifts byte by byte.
+    ldr     r2, =vt_pal_dma_shift
+    ldrb    r2, [r2]
+    cmp     r2, #0
+    beq     5f
+    ldr_    r2, vramaddr
+    mov     r3, r2, lsl #18
+    mov     r3, r3, lsr #26          @ (vramaddr >> 8) & $3F
+    cmp     r3, #0x3F
+    bne     5f
+    stmfd   sp!, {r2}                @ the real address
+    sub     r3, r2, #1
+    and     r3, r3, #0xFF
+    bic     r2, r2, #0xFF
+    orr     r2, r2, r3
+    strh_   r2, vramaddr
+    bl_long vt_pal_dma_fast
+    ldmfd   sp!, {r2}
+    cmp     r0, #0
+    addne   r2, r2, r7
+    strh_   r2, vramaddr
+    bne     .Lvt_w_4014_dma_done
+    b       6f
+5:
     bl_long vt_pal_dma_fast
     cmp     r0, #0
     bne     .Lvt_w_4014_dma_done
+6:
 
     ldr     r5, =NES_RAM             @ r5 = NES RAM base (0x03000000)
     ldr     r4, =vt_nes_ram_mask     @ s21b56: 0x7FF or 0xFFF by cart RAM
     ldr     r4, [r4]                 @ size (was hardcoded 0x7FF)
+    @ s.93: an NTSC VT03 has its own copy of the loop below, so every other
+    @ cart runs exactly the instructions it ran before.  (A per-byte test in
+    @ the shared loop moved Table Soccer VT369's timing enough to expose the
+    @ stale BG tile cache, open item 3: two bracket corners went missing.)
+    ldr     r1, =vt_pal_dma_shift
+    ldrb    r1, [r1]
+    cmp     r1, #0
+    bne     .Lvt_w_4014_ntsc
 
 .Lvt_w_4014_loop:
     @ s21b60: a VT video DMA reads its SOURCE over the CPU bus, so a source in
@@ -713,10 +748,62 @@ write_vt4xxx:
     add     r6, r6, #1
     subs    r7, r7, #1
     bne     .Lvt_w_4014_loop
+    b       .Lvt_w_4014_dma_done
+
+    @ s.93: the same loop for an NTSC VT03, where a palette byte goes through
+    @ vt_dma_pal_early.
+.Lvt_w_4014_ntsc:
+    cmp     r6, #0x8000
+    blo     1f
+    mov     r0, r6, lsl #16
+    mov     r0, r0, lsr #16
+    adr_    r1, memmap_tbl
+    mov     r2, r0, lsr #13
+    ldr     r1, [r1, r2, lsl #2]
+    ldrb    r0, [r1, r0]
+    b       2f
+1:
+    and     r0, r6, r4
+    ldrb    r0, [r5, r0]
+2:
+    ldr_    r1, vramaddr
+    mov     r2, r1, lsl #18
+    mov     r2, r2, lsr #26          @ (vramaddr >> 8) & $3F
+    cmp     r2, #0x3F
+    bne     3f
+    bl      vt_dma_pal_early
+    b       4f
+3:
+    bl_long vmdata_W
+4:
+    add     r6, r6, #1
+    subs    r7, r7, #1
+    bne     .Lvt_w_4014_ntsc
 
 .Lvt_w_4014_dma_done:
     ldmfd   sp!, {r4, r5, r6, r7}
     b       .Lvt_write_done
+
+@ s.93: one palette byte of a video DMA on an NTSC VT03.  The byte lands one
+@ entry early (Palette[(addr - 1) & $FF]) while the address itself advances as
+@ usual, and an address that reaches $4000 inside the DMA wraps to $3F00
+@ (Furbtendulator PPU_OneBus::IntWrite).  r0 = data; r1, r2, r12 clobbered.
+vt_dma_pal_early:
+    stmfd   sp!, {r3, lr}
+    ldr_    r3, vramaddr             @ the real address
+    sub     r1, r3, #1
+    and     r1, r1, #0xFF
+    bic     r2, r3, #0xFF
+    orr     r1, r2, r1
+    strh_   r1, vramaddr
+    bl_long vmdata_W                 @ writes Palette[(addr - 1) & $FF]
+    ldrb_   r1, vramaddrinc
+    add     r3, r3, r1
+    mov     r1, r3, lsl #17
+    cmp     r1, #0x80000000          @ (addr & $7FFF) == $4000
+    moveq   r3, #0x3F00
+    strh_   r3, vramaddr
+    ldmfd   sp!, {r3, pc}
 
 .Lvt_w_4014_sprite:
     @ Stock sprite DMA path (the normal _4014w in ppu.s).
@@ -887,6 +974,33 @@ vt_w4_bank:
 @ ============================================================================
     .global write_vt_rom
 write_vt_rom:
+    @ s.93: $8001 under MMC3 command 6 or 7 is a $4107/$4108 write (NRS
+    @ writeMMC3, unmangled): vt_w4_bank maps the one window.  Soccer 2009
+    @ switches $8000-$9FFF ~16 times a frame this way; through C each switch
+    @ recomputed every bank.  Only once vt_w41_fast allows it (bit 1: not
+    @ submapper 2, which mangles these), and not while FWEN stops forwarding.
+    and     r1, r12, #0xE000
+    cmp     r1, #0x8000
+    bne     1f
+    tst     r12, #1
+    beq     1f
+    ldr     r1, =vt_mmc3_cmd
+    ldrb    r1, [r1]
+    and     r1, r1, #7
+    cmp     r1, #6
+    blo     1f
+    ldr     r2, =vt_w41_fast
+    ldrb    r2, [r2]
+    tst     r2, #2
+    beq     1f
+    ldr     r2, =vt
+    ldrb    r2, [r2, #0x0B]
+    tst     r2, #0x08                @ FWEN: no forwarding at all
+    movne   pc, lr
+    ldr     r12, =0x4107 - 6
+    add     r12, r12, r1             @ $4107 / $4108
+    b       vt_w4_bank
+1:
     stmfd   sp!, {r3, r12, lr}
     stmfd   sp!, {r0}
     
@@ -915,8 +1029,26 @@ write_vt_rom:
     ldr     r1, =vt_prg_dirty
     ldrb    r2, [r1]
     cmp     r2, #0
-    beq     .Lvt_rom_write_done
+    beq     .Lvt_rom_no_prg
     bl      vt_apply_prg_dirty
+
+.Lvt_rom_no_prg:
+    @ s.93: an $A000 write (MMC3-compat mirroring) only flags the change in
+    @ vt_mmc3_forward.  It used to be applied by the next $41xx write that
+    @ reached the slow path, which Soccer 2009 never makes after its $A000:
+    @ the pitch it wrote to $2800 went into the nametable shown at $2000 and
+    @ the GBA showed stale tiles on the right of the screen.
+    ldr     r1, =vt_mirror_dirty
+    ldrb    r2, [r1]
+    cmp     r2, #0
+    beq     .Lvt_rom_write_done
+    mov     r2, #0
+    strb    r2, [r1]
+    stmfd   sp!, {r0}
+    ldr     r1, =vt_mirror_value
+    ldrb    r0, [r1]
+    bl_long vt_set_mirroring
+    ldmfd   sp!, {r0}
 
 .Lvt_rom_write_done:
     ldmfd   sp!, {r3, r12, pc}

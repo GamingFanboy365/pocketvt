@@ -37,13 +37,20 @@ frames.
 | VG Pocket 50-in-1 (VT09) | all 50 games run; mean exact-colour match 98.3% across all 50 |
 | Push the Ball, Time Pilot | working; 97-100% picture |
 | Add 'em Up | working, full speed; 98-99.9% picture |
-| Aero Gyrodine, Hex City X | working; raster-split titles 99.99%, full speed (60 NES fps; 42-43 before the idle-loop speed hack of guide s.92) |
+| Aero Gyrodine, Hex City X | working; raster-split titles 99.99%, colours exactly the reference's, full speed (60 NES fps; 42-43 before the idle-loop speed hack of guide s.92) |
 | Funny Coins (VT369) | working; no longer crashes a few seconds into play (a stray sound interrupt); title 100%, gameplay 98% picture to NES frame 1800, 60 NES fps. One-line streaks remain at the edges of the board's raster splits |
 | Table Soccer (VT03, mapper 419) | working; menus and match 96-99%, 60 NES fps; no voice samples |
+| Soccer 2009 (VT03, CHR ROM) | working; menus 99.5%, matches 97-99% picture with the reference's colours; menus 60 NES fps, matches 42-44 (the game uses every CPU cycle of the frame, so nothing can be skipped) |
 | Table Soccer VT369 | working, with its streamed music; team select 99.9%, match 96.7%, 60 NES fps |
 | Lucky Lawn Mower VT369 | working (VT369 enhanced renderer, 4bpp); 99.7% picture, full speed |
 | Fire Fighter VT369, Jewel Master VT369 | working (enhanced renderer, 8bpp) with sound effects; Jewel Master 99.9% picture, Fire Fighter 96% (game-state drift). Both run the CPU at x3 as the hardware does; Jewel Master 60 NES fps, Fire Fighter 54-60 in gameplay with its game logic updating every frame (at 1x it updated on 70% of frames); Fire Fighter's HUD digits no longer drop out (too many sprites on a GBA line) |
 | Mapper 405 (VT168, zero-vector boot) | does not boot yet |
+
+Colours: games that use the VT03's 12-bit colour mode (COLCOMP) are drawn with
+the reference emulator's NTSC colour model since this release, so Aero
+Gyrodine, Hex City X, Add 'em Up, Table Soccer VT03 and Soccer 2009 match it
+exactly where they used to be close (their skies, pitches and logos shift hue
+compared with earlier builds). The 64 standard colours are unchanged.
 
 Raster splits (a game switching CHR banks partway down the screen from a
 timer IRQ) are drawn by giving each band its own GBA character block, up to
