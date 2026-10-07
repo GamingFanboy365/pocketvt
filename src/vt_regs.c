@@ -545,7 +545,8 @@ static void vt_prg_invalidate(void)
 // hang immediately after boot jumping into unmapped ROM locations.
 
 // Last byte written to $8000 -- selects which entry $8001 modifies.
-static u8 vt_mmc3_cmd;
+// s.93: global, mapVT.s write_vt_rom reads it for its command 6/7 fast path.
+EWRAM_BSS u8 vt_mmc3_cmd;
 // A CHR bank changed through $8001: mapVT.s write_vt_rom then records a raster
 // band at the current scanline, as ppu.s does for $2012-$2017 (guide s.79;
 // ppu_vt.c's s.73 comment claimed this call existed -- it did not, so MMC3-
@@ -556,6 +557,15 @@ EWRAM_BSS u8 vt369_gpio_mask[4], vt369_gpio_latch[4];   /* VT369 $4140-$415F (s.
 // VT32/VT369 multiply/divide unit ($4130-$4137, guide s.80).
 EWRAM_BSS u8  vt_alu_on;        /* console type VT32/VT369 (loadcart.c) */
 EWRAM_BSS u8  vt_console;       /* NES 2.0 extended console type, 0 if none */
+/* s.93: what a $4119 read returns, set by loadcart.c from the NES 2.0 header.
+ * Bits 3-4 (XPORN, XF5OR6) are the console's TV system: $18 PAL or Dendy, $00
+ * NTSC (Furbtendulator APU_OneBus::IntRead; VT32/VT369 always read $00).
+ * vt_pal_dma_shift: a VT03 in the NTSC region writes a video DMA's palette
+ * bytes one entry early (datasheet: "if NTSC, shift palette data one byte";
+ * Furbtendulator PPU_OneBus::IntWrite), so games read $4119 and DMA to
+ * $3F01 instead of $3F00. */
+EWRAM_BSS u8  vt_4119;
+EWRAM_BSS u8  vt_pal_dma_shift;
 EWRAM_BSS u8  vt_alu_rd[16] __attribute__((aligned(4)));  /* read-back for $4130-$413D (mapVT.s; s.87: word stores) */
 EWRAM_BSS u32 vt_alu14;
 EWRAM_BSS u16 vt_alu56, vt_alu67;
@@ -586,9 +596,15 @@ void vt_mmc3_forward(u16 addr, u8 val)
             // MMC3 cmd register.  Save the byte; the high bits also feed
             // into VT's $4105 (which holds COMR6 etc.).
             vt_mmc3_cmd = val;
-            vt.reg[0x05] = (vt.reg[0x05] & 0x20) | (val & 0xDF);
-            // COMR6 (bit 6) flip is a PRG bank rearrangement -> recompute.
-            vt_recompute_prg_banks();
+            {
+                const u8 old5 = vt.reg[0x05];
+                vt.reg[0x05] = (old5 & 0x20) | (val & 0xDF);
+                // COMR6 (bit 6) flip is a PRG bank rearrangement -> recompute.
+                // s.93: only then.  The command bits pick the register the
+                // next $8001 writes; Soccer 2009 writes $8000 ~30 times a frame
+                // and each recompute cost ~1K cycles.
+                if ((old5 ^ vt.reg[0x05]) & 0xC0) vt_recompute_prg_banks();
+            }
             break;
         }
 
@@ -1210,7 +1226,11 @@ u8 vt_reg_read(u8 addr_lo)
         // (which is also why the reference capture matches the $3F00 upload),
         // so report that.  $E0B1 is the ONLY reader of $4119 in this ROM, so
         // nothing else is affected.
-        if (addr_lo == 0x19) return 0x18;   // XPORN | XF5OR6
+        // s.93: CORRECTED.  The cart is NTSC (its NES 2.0 header says so); on
+        // an NTSC VT03 the DMA really lands one entry early, which is what the
+        // $3F01 routine compensates for.  vt_4119 now follows the header and
+        // the DMA paths model the early landing (vt_pal_dma_shift).
+        if (addr_lo == 0x19) return vt_4119;
         if (addr_lo == VT_REG_TIMER_CTRL) { // 0x03
             u8 status = vt.timer_ctrl & 0x7F; 
             if (vt.want_timer_irq) status |= 0x02;

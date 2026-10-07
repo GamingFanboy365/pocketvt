@@ -178,6 +178,17 @@ static void read_rom_header(u8 *nesheader)
 		u8 ct = (is_nes20 && (nesheader[7] & 0x03) == 0x03) ? (nesheader[13] & 0x0F) : 0;
 		vt_console = ct;
 		vt_alu_on = (ct == 0x09 || ct == 0x0A);
+		/* s.93: $4119's TV-system bits from the header's region (byte 12:
+		 * 0 NTSC, 1 PAL, 2 both, 3 Dendy), as Furbtendulator reports them.
+		 * A header without a console type keeps the old answer, PAL ($18),
+		 * which shows those carts' palettes right without the NTSC DMA
+		 * quirk below.  See vt_regs.c. */
+		extern u8 vt_4119, vt_pal_dma_shift;
+		const u8 tv = nesheader[12] & 0x03;
+		if (ct == 0x09 || ct == 0x0A) vt_4119 = 0x00;
+		else if (ct == 0)             vt_4119 = 0x18;
+		else                          vt_4119 = (tv == 1 || tv == 3) ? 0x18 : 0x00;
+		vt_pal_dma_shift = (ct == 0x07 && vt_4119 == 0);
 	}
 	vt_dac_variant = VT_DAC_AUTO;
 	if (is_nes20 && (nesheader[7] & 0x03) == 0x03)

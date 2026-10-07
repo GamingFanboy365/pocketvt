@@ -1441,10 +1441,15 @@ EWRAM_BSS u8 vt_dbg_pad_or;
 // ppu.s looks up spr_cache_map[64 + page*8 + EVA] instead.  We fill those
 // entries with OBJ cache slots 0..3, whose VRAM (0x06010000-0x06011FFF) the
 // stock sprite cache -- which lives at slots 8..15 -- never touches.
+// s.93: 2KB slots (4bpp and 2bpp extension) now use 0..7, all of
+// 0x06010000-0x06013FFF (PRG page 0 has left it before the first slot write,
+// vt_prg_evict_obj); the 4KB PIX16 slots stay at four.  Soccer 2009 shows
+// eight (page, EVA) pairs every frame: with four, one page was reassembled
+// every frame and the score and marker drew another page's tiles.
 EWRAM_BSS u8 vt_spr16_active;          // read by update_sprites in ppu.s
 EWRAM_BSS u8 vt_pix16_active;          // read by update_sprites in ppu.s (s20b4)
 
-#define VT_EVA_SLOTS 4
+#define VT_EVA_SLOTS 8
 EWRAM_BSS static u16 vt_eva_key[VT_EVA_SLOTS];   // (page<<3)|eva, +1;  0 = empty
 EWRAM_BSS static u32 vt_eva_age[VT_EVA_SLOTS];
 EWRAM_BSS static u32 vt_eva_clock;
@@ -1710,8 +1715,8 @@ EWRAM_BSS u8  vt_bk_slot_age[VT_BK_SLOTS];
  * so the title kept 66 wrong tiles for good.  Each slot also keeps a
  * checksum of its whole page; vt_bk_frame_check re-verifies one slot a
  * frame against it, so any stomp is repaired within VT_BK_SLOTS frames. */
-EWRAM_BSS u32 vt_bk_slot_sum[VT_BK_SLOTS];
-EWRAM_BSS u8  vt_bk_verify_cur;
+EWRAM_BSS u32 vt_bk_slot_sum[VT_BK_SLOTS][4];   /* s.93: one sum per quarter page */
+EWRAM_BSS u8  vt_bk_verify_cur, vt_bk_verify_part;
 EWRAM_BSS u8  vt_bk_clock;
 EWRAM_BSS u8  vt_bk_pending_whole;   // whole-map rebuild deferred to vblank
 EWRAM_BSS u16 vt_bk_lut[32];         // (page<<2|attr)&31 -> slot base tile, 0xFFFF=miss
@@ -1744,11 +1749,14 @@ void vt_bk_invalidate(void)
 
 void vt_bk_lut_refresh(void);
 
-static u32 vt_bk_page_sum(u32 dest)
+/* Checksum of one quarter (16 tiles) of a slot page.  s.93: the round-robin
+ * check below takes a quarter a frame; a whole page cost ~9K cycles a frame
+ * (Soccer 2009 keeps all ten slots live). */
+static u32 vt_bk_part_sum(u32 dest, u32 part)
 {
-    const volatile u32 *d = (const volatile u32 *)dest;
+    const volatile u32 *d = (const volatile u32 *)dest + part * 128u;
     u32 sum = 0;
-    for (int w = 0; w < 512; w += 4)
+    for (int w = 0; w < 128; w += 4)
         sum = (sum << 1 | sum >> 31) + (d[w] ^ d[w + 1] * 3u ^ d[w + 2] * 5u ^ d[w + 3] * 7u);
     return sum;
 }
@@ -1782,7 +1790,7 @@ static void vt_bk_slot_fill(int s, u32 bank)
     if (off == 0xFFFF) off = offnz;
     vt_bk_slot_sigoff[s] = off;
     vt_bk_slot_sig[s]    = (off == 0xFFFF) ? 0u : d[off];
-    vt_bk_slot_sum[s]    = vt_bk_page_sum(dest);
+    for (u32 p = 0; p < 4; p++) vt_bk_slot_sum[s][p] = vt_bk_part_sum(dest, p);
 }
 
 static inline u32 vt_bk_eva(u32 attr)
@@ -1797,6 +1805,9 @@ static inline u32 vt_bk_eva(u32 attr)
     return (vt_bk_pbit() << 2) | (attr & 3u);
 }
 
+/* s.93: noinline keeps it (and vt_bk_slot_fill) out of vt_bk_write_cell,
+ * which lives in IWRAM: only the LUT-hit path needs to be there. */
+__attribute__((noinline))
 static int vt_bk_slot_get(u32 page, u32 attr)
 {
     u32 key  = ((page << 2) | attr) + 1u;          // biased; see note above
@@ -1878,13 +1889,18 @@ void vt_bk_frame_check(void)
 #endif
             { vt_asm_from_framecheck++; vt_assemble_page_to(dest, vt_bk_slot_bank[s], VT_BG_SWAP16); }
     }
-    {   /* s.85: one whole slot a frame, round robin */
-        const int s = vt_bk_verify_cur;
-        vt_bk_verify_cur = (u8)(s + 1 >= VT_BK_SLOTS ? 0 : s + 1);
+    {   /* s.85: one whole slot a frame, round robin.  s.93: a quarter slot a
+         * frame, so a stomp is repaired within 4 * VT_BK_SLOTS frames. */
+        const int s = vt_bk_verify_cur, p = vt_bk_verify_part;
+        if (p >= 3) {
+            vt_bk_verify_part = 0;
+            vt_bk_verify_cur = (u8)(s + 1 >= VT_BK_SLOTS ? 0 : s + 1);
+        } else
+            vt_bk_verify_part = (u8)(p + 1);
         const u8 k = vt_bk_slot_key[s];
         if (k != 0 && k != 0xFF) {
             const u32 dest = 0x06000000u + (u32)vt_bk_slot_idx[s] * 32u;
-            if (vt_bk_page_sum(dest) != vt_bk_slot_sum[s]) {
+            if (vt_bk_part_sum(dest, (u32)p) != vt_bk_slot_sum[s][p]) {
                 vt_asm_from_framecheck++;
                 vt_assemble_page_to(dest, vt_bk_slot_bank[s], VT_BG_SWAP16);
             }
@@ -2028,6 +2044,25 @@ void vt_bk_consume(u32 cur, u32 lim)
 #define VT_BK_SCRUB_SPLIT 16     /* 8 (120 cells) broke Star Ally's title: s.79g */
 #endif
 EWRAM_BSS u8 vt_bk_scrub_phase;
+/* s.93: what each scrub chunk was last built from (0 = never).  A chunk is
+ * skipped while its nametable bytes, the attribute bytes over it, the slot
+ * table and $2000 bit 4 are all unchanged: that is everything
+ * vt_bk_write_cell reads.  Soccer 2009's pitch never changes during play, and
+ * the 60 idle cells a frame cost ~25K cycles.  Every 256 frames all chunks
+ * are swept again, in case something wrote the GBA map behind our back. */
+EWRAM_BSS static u32 vt_bk_scrub_sig[2u * VT_BK_SCRUB_SPLIT];
+static u32 vt_bk_chunk_sig(u32 scr, u32 lo, u32 hi)
+{
+    const u8 *nes = (const u8 *)vt_bk_consts[1] + scr;
+    u32 sig = 0x80000000u | (_ppuctrl0 & 0x10u);
+    for (u32 t = lo; t < hi; t += 4)
+        sig = (sig << 5 | sig >> 27) ^ *(const u32 *)(nes + t);
+    for (u32 a = 0x3C0u + ((lo >> 7) << 3); a < 0x3C0u + ((((hi - 1u) >> 7) + 1u) << 3); a += 4)
+        sig = (sig << 5 | sig >> 27) ^ *(const u32 *)(nes + a);
+    for (int s = 0; s < VT_BK_SLOTS; s++)
+        sig = (sig << 5 | sig >> 27) ^ vt_bk_slot_key[s];
+    return sig | 1u;
+}
 void vt_bk_scrub(void)
 {
     // SESSION 20b PERF: 60 cells/frame (one sixteenth of ONE screen,
@@ -2042,12 +2077,16 @@ void vt_bk_scrub(void)
      * but left its title permanently half-drawn (slot thrash), so 16 stays. */
     const u32 per = 960u / VT_BK_SCRUB_SPLIT;
     u32 q = vt_bk_scrub_phase % (2u * VT_BK_SCRUB_SPLIT);
+    if (vt_bk_scrub_phase == 0)
+        for (u32 i = 0; i < 2u * VT_BK_SCRUB_SPLIT; i++) vt_bk_scrub_sig[i] = 0;
     vt_bk_scrub_phase++;
-    vt_bk_lut_refresh();
     u32 scr = (q & 1) ? 0x400u : 0u;
     u32 lo  = (q >> 1) * per, hi = lo + per;
+    if (vt_bk_chunk_sig(scr, lo, hi) == vt_bk_scrub_sig[q]) return;
+    vt_bk_lut_refresh();
     for (u32 t = lo; t < hi; t++)
         vt_bk_write_cell(scr + t);
+    vt_bk_scrub_sig[q] = vt_bk_chunk_sig(scr, lo, hi);   /* after: a cell may have allocated a slot */
 }
 
 void vt_bk_whole(void)
@@ -2092,12 +2131,8 @@ static int vt_bk_whole_step(void)
 __attribute__((target("arm"), noinline))
 static void vt_spr_eva_update(void)
 {
-    // Need 4bpp sprites (SP16EN, bit 2) AND address extension (SPEXTEN, bit 3),
-    // with the compatibility palette (COLCOMP=0).  Otherwise leave the stock
-    // sprite path completely alone.
-    // Need 4bpp sprites (SP16EN, bit 2) AND address extension (SPEXTEN, bit 3),
-    // with the compatibility palette (COLCOMP=0).  Otherwise leave the stock
-    // sprite path completely alone.
+    // Sprites on address extension (SPEXTEN, bit 3), or PIX16EN sprites
+    // without it (s.79).  Otherwise leave the stock sprite path alone.
     // SESSION 21b3 -- the 2bpp-EVA gap (guide 8b) is now CLOSED.  SPEXTEN
     // (bit 3) alone puts sprites on extension addressing; SP16EN (bit 2)
     // selects the FETCH WIDTH, not whether EVA applies:
@@ -2114,9 +2149,14 @@ static void vt_spr_eva_update(void)
      * COLCOMP|SP16EN|BK16EN|PIX16EN) take this path too, with EVA forced to
      * 0 and plain page addressing.  Before, they fell to vt_obj4_overlay's
      * 8-wide 4bpp decode: every menu letter an opaque block. */
+    /* s.93: COLCOMP no longer turns this off.  The refusal dates from before
+     * vt_build_16color_palette filled the OBJ banks in COLCOMP mode (s.70b);
+     * Soccer 2009 ($2010 = $9E: COLCOMP, BKEXTEN, SPEXTEN, SP16EN, BK16EN) lost
+     * every player and the score to it.  No other test cart sets COLCOMP with
+     * SPEXTEN. */
     const int spext = (vt_reg_2010 & 0x08) != 0;
     const int plain16 = !spext && (vt_reg_2010 & 0x05) == 0x05;
-    if (!vt_active || (!spext && !plain16) || (spext && (vt_reg_2010 & 0x80))) {
+    if (!vt_active || (!spext && !plain16)) {
         vt_spr16_active = 0;
         vt_pix16_active = 0;
         return;
@@ -2143,6 +2183,7 @@ static void vt_spr_eva_update(void)
 
     int assembled = 0;                       // at most one new page per vblank
     u32 seen[2] = {0, 0};                    // (page<<3|eva) keys handled this call
+    const int nslots = (plain16 || pix16) ? 4 : VT_EVA_SLOTS;   /* 4KB or 2KB slots */
     for (int i = 0; i < 256; i += 4) {
         u8 y = oam[i];
         if (y >= 0xEF) continue;             // hidden
@@ -2173,7 +2214,7 @@ static void vt_spr_eva_update(void)
          * (the extension path keys on page+EVA alone, unchanged). */
         const u16 pbank = plain16 ? (u16)vt_chr4_page_bank[page] : 0;
         int slot = -1, victim = 0;
-        for (int s = 0; s < VT_EVA_SLOTS; s++) {
+        for (int s = 0; s < nslots; s++) {
             if (vt_eva_key[s] == key && (!plain16 || vt_eva_bank[s] == pbank)) { slot = s; break; }
             if (vt_eva_age[s] < vt_eva_age[victim]) victim = s;
         }

@@ -53,12 +53,18 @@ runs slowly), through PocketVT's per-line row table (`dma0buff`: scale75's
 
 `struct` is palette-independent: how consistently each reference colour maps
 to one PocketVT colour and back. 100% means the same picture in any palette;
-wrong tiles, missing sprites or bad scroll lower it. The mismatch lines
+wrong tiles, missing sprites or bad scroll lower it. Both sides are keyed in
+5-bit RGB (guide s.93): keyed at 24 bits, two reference colours that differ
+only below 5 bits (Furbtendulator draws some whites #FEFEFE, others #FFFFFF)
+counted as a split when PocketVT matched them exactly, so an exact palette
+scored lower than a wrong one. Scores from before s.93 are not comparable. The mismatch lines
 list the colour pairs that disagree: black against a colour is usually
 positional (a row or a sprite in a different place), colour against colour
 points at a palette difference. `exact5` compares 5-bit RGB and is only
 meaningful where the palettes are meant to agree; Furbtendulator generates
-its own NTSC palette while PocketVT uses calibrated console DACs.
+its own NTSC palette while PocketVT uses calibrated console DACs for the
+64 standard colours. The VT03 12-bit COLCOMP colours are Furbtendulator's own
+since s.93 (tools/gen_vt03_lut.py), so COLCOMP carts score exact5 too.
 `--set VT03Palette=N` (and other settings, see `furb_cli` with no arguments)
 changes the reference side.
 
