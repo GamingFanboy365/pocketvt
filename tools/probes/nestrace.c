@@ -4,7 +4,8 @@
  * PC = r9 - lastbank - 1 (r9 is past the opcode byte).  Compare with furb_cli --trace to find the
  * first instruction where the two CPUs part (guide s.88).  Symbols: op_table, _lastbank.
  * With FT=<frametotal addr>: KEYS="first-last:mask,..." presses GBA keys (A=1 B=2 Select=4 Start=8
- * Right=16 Left=32 Up=64 Down=128) over NES frames, and FROMFT=<n> logs only from NES frame n on. */
+ * Right=16 Left=32 Up=64 Down=128) over NES frames, and FROMFT=<n> logs only from NES frame n on (whole
+ * GBA frames are run up to NES frame n-1, so NSTEPS counts from about there). */
 #include <mgba/core/core.h>
 #include <mgba/gba/core.h>
 #include <mgba/core/log.h>
@@ -35,6 +36,12 @@ int main(int argc, char **argv) {
 	for (const char *p = getenv("KEYS"); p && *p && nk < 64; nk++) {
 		char *e; kf[nk] = strtoul(p, &e, 10); kt[nk] = strtoul(e + 1, &e, 10); km[nk] = strtoul(e + 1, &e, 10);
 		p = *e ? e + 1 : e;
+	}
+	/* fast-forward whole GBA frames until NES frame FROMFT-1, then single-step (NSTEPS counts from there) */
+	while (FTA && from > 1 && c->busRead32(c, FTA) + 1 < from) {
+		unsigned ft = c->busRead32(c, FTA), m = 0;
+		for (unsigned j = 0; j < nk; j++) if (ft >= kf[j] && ft <= kt[j]) m |= km[j];
+		c->setKeys(c, m); c->runFrame(c);
 	}
 	for (long k = 0; k < ns; k++) {
 		if ((k & 4095) == 0) {

@@ -5226,3 +5226,100 @@ some of it (writeBG's slot, s.89; the x3 cost immediates, s.88). That is fine
 on a GBA, on a DS in GBA mode and in mGBA, but may not be on emulators with
 recompilers (gpSP).
 
+
+## 92. Aero Gyrodine and Hex City X at full speed; Funny Coins; Zuma's top row
+
+Aero Gyrodine and Hex City X ran their raster-split titles at 41-43 NES fps
+(open item 4 since s.78d). Both wait on the title in the same loop: JSR to a
+pad routine ($A8C9 in Aero) that strobes $4016 and shifts sixteen bits out of
+$4016/$4017 into RAM, then LDA $0308, AND #$10, BEQ back. That loop ran about
+150 times a NES frame, and emulating it cost 40% of the frame. find_poll_loop
+(s.88) cannot take it, because it accepts only loads, compares and branches,
+and the JSR, the stores and the pad reads are all outside that.
+
+new_speed_hack.c now has a second finder, find_idle_loop, called from
+quickhackfinder when find_poll_loop finds nothing on a VT cart. It is a small
+6502 simulator that starts from the live state at the vblank: the registers,
+NES RAM, the stack pointer, and the pads' shift registers as io.s keeps them
+(joy0_R/joy0_W; _joy0state.._joy3state are now global for it). Writes go into
+an overlay of up to 48 bytes, never into RAM. PRG reads go through memmap_tbl.
+$4016/$4017 follow the io.s shift model. Any other address gives up. So do
+indirect jumps, BRK/RTI, and a branch, ADC, SBC, ROL or ROR on a flag whose
+value is not known yet (flags start unknown). The simulator runs from the
+vblank's pc until a backward branch or JMP is taken at the shallowest call
+depth seen; that target is the loop head. A vblank that lands inside the pad
+routine therefore still finds the outer loop, which the first version, taking
+the first backward jump, did not (Hex was never found). It then runs two whole
+turns from the head. If the second turn leaves the registers, the flags, every
+overlaid byte and the pad state exactly as the first did, the loop can only
+leave through an interrupt or a button, and the hack goes on the loop's
+backward jump, charged one turn's cycles (times three at CPU x1, s.88's
+convention). The whole run is limited to 640 instructions.
+
+The C code cannot see the 6502 registers, which live in r5-r7. speedhack_asm.s
+now calls a ROM stub, speedhack_manager_regs, which stores r5-r7 into
+vt_isim_regs and jumps to speedhack_manager; this kept `.vram1` at its 16 free
+bytes. All the simulator's state is in EWRAM, because it runs on the vblank
+handler's IWRAM stack.
+
+The first version cost Sky Fighter 4-7 fps (60 down to 53-56 in places): the
+finder runs every eighth frame in which no hack fired, and Sky Fighter's main
+loop is long enough that each attempt ran the whole budget and failed. Two
+changes fixed it. The simulator now runs on every fourth call only, and after
+consecutive failures on every 8th, 16th and then 32nd call. A skipped call
+reports success only while the slot still holds the hack this finder put there
+(vt_isim_hack). Without that last rule the skipped calls let speedhack_manager
+clear Hex's hack, and Hex fell back to 42 fps every few seconds.
+
+Result: the Aero and Hex titles run at 60 NES fps, with pictures identical to
+the s.91 core (99.99%). Sky Fighter over four gameplay inputs averages 59.3,
+59.6, 57.1 and 59.3 fps, against 59.6, 59.9, 57.2 and 59.6 for the s.91 core,
+which is within the run-to-run spread. Whether other carts take the new
+hack was not logged; their pictures and speeds are unchanged (below).
+
+A user on GitHub reported that Funny Coins (VT369) crashes about five seconds
+into a game. In PocketVT the game dropped to about 10 fps with a scrambled
+picture. That turned out to be an interrupt storm, not a CPU fault. The game
+writes $4010 with the IRQ bit set and enables the DMC in $4015, and its IRQ
+handler acknowledges only the VT timer, so the DMC IRQ (_wantirq bit 7)
+fired again after every RTI. The VT369 has no DPCM channel. Furbtendulator
+(APU_VT369::IntWrite, with a comment naming "Crazy Coins") drops $4010 writes
+and clears $4015 bit 4 once $2010 or $201E is non-zero. write_vt369_4xxx
+(mapVT.s) now does the same, testing vt369_reg $10 and $1E and vt_reg_2010,
+with r1 and r2 only. Funny Coins now plays to NES frame 1800 (as far as it
+was run) at 60 fps, with a title at 100% and gameplay at 98.2%. The residue is
+one-line streaks at the edges of the board's raster-split bands, around the
+hand cursor and along the board's left edge. These were not chased.
+
+The same report said Zuma (and "Pyramid", which is not among the test carts)
+shows glitches at the top of the screen. Nothing was wrong at the fast timing.
+In the `-DVT_WAITCNT_TEST_FAIL` build (s.91's slow fallback, which a cart that
+fails the start-up test gets), vt369_vblank's picture work ran past line 227 in
+13% of frames. In those frames the top of the picture showed what PocketNES's
+update_sprites (ppu.s), which runs earlier in the vblank, had written to OAM
+0-63: PocketNES's view of the NES sprites, not the VT369 ones, so the top row
+of balls vanished for a frame. vt369_set_mode now patches update_sprites' `mov
+r2,#AGB_OAM` (label vt_oam_dest_mod) into `mov r2,#0x10000000`, an unmapped
+address whose stores the GBA ignores, for as long as enhanced mode is on. OAM
+then holds the previous frame's VT369 sprites until vt369_sprites replaces
+them. In a 2000-frame fgrab capture at the slow timing, the frames whose top
+band differed from both neighbours fell from 35 to 3, and those 3 are normal
+motion. This is verified only in mGBA with the simulated slow timing; it is
+not known whether the reporter's cart fell back to it, and Pyramid is
+untested.
+
+nestrace (tools/probes) now runs whole GBA frames up to FROMFT-1 before
+single-stepping, so a trace that starts at NES frame 1700 takes seconds
+instead of an hour.
+
+Regression against the s.91 core (build_pvt.sh, all of the above). On the
+test ROMs at NES 150, 400 and 700, Aero and Hex go from 41/42 to 60 fps at
+t=150. Funny Coins is new (100%, 60). LLM VT369 rises from 99.59-99.67% to
+99.66-99.73%. Everything else is identical. The VT369 gameplay runs are within
+their usual spread: Fire Fighter 54/57/60 against 54/58/59, Sky Fighter 800
+97.52% against 97.02%, and Zuma slightly higher. In the frame-set test the
+only new frames on the control carts are in the boot transition (Star Ally
+GBA frames 86-88, Lonely Island 93). The sound host test reports 0 failing.
+The Docker core ends .bss at 0x03007B64 and .vram1 at 0x06003FF0. Under the
+real BIOS, Aero, Hex, Funny Coins, Zuma, Sky Fighter, Fire Fighter, Star Ally
+and Lonely Island boot and play.

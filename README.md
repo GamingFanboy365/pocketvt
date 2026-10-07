@@ -30,14 +30,15 @@ frames.
 |------|-------|
 | Star Ally, Lonely Island, Scramble | working (regression controls); 97-99% picture |
 | Jewel Master VT03 | working (Jungletac opcode encryption, 4bpp background with BKEXTEN, 16-colour sprites); title 99.9%, gameplay 98-99% picture |
-| Zuma (VT369) | working (Cube Tech opcode encryption, enhanced picture, sound CPU); title 99.6%, gameplay 98% picture (ball colours are random), 60 fps |
+| Zuma (VT369) | working (Cube Tech opcode encryption, enhanced picture, sound CPU); title 99.6%, gameplay 98% picture (ball colours are random), 60 fps. On carts that run at the slow timing, the top row of balls no longer vanishes |
 | Jumper (VT369, a Super Mario Bros. hack) | working (CPU x3, 8bpp sprites, sprite-0 split, opcode encryption toggled four times a frame); 99.9% picture, 43-60 NES fps (lowest in the death sequence) |
 | Sky Fighter (VT369) | working (CPU x3, 16x16 sprites, 8bpp scrolling background); title 100%, gameplay 96-98% picture (enemy waves drift from the reference), 60 NES fps |
 | Lucky Lawn Mower (VT09) | working; 99.7% picture, colours match the reference exactly |
 | VG Pocket 50-in-1 (VT09) | all 50 games run; mean exact-colour match 98.3% across all 50 |
 | Push the Ball, Time Pilot | working; 97-100% picture |
 | Add 'em Up | working, full speed; 98-99.9% picture |
-| Aero Gyrodine, Hex City X | working; raster-split titles 99.99%, 42-43 NES fps, gameplay full speed |
+| Aero Gyrodine, Hex City X | working; raster-split titles 99.99%, full speed (60 NES fps; 42-43 before the idle-loop speed hack of guide s.92) |
+| Funny Coins (VT369) | working; no longer crashes a few seconds into play (a stray sound interrupt); title 100%, gameplay 98% picture to NES frame 1800, 60 NES fps. One-line streaks remain at the edges of the board's raster splits |
 | Table Soccer (VT03, mapper 419) | working; menus and match 96-99%, 60 NES fps; no voice samples |
 | Table Soccer VT369 | working, with its streamed music; team select 99.9%, match 96.7%, 60 NES fps |
 | Lucky Lawn Mower VT369 | working (VT369 enhanced renderer, 4bpp); 99.7% picture, full speed |

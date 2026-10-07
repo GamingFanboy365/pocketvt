@@ -134,6 +134,7 @@
 	global_func writeBG
 	.global writeBG_mapper_9_mod	@ s.89: vt369_nt_hook (ppu_vt369.c) patches it
 	.global _inside_gba_vblank	@ s.90: vt_adpcm_mix_gba (vt_regs.c) reads it
+	.global vt_oam_dest_mod	@ s.92: vt369_set_mode (ppu_vt369.c) patches it
 	.global wtop
 	.global gammavalue
 	global_func ctrl0_W
@@ -3857,6 +3858,7 @@ update_sprites_enter:
 @	str r2,oambuffer
 @	str r1,oambuffer+4
 @	str r0,oambuffer+8
+vt_oam_dest_mod:			@ s.92: VT369 enhanced mode points this at unmapped memory
 	mov r2,#AGB_OAM
 
 	ldr_ r1,emuflags

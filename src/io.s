@@ -13,6 +13,7 @@
 	global_func IO_W
 	.global joypad_write_ptr
 	global_func joy0_W
+	.global _joy0state, _joy1state, _joy2state, _joy3state, _nrplayers	@ s.92: find_idle_loop (new_speed_hack.c) reads them
 	.global _joycfg
 	global_func spriteinit
 	global_func suspend
