@@ -658,10 +658,28 @@ static void vt369_sprites(void)
 
 /* ---- entry points ------------------------------------------------------ */
 
+/* s.92: update_sprites (ppu.s) writes PocketNES's NES sprites to OAM 0-63
+ * early in the vblank, and vt369_sprites rewrites all of them at its end.  On
+ * a cart at the slow timing (s.91) that end can come after line 0, and the top
+ * of the picture then showed PocketNES's entries: Zuma's top balls vanished
+ * for a frame, every eighth frame or so.  While enhanced mode is on, the
+ * `mov r2,#AGB_OAM` there becomes `mov r2,#0x10000000` (unmapped: the GBA
+ * ignores the stores), so OAM holds the last frame's VT369 sprites until
+ * vt369_sprites replaces them. */
+extern u32 vt_oam_dest_mod[];
+static void vt369_oam_redirect(int on)
+{
+    const u32 to_oam = 0xE3A02407u, to_void = 0xE3A02201u;   /* mov r2,#0x07000000 / #0x10000000 */
+    volatile u32 *ins = (volatile u32 *)vt_oam_dest_mod;
+    if (on && *ins == to_oam) *ins = to_void;
+    else if (!on && *ins == to_void) *ins = to_oam;
+}
+
 static void vt369_set_mode(int on)
 {
     if (on == vt369_enh) return;
     vt369_enh = (u8)on;
+    vt369_oam_redirect(on);
     if (on) {
         vt369_saved_palW = _vram_write_tbl[15];
         _vram_write_tbl[15] = (u32)vt369_pal_W;

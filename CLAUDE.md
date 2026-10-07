@@ -95,8 +95,12 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   (frame end never waits) and -DVT_TIMER_LOG (VT timer expiry/re-arm ring). Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.91)
-See MAINTAINERS_GUIDE.md s.91 (flash carts: WAITCNT is set by a start-up
+## Current state (after s.92)
+See MAINTAINERS_GUIDE.md s.92 (find_idle_loop: a 6502 simulator speed-hacks
+idle loops that JSR and read the pads -- Aero/Hex titles 60; the VT369 has no
+DMC, so $4010/$4015 bit 4 are filtered once $2010/$201E is set -- Funny
+Coins' IRQ storm; update_sprites' OAM writes redirected while VT369 enhanced
+mode is on -- Zuma's top row at the slow timing), s.91 (flash carts: WAITCNT is set by a start-up
 read test, vt_waitcnt_probe, not blindly; SELECT at power-on keeps the slow
 timing; SRAM_V marker), s.90 (Sky Fighter's black line: the VT369 sound
 refill delayed the vblank HBlank DMA set-up; the render now waits for the end
@@ -122,7 +126,9 @@ states, sound) and s.77-78 (raster-split slots, speed).
   (96%; game-state drift) through the enhanced renderer, src/ppu_vt369.c.
   Zuma (VT369, 256.13; title 99.6%, gameplay 98% -- its ball colours are
   random, like Jewel Master's jewels), Jumper (VT369 SMB hack, 99.9%, 43-60
-  fps) and Sky Fighter (VT369, gameplay 96-98%, 60 fps).
+  fps), Sky Fighter (VT369, gameplay 96-98%, 60 fps) and Funny Coins (VT369,
+  title 100%, gameplay 98% to NES 1800, 60 fps; 1-line streaks at its
+  raster-split edges).
 - CPU x3 ($411C bit 7, every VT369 test cart sets it): vt_cpu_x3_set
   rewrites every `cyc`-recorded cost immediate in RAM (section vt_cycpatch,
   6502mac.h) between 3 and 1 dots a cycle. New cycle charges in RAM code
@@ -148,7 +154,7 @@ states, sound) and s.77-78 (raster-split slots, speed).
   (gba_crt0_my.s, EWRAM) only if the cart reads back the same at that timing
   (s.91); measure speeds on the normal path (vt_waitcnt_mode 1). Speed (NES fps):
   Time Pilot 57-60, Scramble 60, SA 60 (47 in its heaviest stretch), Aero/Hex
-  titles 42-43 then 60, Table Soccer VT03 60 (s.88), LLM VT09 60, LI/VG/Add 'em Up 60;
+  60 (titles too since s.92), Table Soccer VT03 60 (s.88), LLM VT09 60, LI/VG/Add 'em Up 60;
   VT369 (all at CPU x3): Table Soccer, LLM, Zuma, Jewel Master, Sky Fighter
   60, Fire Fighter 54-60 in gameplay, Jumper 43-60 (s.89).
 - Frame pacing (s.87a): every GBA vblank is a credit, every NES frame spends
@@ -172,7 +178,10 @@ states, sound) and s.77-78 (raster-split slots, speed).
   loadcart.c patches it for 4K RAM (s.89e).
 - Speed hacks: the finder and set_cpu_hack decode opcodes through vt_op_dec
   (filled by vt_rebuild_optable) and patch op_table at the RAW byte, for any
-  encryption submapper (s.86d). They run from ROM.
+  encryption submapper (s.86d). They run from ROM. find_idle_loop (s.92)
+  reads A/X/Y from vt_isim_regs (stored by the ROM stub
+  speedhack_manager_regs), keeps all its state in EWRAM, and is rate-limited
+  with back-off: running it every attempt cost Sky Fighter 4-7 fps.
 - PRG page 0 lives in OBJ VRAM until the first VT sprite slot is written, then
   moves to its ROM/EWRAM twin (vt_prg_evict_obj). Never write OBJ slots 0-7
   without it.
@@ -198,8 +207,8 @@ states, sound) and s.77-78 (raster-split slots, speed).
 3. Stale BG tile cache (item 21): Push the Ball's 20 px. The VG band of
    missing tiles was a BKEXTEN slot stomp, fixed by the slot checksums (s.85c);
    the VG games at 96-98% (3/4, 3/5, 4/1, 4/2) still have a small residue.
-4. Aero/Hex title speed 41-42/60 (s.78d); profile with cycprof.
-5. Table Soccer formation screen: two 6-line strips need a sixth char block.
+4. Table Soccer formation screen: two 6-line strips need a sixth char block.
+5. Funny Coins: 1-line streaks at the board's raster-split edges (s.92).
 6. Scramble's shot (s.70c): one-pixel sprite on texture row 7 dropped by the
    sprite affine matrix.
 

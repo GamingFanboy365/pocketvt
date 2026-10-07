@@ -149,7 +149,7 @@ call_quickhackfinder:
 	mov r0,m6502_pc
 	ldr_ r1,lastbank
 	
-	blx_long speedhack_manager
+	blx_long speedhack_manager_regs	@ s.92: via the ROM stub below (A/X/Y for find_idle_loop)
 	
 	ldmfd sp!,{r3,pc}
 
@@ -168,6 +168,18 @@ call_quickhackfinder:
 	@ frame; they live in ROM so .vram1 has room for the hot paths.
  .text
  .align
+
+@ s.92: call_quickhackfinder (.vram1) calls speedhack_manager through here.
+@ The 6502's A, X and Y are still in r5-r7 (value << 24); find_idle_loop
+@ (new_speed_hack.c) starts its simulation from them.  In ROM, so .vram1 only
+@ had a literal changed.
+	.global speedhack_manager_regs
+speedhack_manager_regs:
+	ldr r12,=vt_isim_regs
+	stmia r12,{r5-r7}
+	ldr r12,=speedhack_manager
+	bx r12
+	.ltorg
 
 get_instruction_number:
 	@addy = speedhack pc

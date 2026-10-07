@@ -451,6 +451,348 @@ static bool find_poll_loop(const u8 *initpc, const u8 *lastbank, int hacknum)
 }
 #endif
 
+#if VT_MODE
+/* s.92: idle loops that call a subroutine and read the joypads.  Aero
+ * Gyrodine and Hex City X wait on their titles in JSR readpad / LDA buttons /
+ * AND #START / BEQ: the routine strobes $4016 and shifts 16 bits out of
+ * $4016/$4017 into RAM, ~150 times a NES frame, and emulating that cost the
+ * titles 40% of their speed (41-43 NES fps).  find_poll_loop handles loads,
+ * compares and branches only.  This runs one turn of the loop through a small
+ * 6502 simulator from the live state (registers, RAM, the pads' shift
+ * registers), following JSR/RTS, then a second turn from the end of the
+ * first.  If the second turn leaves registers, flags, every RAM byte written
+ * and the pad state exactly as the first did, the loop is waiting (until an
+ * interrupt or a button changes something), and the hack goes on its
+ * outermost backward branch or JMP, charged one turn's cycles.  Anything the
+ * simulator does not know (other I/O, indirect jumps, stack tricks) gives
+ * up.  All state is in EWRAM: this runs on the vblank handler's IWRAM stack. */
+extern u8 _joy0state, _joy1state, _joy2state, _joy3state, _nrplayers;
+extern u8 *_m6502_s;
+enum { IS_IMP = 1, IS_IMM, IS_ZP, IS_ZPX, IS_ZPY, IS_ABS, IS_ABX, IS_ABY, IS_IZY, IS_REL, IS_JMP, IS_JSR, IS_RTS };
+#define IS_MAXW 48
+typedef struct {
+	int a, x, y, s, n, z, c, v;
+	u32 ser0, ser1;
+	int strobe;
+	int nw;
+	u16 wa[IS_MAXW];
+	u8 wv[IS_MAXW];
+} is_state;
+typedef struct {
+	is_state st, first;
+	int pc, depth, cycles, ok, tookback, budget;
+} is_sim;
+EWRAM_BSS is_sim vt_isim;
+EWRAM_BSS u32 vt_isim_regs[3];   /* A, X, Y << 24 at the call (speedhack_asm.s) */
+
+static const u8 is_mode[256] = {
+	[0xAA]=IS_IMP,[0x8A]=IS_IMP,[0xA8]=IS_IMP,[0x98]=IS_IMP,[0xE8]=IS_IMP,[0xCA]=IS_IMP,[0xC8]=IS_IMP,[0x88]=IS_IMP,
+	[0x18]=IS_IMP,[0x38]=IS_IMP,[0xB8]=IS_IMP,[0xEA]=IS_IMP,[0x0A]=IS_IMP,[0x4A]=IS_IMP,[0x2A]=IS_IMP,[0x6A]=IS_IMP,
+	[0x48]=IS_IMP,[0x68]=IS_IMP,
+	[0xA9]=IS_IMM,[0xA2]=IS_IMM,[0xA0]=IS_IMM,[0x29]=IS_IMM,[0x09]=IS_IMM,[0x49]=IS_IMM,[0xC9]=IS_IMM,[0xE0]=IS_IMM,[0xC0]=IS_IMM,[0x69]=IS_IMM,[0xE9]=IS_IMM,
+	[0xA5]=IS_ZP,[0xA6]=IS_ZP,[0xA4]=IS_ZP,[0x85]=IS_ZP,[0x86]=IS_ZP,[0x84]=IS_ZP,[0x25]=IS_ZP,[0x05]=IS_ZP,[0x45]=IS_ZP,[0xC5]=IS_ZP,
+	[0xE4]=IS_ZP,[0xC4]=IS_ZP,[0x65]=IS_ZP,[0xE5]=IS_ZP,[0x24]=IS_ZP,[0x06]=IS_ZP,[0x46]=IS_ZP,[0x26]=IS_ZP,[0x66]=IS_ZP,[0xE6]=IS_ZP,[0xC6]=IS_ZP,
+	[0xB5]=IS_ZPX,[0x95]=IS_ZPX,[0xB4]=IS_ZPX,[0x94]=IS_ZPX,[0x35]=IS_ZPX,[0x15]=IS_ZPX,[0x55]=IS_ZPX,[0xD5]=IS_ZPX,[0x75]=IS_ZPX,[0xF5]=IS_ZPX,
+	[0x16]=IS_ZPX,[0x56]=IS_ZPX,[0x36]=IS_ZPX,[0x76]=IS_ZPX,[0xF6]=IS_ZPX,[0xD6]=IS_ZPX,
+	[0xB6]=IS_ZPY,[0x96]=IS_ZPY,
+	[0xAD]=IS_ABS,[0xAE]=IS_ABS,[0xAC]=IS_ABS,[0x8D]=IS_ABS,[0x8E]=IS_ABS,[0x8C]=IS_ABS,[0x2D]=IS_ABS,[0x0D]=IS_ABS,[0x4D]=IS_ABS,[0xCD]=IS_ABS,
+	[0xEC]=IS_ABS,[0xCC]=IS_ABS,[0x6D]=IS_ABS,[0xED]=IS_ABS,[0x2C]=IS_ABS,[0x0E]=IS_ABS,[0x4E]=IS_ABS,[0x2E]=IS_ABS,[0x6E]=IS_ABS,[0xEE]=IS_ABS,[0xCE]=IS_ABS,
+	[0xBD]=IS_ABX,[0xBC]=IS_ABX,[0x9D]=IS_ABX,[0x3D]=IS_ABX,[0x1D]=IS_ABX,[0x5D]=IS_ABX,[0xDD]=IS_ABX,[0x7D]=IS_ABX,[0xFD]=IS_ABX,
+	[0x1E]=IS_ABX,[0x5E]=IS_ABX,[0x3E]=IS_ABX,[0x7E]=IS_ABX,[0xFE]=IS_ABX,[0xDE]=IS_ABX,
+	[0xB9]=IS_ABY,[0xBE]=IS_ABY,[0x99]=IS_ABY,[0x39]=IS_ABY,[0x19]=IS_ABY,[0x59]=IS_ABY,[0xD9]=IS_ABY,[0x79]=IS_ABY,[0xF9]=IS_ABY,
+	[0xB1]=IS_IZY,[0x91]=IS_IZY,[0x31]=IS_IZY,[0x11]=IS_IZY,[0x51]=IS_IZY,[0xD1]=IS_IZY,[0x71]=IS_IZY,[0xF1]=IS_IZY,
+	[0x10]=IS_REL,[0x30]=IS_REL,[0x50]=IS_REL,[0x70]=IS_REL,[0x90]=IS_REL,[0xB0]=IS_REL,[0xD0]=IS_REL,[0xF0]=IS_REL,
+	[0x4C]=IS_JMP,[0x20]=IS_JSR,[0x60]=IS_RTS,
+};
+/* base cycles (page crossings added below) */
+static const u8 is_cyc[14] = { 0, 2, 2, 3, 4, 4, 4, 4, 4, 5, 2, 3, 6, 6 };
+
+static int is_wfind(int a)
+{
+	is_state *t = &vt_isim.st;
+	for (int i = 0; i < t->nw; i++) if (t->wa[i] == a) return i;
+	return -1;
+}
+static int is_read(int a)
+{
+	is_state *t = &vt_isim.st;
+	a &= 0xFFFF;
+	if (a < 0x2000) {
+		a &= vt_nes_ram_mask;
+		int i = is_wfind(a);
+		return i >= 0 ? t->wv[i] : ((const u8 *)NES_RAM)[a];
+	}
+	if (a == 0x4016 || a == 0x4017) {          /* io.s joy0_R / joy1_R */
+		u32 *ser = a == 0x4016 ? &t->ser0 : &t->ser1;
+		int v = *ser & 1;
+		if (!t->strobe) *ser = (u32)((s32)*ser >> 1);
+		return a == 0x4016 ? v | 0x40 : v;
+	}
+	if (a >= 0x8000) return memmap_tbl[a >> 13][a];
+	vt_isim.ok = 0;
+	return 0;
+}
+static void is_write(int a, int v)
+{
+	is_state *t = &vt_isim.st;
+	a &= 0xFFFF;
+	if (a < 0x2000) {
+		a &= vt_nes_ram_mask;
+		int i = is_wfind(a);
+		if (i < 0) {
+			if (t->nw >= IS_MAXW) { vt_isim.ok = 0; return; }
+			i = t->nw++;
+			t->wa[i] = (u16)a;
+		}
+		t->wv[i] = (u8)v;
+		return;
+	}
+	if (a == 0x4016) {                        /* io.s joy0_W */
+		t->strobe = v & 1;
+		if (t->strobe) {
+			const int four = _nrplayers >= 3;
+			t->ser0 = _joy0state | _joy2state << 8 | (four ? 0x00080000u : 0xFFFFFF00u);
+			t->ser1 = _joy1state | _joy3state << 8 | (four ? 0x00040000u : 0xFFFFFF00u);
+		}
+		return;
+	}
+	vt_isim.ok = 0;
+}
+static void is_nz(int v) { vt_isim.st.n = (v >> 7) & 1; vt_isim.st.z = (v & 0xFF) == 0; }
+static int is_rmw(int op, int m)
+{
+	is_state *t = &vt_isim.st;
+	if (((op & 0xE0) == 0x20 || (op & 0xE0) == 0x60) && t->c < 0) { vt_isim.ok = 0; return 0; }   /* ROL/ROR need C */
+	switch (op & 0xE0) {
+	case 0x00: t->c = m >> 7; m = (m << 1) & 0xFF; break;                 /* ASL */
+	case 0x20: { int c = t->c; t->c = m >> 7; m = ((m << 1) | c) & 0xFF; break; }  /* ROL */
+	case 0x40: t->c = m & 1; m >>= 1; break;                              /* LSR */
+	case 0x60: { int c = t->c; t->c = m & 1; m = (m >> 1) | c << 7; break; }        /* ROR */
+	case 0xC0: m = (m - 1) & 0xFF; break;                                 /* DEC */
+	default:   m = (m + 1) & 0xFF; break;                                 /* INC */
+	}
+	is_nz(m);
+	return m;
+}
+static void is_adc(int m)
+{
+	is_state *t = &vt_isim.st;
+	if (t->c < 0) { vt_isim.ok = 0; return; }
+	int r = t->a + m + t->c;
+	t->v = (~(t->a ^ m) & (t->a ^ r) & 0x80) != 0;
+	t->c = r > 0xFF;
+	t->a = r & 0xFF;
+	is_nz(t->a);
+}
+static void is_cmp(int r, int m) { vt_isim.st.c = r >= m; is_nz(r - m); }
+
+/* one instruction at vt_isim.pc; 0 = stop (unknown or bad) */
+static int is_step(void)
+{
+	is_sim *S = &vt_isim;
+	is_state *t = &S->st;
+	const int pc = S->pc;
+	S->tookback = 0;
+	if (pc < 0x8000 || --S->budget < 0) return 0;
+	const u8 *p = memmap_tbl[pc >> 13] + pc;
+	const int op = OP(p[0]), mode = is_mode[op];
+	if (!mode) return 0;
+	int ea = 0, len = 1, cyc = is_cyc[mode];
+	switch (mode) {
+	case IS_IMM: len = 2; break;
+	case IS_ZP:  ea = p[1]; len = 2; break;
+	case IS_ZPX: ea = (p[1] + t->x) & 0xFF; len = 2; break;
+	case IS_ZPY: ea = (p[1] + t->y) & 0xFF; len = 2; break;
+	case IS_ABS: ea = p[1] | p[2] << 8; len = 3; break;
+	case IS_ABX: case IS_ABY: {
+		const int base = p[1] | p[2] << 8;
+		ea = (base + (mode == IS_ABX ? t->x : t->y)) & 0xFFFF; len = 3;
+		if ((base ^ ea) & 0x100) cyc++;
+		break; }
+	case IS_IZY: {
+		const int base = is_read(p[1]) | is_read((p[1] + 1) & 0xFF) << 8;
+		ea = (base + t->y) & 0xFFFF; len = 2;
+		if ((base ^ ea) & 0x100) cyc++;
+		break; }
+	case IS_REL: len = 2; break;
+	case IS_JMP: case IS_JSR: len = 3; break;
+	}
+	const int st = (op & 0xE0) == 0x80 && mode != IS_IMM && mode != IS_IMP && mode != IS_REL;   /* STA/STX/STY */
+	const int rmw = (op & 0x07) == 0x06 && (op & 0xE0) != 0x80 && (op & 0xE0) != 0xA0 && mode != IS_IMP;
+	if (st || rmw) { if (mode == IS_ABX || mode == IS_ABY || mode == IS_IZY) cyc = mode == IS_IZY ? 6 : 5; }
+	if (rmw) cyc += 2;
+	int m = 0;
+	if (mode == IS_IMM) m = p[1];
+	else if (mode != IS_IMP && mode != IS_REL && mode != IS_JMP && mode != IS_JSR && mode != IS_RTS && !st && !(rmw)) m = is_read(ea);
+	S->pc = (pc + len) & 0xFFFF;
+	switch (op) {
+	/* implied */
+	case 0xAA: t->x = t->a; is_nz(t->x); break;
+	case 0x8A: t->a = t->x; is_nz(t->a); break;
+	case 0xA8: t->y = t->a; is_nz(t->y); break;
+	case 0x98: t->a = t->y; is_nz(t->a); break;
+	case 0xE8: t->x = (t->x + 1) & 0xFF; is_nz(t->x); break;
+	case 0xCA: t->x = (t->x - 1) & 0xFF; is_nz(t->x); break;
+	case 0xC8: t->y = (t->y + 1) & 0xFF; is_nz(t->y); break;
+	case 0x88: t->y = (t->y - 1) & 0xFF; is_nz(t->y); break;
+	case 0x18: t->c = 0; break;
+	case 0x38: t->c = 1; break;
+	case 0xB8: t->v = 0; break;
+	case 0xEA: break;
+	case 0x0A: case 0x2A: case 0x4A: case 0x6A: t->a = is_rmw(op, t->a); break;
+	case 0x48: is_write(0x100 | t->s, t->a); t->s = (t->s - 1) & 0xFF; cyc = 3; break;
+	case 0x68: t->s = (t->s + 1) & 0xFF; t->a = is_read(0x100 | t->s); is_nz(t->a); cyc = 4; break;
+	/* loads, logic, arithmetic, compares */
+	case 0xA9: case 0xA5: case 0xB5: case 0xAD: case 0xBD: case 0xB9: case 0xB1: t->a = m; is_nz(m); break;
+	case 0xA2: case 0xA6: case 0xB6: case 0xAE: case 0xBE: t->x = m; is_nz(m); break;
+	case 0xA0: case 0xA4: case 0xB4: case 0xAC: case 0xBC: t->y = m; is_nz(m); break;
+	case 0x29: case 0x25: case 0x35: case 0x2D: case 0x3D: case 0x39: case 0x31: t->a &= m; is_nz(t->a); break;
+	case 0x09: case 0x05: case 0x15: case 0x0D: case 0x1D: case 0x19: case 0x11: t->a |= m; is_nz(t->a); break;
+	case 0x49: case 0x45: case 0x55: case 0x4D: case 0x5D: case 0x59: case 0x51: t->a ^= m; is_nz(t->a); break;
+	case 0x69: case 0x65: case 0x75: case 0x6D: case 0x7D: case 0x79: case 0x71: is_adc(m); break;
+	case 0xE9: case 0xE5: case 0xF5: case 0xED: case 0xFD: case 0xF9: case 0xF1: is_adc(m ^ 0xFF); break;
+	case 0xC9: case 0xC5: case 0xD5: case 0xCD: case 0xDD: case 0xD9: case 0xD1: is_cmp(t->a, m); break;
+	case 0xE0: case 0xE4: case 0xEC: is_cmp(t->x, m); break;
+	case 0xC0: case 0xC4: case 0xCC: is_cmp(t->y, m); break;
+	case 0x24: case 0x2C: t->z = (t->a & m) == 0; t->n = m >> 7; t->v = (m >> 6) & 1; break;
+	/* stores */
+	case 0x85: case 0x95: case 0x8D: case 0x9D: case 0x99: case 0x91: is_write(ea, t->a); break;
+	case 0x86: case 0x96: case 0x8E: is_write(ea, t->x); break;
+	case 0x84: case 0x94: case 0x8C: is_write(ea, t->y); break;
+	/* control */
+	case 0x4C: {
+		const int dest = p[1] | p[2] << 8;
+		if (dest <= pc) S->tookback = 1;
+		S->pc = dest; break; }
+	case 0x20: {
+		const int ret = (pc + 2) & 0xFFFF;
+		is_write(0x100 | t->s, ret >> 8); t->s = (t->s - 1) & 0xFF;
+		is_write(0x100 | t->s, ret & 0xFF); t->s = (t->s - 1) & 0xFF;
+		S->pc = p[1] | p[2] << 8; S->depth++; break; }
+	case 0x60: {
+		t->s = (t->s + 1) & 0xFF; int lo = is_read(0x100 | t->s);
+		t->s = (t->s + 1) & 0xFF; int hi = is_read(0x100 | t->s);
+		S->pc = ((lo | hi << 8) + 1) & 0xFFFF;
+		S->depth--;
+		break; }
+	default:
+		if (mode == IS_REL) {
+			int flag;
+			switch (op >> 6) {
+			case 0: flag = t->n; break;
+			case 1: flag = t->v; break;
+			case 2: flag = t->c; break;
+			default: flag = t->z; break;
+			}
+			if (flag < 0) return 0;
+			if (!(op & 0x20)) flag = !flag;
+			if (flag) {
+				const int dest = (S->pc + (s8)p[1]) & 0xFFFF;
+				cyc += 1 + (((S->pc ^ dest) >> 8) & 1);
+				if (dest <= pc) S->tookback = 1;
+				S->pc = dest;
+			}
+		} else if (rmw) {
+			is_write(ea, is_rmw(op, is_read(ea)));
+		} else return 0;
+		break;
+	}
+	S->cycles += cyc;
+	return S->ok;
+}
+
+/* One turn of the loop whose head is pc 'head' at call depth 'level', from
+ * the current state: run until the simulation is back at the head at that
+ * depth.  The turn must leave that depth only downwards (calls) and come back
+ * through the same backward jump 'back'.  Returns its cycles, or 0. */
+static int is_turn(int head, int level, int back)
+{
+	is_sim *S = &vt_isim;
+	S->cycles = 0;
+	for (;;) {
+		const int pc = S->pc, d = S->depth;
+		if (!is_step() || S->depth < level) return 0;
+		if (S->pc == head && S->depth == level) return S->tookback && d == level && pc == back ? S->cycles : 0;
+	}
+}
+
+EWRAM_BSS u8 vt_isim_skip, vt_isim_fails;
+EWRAM_BSS const u8 *vt_isim_hack[4];      /* the hack_pc this finder installed, per slot */
+static bool find_idle_loop_run(const u8 *initpc, const u8 *lastbank, int hacknum);
+static bool find_idle_loop(const u8 *initpc, const u8 *lastbank, int hacknum)
+{
+	/* every 4th call, backing off to every 32nd after failures in a row: in
+	 * games whose sprite-0 hack slot keeps coming free (Sky Fighter) the
+	 * finder runs every other frame, and the simulation is the dearest part
+	 * of it.  An idle title still gets its hack within about half a second. */
+	if (++vt_isim_skip < 4u << (vt_isim_fails < 3 ? vt_isim_fails : 3))   /* skipped: keep a hack of ours */
+		return speedhacks[hacknum].hack_pc && speedhacks[hacknum].hack_pc == vt_isim_hack[hacknum];
+	vt_isim_skip = 0;
+	if (!find_idle_loop_run(initpc, lastbank, hacknum)) {
+		if (vt_isim_fails < 255) vt_isim_fails++;
+		return false;
+	}
+	vt_isim_fails = 0;
+	return true;
+}
+
+static bool find_idle_loop_run(const u8 *initpc, const u8 *lastbank, int hacknum)
+{
+	is_sim *S = &vt_isim;
+	is_state *t = &S->st;
+	const int start = (initpc - lastbank) & 0xFFFF;
+	S->ok = 1;
+	S->budget = 640;                         /* instructions, over all the tries below */
+	t->a = vt_isim_regs[0] >> 24; t->x = vt_isim_regs[1] >> 24; t->y = vt_isim_regs[2] >> 24;
+	t->s = (u32)_m6502_s & 0xFF;
+	t->n = t->z = t->c = t->v = -1;          /* unknown: reading one before it is set gives up */
+	t->strobe = 0; t->nw = 0;
+	t->ser0 = t->ser1 = 0;
+	/* the pads' real shift state is not known here: strobe them first in the
+	 * simulation (a loop that reads them strobes them itself), so a turn that
+	 * reads without strobing gives up below unless it reaches a fixed point */
+	is_write(0x4016, 1); is_write(0x4016, 0);
+	/* The vblank can land anywhere in the loop, inside a subroutine too.  Run
+	 * on until a backward jump is taken at the shallowest call depth seen so
+	 * far; its target is a loop head.  Test two turns from it; if they differ
+	 * (an inner loop, a counter) keep running, out to the enclosing loop. */
+	S->pc = start; S->depth = 0;
+	int mindepth = 0, back = -1, cycles = 0;
+	for (;;) {
+		const int pc = S->pc, d = S->depth;
+		if (!is_step()) return false;
+		if (S->depth < mindepth) mindepth = S->depth;
+		if (!S->tookback || d != mindepth) continue;
+		const int head = S->pc, level = d;
+		back = pc;
+		cycles = is_turn(head, level, back);
+		if (!cycles) { if (S->ok && S->budget > 0 && S->depth < level) { mindepth = S->depth; continue; } return false; }
+		S->first = *t;
+		if (is_turn(head, level, back) != cycles) { if (S->ok && S->budget > 0) continue; return false; }
+		/* the second turn must change nothing */
+		is_state *f = &S->first;
+		int same = t->a == f->a && t->x == f->x && t->y == f->y && t->s == f->s && t->n == f->n && t->z == f->z &&
+		           t->c == f->c && t->v == f->v && t->ser0 == f->ser0 && t->ser1 == f->ser1 &&
+		           t->strobe == f->strobe && t->nw == f->nw;
+		for (int i = 0; same && i < t->nw; i++) same = t->wa[i] == f->wa[i] && t->wv[i] == f->wv[i];
+		if (same) break;
+		if (S->budget <= 0) return false;
+	}
+	{
+		speedhack_T *hack = &speedhacks[hacknum];
+		u32 total = (u32)cycles * (vt_cpu_x3 ? 1 : 3);
+		if (!total) return false;
+		hack->hack_pc = memmap_tbl[back >> 13] + back;
+		vt_isim_hack[hacknum] = hack->hack_pc;
+		hack->num_incs = 0;
+		hack->cycles_per_iteration = total;
+		hack->divider = 0xFFFFFFFFu / total + 1;
+		for (int i = 0; i < 16; i++) SPEEDHACK_INCS[hacknum * 16 + i] = 0;
+	}
+	return true;
+}
+#endif
+
 bool quickhackfinder(const u8 *initpc, const u8 *lastbank, int hacknum)
 {
 	const u8 *branchpc;
@@ -460,7 +802,7 @@ bool quickhackfinder(const u8 *initpc, const u8 *lastbank, int hacknum)
 	pc=find_first_instruction(initpc,lastbank,&branchpc);
 	hackpc=pc?find_hack(pc,branchpc,lastbank,hacknum):NULL;
 #if VT_MODE
-	if (!hackpc && vt_active) return find_poll_loop(initpc,lastbank,hacknum);
+	if (!hackpc && vt_active) return find_poll_loop(initpc,lastbank,hacknum) || find_idle_loop(initpc,lastbank,hacknum);
 #endif
 	if (!hackpc) return false;
 	return true;

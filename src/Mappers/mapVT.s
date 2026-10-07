@@ -1031,8 +1031,33 @@ read_vt369_4xxx:
     .global write_vt369_4xxx
 write_vt369_4xxx:
     tst     r12, #0x0800
-    beq     write_vt4xxx
+    beq     2f
     ldr     r1, =vt369_sram         @ store here; C only for the registers
+    b       3f
+    @ s.92: the VT369 has no DPCM channel.  Like Furbtendulator (APU_VT369::
+    @ IntWrite), once $2010 or $201E is non-zero $4010 writes are dropped and
+    @ $4015 loses its DMC enable bit.  Funny Coins starts a DMC sample with
+    @ its IRQ on about five seconds into a game; its IRQ handler only
+    @ acknowledges the VT timer, so the DMC IRQ fired again after every RTI
+    @ and the game hung (10 fps, scrambled picture).
+2:  mov     r1, r12, lsl #20
+    mov     r1, r1, lsr #20
+    cmp     r1, #0x010
+    cmpne   r1, #0x015
+    bne     write_vt4xxx
+    ldr     r1, =vt369_reg
+    ldrb    r2, [r1, #0x10]
+    ldrb    r1, [r1, #0x1E]
+    orr     r2, r2, r1
+    ldr     r1, =vt_reg_2010
+    ldrb    r1, [r1]
+    orrs    r2, r2, r1
+    beq     write_vt4xxx            @ not enhanced: the DPCM channel plays
+    tst     r12, #1
+    moveq   pc, lr                  @ $4010: dropped
+    bic     r0, r0, #0x10           @ $4015: no DMC
+    b       write_vt4xxx
+3:
     mov     r2, r12, lsl #21        @ vt369_snd_write acts on: $1FA2 and
     mov     r2, r2, lsr #21         @ $1840-$184F / $18A0-$18AF (start and
     strb    r0, [r1, r2]            @ stop masks).  Table Soccer streams
