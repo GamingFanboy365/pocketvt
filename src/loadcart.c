@@ -100,8 +100,12 @@ static void read_rom_header(u8 *nesheader)
 
 		// PocketVT: translate NES 2.0 extended mapper numbers to internal codes
 		// Mapper 256 (NES 2.0) = VT03/VT369 OneBus -- mapped to internal 253
-		// Mapper 405 (NES 2.0) = VT168/VT09 variant -- also mapped to 253
-		if (full_mapper == 256 || full_mapper == 405 || full_mapper == 419) {
+		// Mapper 405 (NES 2.0) = UMC UM6578 -- internal 251 (guide s.94; it
+		// was taken for a VT variant and run as OneBus until then)
+		if (full_mapper == 405) {
+			mapper = UM6578_MAPPER;
+			vt.submapper = 0;
+		} else if (full_mapper == 256 || full_mapper == 419) {
 			mapper = 253;  // Internal VT OneBus code
 			// Capture the NES 2.0 submapper (high nibble of byte 8).
 			// Submapper 13/14/15 of mapper 256 (Cube Tech / Karaoto /
@@ -110,10 +114,6 @@ static void read_rom_header(u8 *nesheader)
 			// to seed encryption_active.  Set on non-NES-2.0 falls
 			// back to 0.
 			vt.submapper = is_nes20 ? ((nesheader[8] >> 4) & 0x0F) : 0;
-			// For mapper 405 (zero-vector boot ROMs), tag this fact so
-			// mapVTinit can install a synthetic reset stub.  We reuse
-			// the high bit of submapper (which mapper 256 never uses)
-			// as a "this is mapper 405" marker.
 			// Mapper 419 (Taikee TK-8007 MCU, Table Soccer) is OneBus with the same
 			// PPU/MMC3 mangle tables as 256 but no $4107/$4108 cpuMangle, plus a
 			// 3-bit ADPCM voice channel that is not emulated (reference/nrs/
@@ -121,12 +121,12 @@ static void read_rom_header(u8 *nesheader)
 			if (full_mapper == 419) {
 				vt.submapper |= 0x40;
 			}
-			if (full_mapper == 405) {
-				vt.submapper |= 0x80;
-			}
 		} else {
 			// PocketNES only supports mappers up to 254, so cap at 8-bits
 			mapper = full_mapper & 0xFF;
+			// s.94: internal 251 is the UM6578; a real mapper 251 image
+			// keeps what it always got, the mapper 0 default
+			if (mapper == UM6578_MAPPER) mapper = 0;
 			vt.submapper = 0;
 		}
 		cartflags = (flags1 & 0x0F) + ((flags2 & 0x0F)<<4);
@@ -464,6 +464,13 @@ u8 *get_end_of_cache()
 	{
 		end_of_cache+=2048;
 	}
+#if VT_MODE
+	if (mapper==UM6578_MAPPER)
+	{
+		extern const u32 um_mem_size;	/* as init_cache reserves it */
+		end_of_cache=(u8*)(((u32)end_of_cache-um_mem_size)&~3u);
+	}
+#endif
 	if (vrompages>0)
 	{
 		chr_table_size=vrompages*8*4;
@@ -523,7 +530,10 @@ void init_cache(u8* nes_header, int called_from)
 	
 	int page_size;
 	
-	bool dont_use_turbo=false;
+	/* s.94: a UM6578 cart keeps its PRG where it is.  The EWRAM copy of a
+	 * 128K image would run into the block reserved below, and char blocks
+	 * 2/3 (the VRAM copy) hold its background tile cache and maps. */
+	bool dont_use_turbo=(mapper==UM6578_MAPPER);
 	
 //	sprite_vram_in_use=0;
 	
@@ -590,6 +600,18 @@ void init_cache(u8* nes_header, int called_from)
 	{
 		end_of_cache+=2048;
 	}
+#if VT_MODE
+	if (mapper==UM6578_MAPPER)
+	{
+		/* s.94: the UM6578's RAM, CHR-RAM and BG cache tables (um6578.c),
+		 * reserved like the bank tables below so the ROM cache and the
+		 * cheat finder stay clear of them */
+		extern const u32 um_mem_size;
+		extern void um_set_mem(void *p);
+		end_of_cache=(u8*)(((u32)end_of_cache-um_mem_size)&~3u);
+		um_set_mem(end_of_cache);
+	}
+#endif
 	
 	if (vrompages>0)
 	{

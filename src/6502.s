@@ -1433,6 +1433,12 @@ CPU_reset:	@called by loadcart (r0-r9 are free to use)
 	@(clear irq/nmi/res source)...
 	
 	mov r0,#0
+#if VT_MODE
+	ldr r1,=um_active		@ s.94: the UM6578 powers on with the APU
+	ldrb r1,[r1]		@ frame IRQ off ($4017 bit 6); Star Ally never
+	cmp r1,#0		@ writes $4017 and acks only its timer
+	movne r0,#0x40
+#endif
 	bl _4017w
 	
 	mov r0,#0

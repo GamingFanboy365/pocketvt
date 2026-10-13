@@ -7,6 +7,7 @@ extern "C" {
 
 #define TQROM 119
 #define VRC7 85
+#define UM6578_MAPPER 251   // NES 2.0 mapper 405, UMC UM6578 (guide s.94)
 
 #define MIRROR	0x01
 #define SRAM_	0x02

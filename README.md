@@ -10,13 +10,15 @@ some carts a per-submapper opcode bit-permutation ("encryption"). The main
 CPU is a stock 6502. The so-called "VT extra opcodes" belong to the VT369
 sound coprocessor and are not emulated; see DATASHEET_DIGEST.md appendix A.
 
-Carts are recognised from their NES 2.0 header: mappers 256, 405 and 419 are
+Carts are recognised from their NES 2.0 header: mappers 256 and 419 are
 routed to the VT core (internally mapper 253, `mapVTinit`), and the
 submapper selects encryption and register mangling at runtime. The header's
 extended console type (VT03, VT09, VT32, VT369) switches on console-specific
 hardware such as the VT32/VT369 multiply/divide unit, and a header nibble can
-name the console's colour DAC. Other mappers still go through the inherited
-PocketNES mapper library.
+name the console's colour DAC. Mapper 405, the UMC UM6578 (another famiclone
+chip, with 16-bit nametable entries and its own PPU), has a module of its own
+(src/um6578.c, src/Mappers/mapUM.s). Other mappers still go through the
+inherited PocketNES mapper library.
 
 ## Status
 
@@ -44,7 +46,7 @@ frames.
 | Table Soccer VT369 | working, with its streamed music; team select 99.9%, match 96.7%, 60 NES fps |
 | Lucky Lawn Mower VT369 | working (VT369 enhanced renderer, 4bpp); 99.7% picture, full speed |
 | Fire Fighter VT369, Jewel Master VT369 | working (enhanced renderer, 8bpp) with sound effects; Jewel Master 99.9% picture, Fire Fighter 96% (game-state drift). Both run the CPU at x3 as the hardware does; Jewel Master 60 NES fps, Fire Fighter 54-60 in gameplay with its game logic updating every frame (at 1x it updated on 70% of frames); Fire Fighter's HUD digits no longer drop out (too many sprites on a GBA line) |
-| Mapper 405 (VT168, zero-vector boot) | does not boot yet |
+| Star Ally UM6578 (UMC UM6578, mapper 405) | working; title 100%, gameplay 98-99% picture with the reference's colours (stretches where enemy waves drift from the reference score lower), 54-61 NES fps |
 
 Colours: games that use the VT03's 12-bit colour mode (COLCOMP) are drawn with
 the reference emulator's NTSC colour model since this release, so Aero

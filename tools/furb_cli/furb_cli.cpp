@@ -19,6 +19,7 @@
 #include "Controllers.h"
 #include "OneBus.h"
 #include "OneBus_VT369.h"
+#include "UM6578.h"
 #include "States.h"
 #include "Movie.h"
 #include "Tape.h"
@@ -389,7 +390,28 @@ static void dump_frame(const std::string &prefix, int frame, const std::vector<u
 	int pal = RI.ConsoleType == CONSOLE_VT369 ? 1024 : 256;
 	fprintf(f, "palette RAM (PPU::Palette[0..%d]):\n", pal - 1);
 	for (int i = 0; i < pal; i++) fprintf(f, "%02X%s", PPU::PPU[0]->Palette[i], (i & 15) == 15 ? "\n" : " ");
+	if (RI.ConsoleType == CONSOLE_UM6578) {
+		PPU::PPU_UM6578 *um = dynamic_cast<PPU::PPU_UM6578 *>(PPU::PPU[0]);
+		if (um) fprintf(f, "um6578 reg2008 %02X  v %04X  t %04X  x %d\n", um->reg2008,
+			(int)PPU::PPU[0]->VRAMAddr, (int)PPU::PPU[0]->IntReg, (int)PPU::PPU[0]->IntX);
+		fprintf(f, "um6578 $4040-$404F:");
+		for (int i = 0x40; i < 0x50; i++) fprintf(f, " %02X", CPU::CPU[0]->ReadHandlerDebug[4](4, i) & 0xFF);
+		fprintf(f, "\num6578 $4032-$4036:");
+		for (int i = 0x32; i < 0x37; i++) fprintf(f, " %02X", CPU::CPU[0]->ReadHandlerDebug[4](4, i) & 0xFF);
+		fprintf(f, "\n");
+	}
 	fclose(f);
+	// .ppu (UM6578 only): the whole 64K PPU address space, VRAM $0000-$27FF, CHR-RAM $8000-$FFFF
+	if (RI.ConsoleType == CONSOLE_UM6578) {
+		snprintf(name, sizeof name, "%s_f%04d.ppu", prefix.c_str(), frame);
+		f = fopen(name, "wb");
+		for (int i = 0; i < 64; i++) {
+			static const unsigned char zero[0x400] = {0};
+			const unsigned char *pg = PPU::PPU[0]->CHRPointer[i];
+			fwrite(pg ? pg : zero, 1, 0x400, f);
+		}
+		fclose(f);
+	}
 	snprintf(name, sizeof name, "%s_f%04d.ram", prefix.c_str(), frame);
 	f = fopen(name, "wb");
 	fwrite(NES::CPU_RAM, 1, sizeof(NES::CPU_RAM), f);
