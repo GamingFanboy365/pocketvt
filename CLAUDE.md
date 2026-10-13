@@ -97,8 +97,11 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   (frame end never waits) and -DVT_TIMER_LOG (VT timer expiry/re-arm ring). Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.93)
-See MAINTAINERS_GUIDE.md s.93 (Soccer 2009: $A000 mirroring applied at once;
+## Current state (after s.94)
+See MAINTAINERS_GUIDE.md s.94 (the UMC UM6578, NES 2.0 mapper 405, internal
+251: Star Ally UM6578 runs through src/um6578.c + src/Mappers/mapUM.s with its
+own BG tile cache, per-line scroll segments and Furbtendulator's UM colours;
+mapper 405 was never a VT variant), s.93 (Soccer 2009: $A000 mirroring applied at once;
 $4119 from the header's region with the NTSC VT03 palette-DMA offset; COLCOMP
 with SPEXTEN sprites; eight 2 KB extension sprite slots; VT03 COLCOMP colours
 are Furbtendulator's, tools/gen_vt03_lut.py; compare_furb struct keyed in
@@ -135,7 +138,9 @@ states, sound) and s.77-78 (raster-split slots, speed).
   fps), Sky Fighter (VT369, gameplay 96-98%, 60 fps), Funny Coins (VT369,
   title 100%, gameplay 98% to NES 1800, 60 fps; 1-line streaks at its
   raster-split edges) and Soccer 2009 (VT03 with a 256K CHR ROM, 256.0;
-  menus 99.5%, matches 97-99% with exact colours).
+  menus 99.5%, matches 97-99% with exact colours), Star Ally UM6578 (UM6578,
+  405; title 100%, gameplay 98-99% where the game state has not drifted,
+  54-61 fps).
 - CPU x3 ($411C bit 7, every VT369 test cart sets it): vt_cpu_x3_set
   rewrites every `cyc`-recorded cost immediate in RAM (section vt_cycpatch,
   6502mac.h) between 3 and 1 dots a cycle. New cycle charges in RAM code
@@ -198,6 +203,15 @@ states, sound) and s.77-78 (raster-split slots, speed).
   reads A/X/Y from vt_isim_regs (stored by the ROM stub
   speedhack_manager_regs), keeps all its state in EWRAM, and is rate-limited
   with back-off: running it every attempt cost Sky Fighter 4-7 fps.
+- UM6578 (s.94): mapUMinit patches two literal words in ppu.s
+  (vt_frame_end_call, vt_vbl_fixup_call) to um_frame_end / um_vblank_stacked;
+  cart.s restores them on every cart load, so VT carts run unchanged code.
+  Its big tables (~53K, um_mem_size) sit above the ROM cache; the cart runs
+  without the turbo PRG copy. Its BG cache owns char base 2 and screen blocks
+  27-31. The 6502 reset writes $4017=$40 for it (frame IRQ off at power-on).
+- memset32 (memcopy.s) is memset16 underneath: it only works for a value
+  whose two halves are equal (the tail and any fill under 24 bytes use strh
+  of the low half). Fill words with distinct halves with a loop (s.94).
 - PRG page 0 lives in OBJ VRAM until the first VT sprite slot is written, then
   moves to its ROM/EWRAM twin (vt_prg_evict_obj). Never write OBJ slots 0-7
   without it.
@@ -222,14 +236,20 @@ states, sound) and s.77-78 (raster-split slots, speed).
    Measure with tools/probes/pvtwav + wavcmp.py (not for real-time streams:
    its envelope stretches for game speed, s.84b).
 3. Stale BG tile cache (item 21): Push the Ball's 20 px; per-byte cost added to
-   the video DMA loop made Table Soccer VT369 lose two bracket corners (s.93). The VG band of
+   the video DMA loop made Table Soccer VT369 lose two bracket corners (s.93);
+   EWRAM layout alone (s.93 core + 1600 B of EWRAM_BSS) re-exposes it, and
+   s.94 leaves one stale tile on Table Soccer VT369's knockout screen. Lead:
+   vt_chr4_copy_to_vram probes only 4 words per 2K page for stomps (s.94). The VG band of
    missing tiles was a BKEXTEN slot stomp, fixed by the slot checksums (s.85c);
    the VG games at 96-98% (3/4, 3/5, 4/1, 4/2) still have a small residue.
 4. Table Soccer formation screen: two 6-line strips need a sixth char block.
 5. Funny Coins: 1-line streaks at the board's raster-split edges (s.92).
 6. Soccer 2009 matches at 42-44 fps: the 6502 core alone is ~272K of the 281K
    cycles a frame; left over: sprite slot update ~15K, palette rebuild ~14K.
-7. Scramble's shot (s.70c): one-pixel sprite on texture row 7 dropped by the
+7. Star Ally UM6578: savestates hold no UM6578 (or VT) state; 8x16 sprites
+   ~0.5 GBA line low (stock scaling); boot $2002 polling drifts game state
+   against Furbtendulator (s.94).
+8. Scramble's shot (s.70c): one-pixel sprite on texture row 7 dropped by the
    sprite affine matrix.
 
 ## Reference material
@@ -245,7 +265,7 @@ LOCAL ONLY, gitignored, never commit (the user supplies them as test.zip):
   Pilot; supplied later: Aero Gyrodine, Hex City X, VG Pocket VT09, Lucky Lawn
   Mower VT369, Table Soccer VT369, Fire Fighter VT369, Jewel Master VT369,
   Star Ally, Lonely Island, LLM VT09, Jewel Master VT03, Funny Coins, Soccer
-  2009.
+  2009, Star Ally UM6578 (UM6578 docs in reference/um6578/).
 
 In git:
 - DATASHEET_DIGEST*.md: VT02/VT03 datasheet notes. Bit numbering there is

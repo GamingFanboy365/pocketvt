@@ -3383,13 +3383,15 @@ Durable facts from IMPLEMENTATION_NOTES.md:
   clears it before any mapper init and mapVTinit sets it, so non-VT mappers
   keep NES $2000-$2007 mirroring.
 * loadcart.c remaps NES 2.0 mapper 256/405 to internal 253 and stores the
-  submapper in `vt.submapper`; bit 7 of it marks "mapper 405".
+  submapper in `vt.submapper`; bit 7 of it marks "mapper 405". (Wrong since
+  s.94: mapper 405 is the UM6578, internal 251, and the marker is gone.)
 * 6502_vt.s hardcodes VTState offsets 0x20-0x22 (encryption fields); the
   `_Static_assert`s at the top of vt_regs.c fail the build if they drift.
 
 Open items those docs carried, still unimplemented:
 
-* **Mapper 405 zero-vector boot.** VT168 carts such as Space_War have
+* **Mapper 405 zero-vector boot.** (s.94: mapper 405 is the UMC UM6578, not a
+  VT168; whatever Space_War is, it is not this mapper.) VT168 carts such as Space_War have
   all-zero vectors; the real chip's boot ROM reads a jump table at PRG
   offset $10 (Space_War: $8057,$80AE,$8008,$805F,$80B6,$8017,$806E,$80C5,
   stored high byte first) and jumps to one entry. The first ($8057) is the
@@ -5451,3 +5453,146 @@ Table Soccer VT03 differ everywhere through the colour table. The sound host
 test reports 0 failing. The Docker core ends .bss at 0x03007AA0 and .vram1 at
 0x06003FF0. Under the real BIOS, Soccer 2009 (into a match), Star Ally, Lonely
 Island, Aero Gyrodine, Add 'em Up, Zuma and LLM VT09 boot and score as in mGBA.
+
+## 94. The UM6578: Star Ally's UM6578 version (mapper 405)
+
+The user supplied a second Star Ally dump, Star_Ally_UM6578.nes (NES 2.0
+mapper 405, console type $0B), and the UM6578 documentation (Furbtendulator's
+UM6578.cpp and mapper405.cpp, and the NESdev page on the UM6576/UM6578). It
+did not boot. Until now loadcart.c sent mapper 405 to the VT core as a
+"VT168/VT09 variant" with a zero-vector boot marker in vt.submapper bit 7, and
+s.74 carried that as an open item ("Mapper 405 zero-vector boot", from the
+retired docs). That description was wrong: NES 2.0 mapper 405 is the UMC
+UM6578, a famiclone chip with its own PPU that shares nothing with OneBus
+beyond the 6502 and the APU. The bit 7 marker was never read and is gone.
+
+What the chip is. Next to a stock CPU and APU it has 8K of CPU RAM at
+$0000-$1FFF and 2K more at $5000-$57FF; 4K PRG banks at $4040-$4047, with
+$4016 bit 1 as bank bit 8; an instantaneous DMA engine at $4048-$404F that
+copies from ROM (source bit 15 set, page << 15) or CPU space into CPU space
+(bit 5) or PPU space; a timer at $4032-$4036 clocked at dot 280 of every
+scanline or on CPU cycles; and a PPU of its own. Its nametable entries are
+16-bit words, a 12-bit tile number and a 4-bit palette per cell, so the
+attribute table is gone; the BG colour index is attr << 2 | pixel in 2bpp
+mode. $2008 reads [C... PP.N]: C selects 4bpp tiles, PP the sprite pattern
+bank (patterns at PP << 12), N one nametable at $2000-$27FF mirrored both
+ways instead of four nametables at $0000-$1FFF. A nametable is 32 rows high
+(no 30-row wrap), so the BG row of a line is NTv * 256 + row * 8 + fine,
+modulo 512. The palette sits in CPU space at $2040-$207F. Sprites are the
+NES's, 2bpp. At power-on the APU frame IRQ is off, as if $4017 held $40.
+
+Design. The cart gets internal mapper 251 (UM6578_MAPPER in loadcart.h; a
+real mapper 251 image is sent to mapper 0, which is what it got before since
+PocketNES has no 251). PocketNES keeps the CPU, the APU, $2000-$2004, the
+NMI, sprites and the scaling, so most of the stock machinery runs unchanged.
+The UM6578's VRAM $0000-$1FFF is NES_VRAM, so the CHR-RAM sprite path finds
+the game's sprite patterns where it always looks, and every write there marks
+dirty_tiles and dirty_rows as a $2007 write does. src/Mappers/mapUM.s routes
+memory: um_ram_R/W for the 8K RAM (the first 2K stays cpu_zpage, the rest is
+in EWRAM), um_ppu_R/W for $2000-$3FFF (the palette window, $2005-$2008 and
+$2007 reads go to C, the rest to PPU_R/PPU_W), and um_io_R/W for
+$4000-$5FFF ($4014 from RAM above $0800 repoints memmap_0 for the copy, $4016
+goes to IO_W and then to C, $4031-$404F to um_reg_W, $5000-$57FF to RAM2).
+After a register write um_post applies PRG banks, arms or cancels the timer
+on the mapper_timeout node and sets IRQ_MAPPER. src/um6578.c owns the rest:
+registers, DMA, the timer, the per-line scroll and the background.
+
+The background is not PocketNES's. A tile cache of 704 slots fills char base
+2 (0x06008000-0x0600D7FF, slot 0 blank) and is keyed by tile number, and in
+2bpp mode also by the low two attribute bits, which are baked into the
+pixels (4 * a + p) so that the four 2bpp palettes become GBA banks 0-3 with
+entry 16b + e holding UM colour 16b + e. A 2048-entry hash finds a key's
+slot, a reference count per slot counts the map cells showing it, and
+allocation is round-robin over free slots. The four nametables become one
+64x64 GBA map at screen blocks 27-30 (BG0CNT $DB0A) and the single nametable
+a 32x32 map at screen block 31 ($1F0A). Every $2000, $2005, $2006 and $2008
+write records a segment (line, configuration, horizontal and vertical scroll;
+48 a frame) on the line it takes effect (from dot 128 on it applies to the
+next line, as get_scanline_2 does), and at NES line 242 um_frame_end expands
+the segments into scrollbuff and bg0cntbuff. A second $2006 write sets the
+vertical scroll as on the NES, one line further down when it lands in the
+visible part of the line before. Star Ally relies on this: its NMI writes
+$4035=$E6 and $4034=$A0, the timer fires at line 209 dot 280, and the IRQ
+handler writes $2006=$08/$00 and $2008=0 between dots 147 and 238 of line
+210, so the HUD comes from nametable 2 from line 211 on. The GBA palette is
+built in the vblank from um_pal through um_rgb, Furbtendulator's NTSC colours
+for the UM6578 (RGB888 >> 3): with the standard 64-colour table only 13 of
+64 colours agreed with the reference. Two call sites carry the frame-end and
+vblank hooks: ppu.s labels the literal words of `bl_long
+vt_palette_rebuild_gba` in newframe_nes_vblank (vt_frame_end_call) and of `bl_long
+vt_16c_palette_fixup_stacked` in the vblank handler (vt_vbl_fixup_call), and
+um_hooks rewrites the two literals to um_frame_end and um_vblank_stacked
+(mapUMinit) and back (cart.s, on every cart load, next to the vt_active
+clear). VT carts therefore run byte-identical code; um_hooks checks that both
+sites still have the expected `mov lr,pc; ldr pc,[pc,#..]` shape and marks
+um_dbg[6] = $DEAD if not. The large tables (CPU RAM above $0800, RAM2, the
+32K CHR-RAM at PPU $8000, the hash and slot tables, about 53K) sit above the
+ROM cache in a block init_cache reserves for this mapper only
+(um_mem_size); the cart also runs without the EWRAM "turbo" PRG copy, which
+would run into that block and whose VRAM copy would occupy char blocks 2-3.
+No IWRAM was used: __bss_end__ stays at 0x03007AA0 and .vram1 at 0x06003FF0.
+
+What went wrong on the way, in order. The game first sat in an IRQ storm:
+the 6502 reset in 6502.s writes $4017 = 0, which enables the frame IRQ, and
+the game never acknowledges it. The reset now writes $40 when um_active is
+set. Next the rings and comets of the play field lacked tiles. The game keeps
+sprite patterns in the VRAM that overlaps nametables 0 and 1, so the
+off-screen nametables held about 950 distinct junk keys and exhausted the 704
+slots. Map rows are now converted only while some segment shows them
+(um_vis_next, applied in the vblank: rows that come into view are marked
+dirty, rows that leave release their slots), and a tile write marks nothing
+unless some slot holds that tile (tcnt). Gameplay then ran at 10 NES fps:
+the timer was stepped line by line, DMA went byte by byte through the
+generic CPU and PPU writers, and the tile refresh swept every slot. The timer
+is now closed-form (the prescaler share, then e % (latch + 1) after a repeat
+fire, with the elapsed time clamped), DMA copies runs between page
+boundaries, the refresh scans a dirty bitmap, and the ARM divisions use
+umull. Last, a one-pixel dotted streak ran across line 210 above the HUD:
+um_frame_end filled scrollbuff with memset32, which counts halfwords and
+writes its tail (and the whole of any fill under 24 bytes) with strh of the
+low half of the value. A scrollbuff word holds X in its low half and Y in its
+high half, so the tail lines got a wrong Y. memset32 is only correct for a
+value whose two halves are equal; scrollbuff is now filled with a plain word
+loop (bg0cntbuff, halfwords, still goes through memset32 via um_fill16).
+
+Results with compare_furb and Start at NES 320-325: the title at NES 400 is
+100%, gameplay 98.2% at 700, 99.0% at 1000 and 99.3% at 2000, and 92.8-95.8%
+at 1300, 1600 and 2400, where the enemies and asteroids are in different
+places. That residue is game-state drift. The game polls $2002 in a vblank
+wait loop at $F914 during boot, so the frame on which it leaves the loop
+depends on CPU timing, and PocketVT's RAM matches Furbtendulator's at an
+offset that grows by a few frames over a run. Colours match exactly
+(exact5 within 0.2% of struct). Sprites in 8x16 mode sit about half a GBA line
+low against the reference; that is the stock scaled sprite placement and is
+not specific to the UM6578. Speed in gameplay is 54-61 NES fps (60 most of
+the time, measured with compare_furb's speed column from NES 400 to 2400).
+Under the real BIOS the scores are the same. Savestates do not hold the UM6578
+state, as they do not hold the VT state; both are pre-existing gaps.
+
+furb_cli dumps the UM6578 side too: for a CONSOLE_UM6578 cart the `.txt`
+adds $2008, v, t, x, $4040-$404F and $4032-$4036, and a new `.ppu` file holds
+the 64 1K pages of the PPU space (CHRPointer), which is how the junk keys
+above were counted.
+
+Regression against the s.93 core (frame-set test over 800 frames). Star Ally
+VT03, Lonely Island, Scramble, Lucky Lawn Mower VT09, VG Pocket, Aero
+Gyrodine, Table Soccer VT03, Time Pilot and Push the Ball render identical
+frame sequences. Jewel Master VT03, Soccer 2009, Zuma, Funny Coins, Sky
+Fighter, Jumper, Fire Fighter, LLM VT369, Jewel Master VT369, Hex City X and
+Add 'em Up show new frames only during boot (GBA frames 68-105), when the
+ROM cache and EWRAM layout moved by the new code. Table Soccer VT369 renders
+710 new frames: one BG tile stays stale (the "R" of "BRA" on the knockout
+screen), and compare_furb moves from 98.59% to 98.56%. Its game RAM,
+nametables and palette are unchanged, so this is open item 3, the stale BG
+tile cache, again. It is not caused by the UM code path, which VT carts never
+enter: the s.93 core with 1600 bytes of padding added to EWRAM_BSS and no
+other change also renders new frames (13 of them) on the same cart. The
+mechanism as far as it was traced: consume_recent_tiles reaches
+render_tiles_2_loop (ppu.s) after vt_chr4_rebuild_stacked in the same vblank,
+and vt_chr4_copy_to_vram detects a stomped 2K page only by probing four
+words of it (the signature word and words 129, 257 and 385), so a stomp of a
+single tile outside those words survives. Which writer stomps, and why it
+depends on the EWRAM layout, is not established. It is left for open item 3.
+Moving the UM hooks into tests on the VT path (the first version) re-timed
+the VT vblank and flipped this cart's frame set the same way, which is why
+the hooks are patched literals now.

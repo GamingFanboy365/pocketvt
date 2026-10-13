@@ -3091,6 +3091,8 @@ skipdma:
 	@ rebuild them here as the LAST palette writer of the frame.  The C
 	@ wrapper is internally gated (vt_active + $2010 16-colour bits +
 	@ COLCOMP=0) and is a no-op for plain NES carts and 2bpp VT games.
+	.global vt_vbl_fixup_call		@ s.94: um_hooks (um6578.c) repoints this call
+vt_vbl_fixup_call:
 	bl_long vt_16c_palette_fixup_stacked	@ on the EWRAM stack (mapVT.s, guide s.78e)
 	@ (vt_16c_palette_fixup also performs the 4bpp sprite-cache overlay --
 	@ folded into the same call to avoid adding IRQ stack depth; the vblank
@@ -3404,6 +3406,8 @@ newframe_nes_vblank: 	@called at line 242
 #if VT_ENHANCED_PALETTE
 	@ Rebuild GBA palette from VT extended palette RAM if dirty.
 	@ Must run during VBlank when palette RAM writes are safe.
+	.global vt_frame_end_call		@ s.94: um_hooks (um6578.c) repoints this call
+vt_frame_end_call:
 	bl_long vt_palette_rebuild_gba
 #endif
 

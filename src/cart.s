@@ -222,6 +222,7 @@ mappertbl:
 	.byte 232
 	.byte 245
 	.byte 249
+	.byte 251	@ UMC UM6578 (NES 2.0 mapper 405, guide s.94)
 	.byte 252
 	.byte 253	@ VT OneBus (VT03/VT09)
 	.byte 254
@@ -322,6 +323,7 @@ mappertbl2:
 	.word mapper232init	@232
 	.word mapper245init	@245
 	.word mapper249init	@249
+	.word mapUMinit	@251 UM6578 (mapUM.s)
 	.word mapper4init 	@252
 	.word mapVTinit   	@253 VT03/VT09 OneBus
 	.word mapper4init 	@254
@@ -462,6 +464,9 @@ lc2:
 	ldr r0,=vt_active
 	mov r1,#0
 	strb r1,[r0]
+	ldr r0,=um_active		@ s.94: mapUMinit sets it for a UM6578 cart
+	strb r1,[r0]
+	bl_long um_hooks_off		@ s.94: and repoints two ppu.s calls
 	@ s.88: back to 1x CPU timing (VT369 $411C bit 7 patches the op costs)
 	stmfd sp!,{r0-r3,r12}
 	mov r0,#0
