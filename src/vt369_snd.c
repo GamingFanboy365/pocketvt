@@ -595,4 +595,26 @@ void vt369_snd_reset(void)
     vt369_snd_n = 0;
 }
 
+#ifndef VT369_SND_HOSTTEST
+/* s.95: savestates (vt_regs.c vt_state_io).  The sound CPU's RAM holds its
+ * whole state; the PCM buffers start from silence. */
+#include "vt_state.h"
+EWRAM_BSS static u8 vt369_state_on;
+u8 *vt369_snd_state_io(u8 *p, int save)
+{
+    if (save) vt369_state_on = vt369_snd_on;
+    VT_SV(p, save, vt369_sram);
+    VT_SV(p, save, vt369_state_on);
+    VT_SV(p, save, vt369_st_prev);
+    VT_SV(p, save, vt369_irq_acc);
+    return p;
+}
+
+void vt369_snd_state_apply(void)
+{
+    vt369_snd_on = 0;                      /* loadcart's reset: off */
+    if (vt369_state_on) vt369_snd_ctl(0x0D);
+}
+#endif
+
 #endif

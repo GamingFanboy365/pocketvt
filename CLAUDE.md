@@ -92,13 +92,18 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   ftwatch the first address for the writer (s.85b).
 - tools/probes/: one-question mGBA harnesses (speed, frame hashes, VRAM/RAM
   dumps, live PC/lastbank, single-step watchpoints, stack depth). README there.
+  gbaplay drives the L+R menu (GBA-frame keys), carries SRAM across runs and
+  dumps state at exact NES frames: the savestate replay test (s.95).
 - Diagnostic hooks used this project: DMA_LOG (mapVT.s video DMA), TLOG /
   NMIDBG style counters; s.87 adds -DVT_NO_SPEEDHACK, -DVT_DIAG_NOVSYNC
   (frame end never waits) and -DVT_TIMER_LOG (VT timer expiry/re-arm ring). Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.94)
-See MAINTAINERS_GUIDE.md s.94 (the UMC UM6578, NES 2.0 mapper 405, internal
+## Current state (after s.95)
+See MAINTAINERS_GUIDE.md s.95 (EZ-Flash Omega: doReset restores WAITCNT 0
+before the flash-cart reset; savestates: buffers inside the heap, a VT-safe
+redecompress, the VTST block of VT machine state; the menu font on 8bpp
+VT369 pictures; the label "PocketVT 1.0"), s.94 (the UMC UM6578, NES 2.0 mapper 405, internal
 251: Star Ally UM6578 runs through src/um6578.c + src/Mappers/mapUM.s with its
 own BG tile cache, per-line scroll segments and Furbtendulator's UM colours;
 mapper 405 was never a VT variant), s.93 (Soccer 2009: $A000 mirroring applied at once;
@@ -209,6 +214,21 @@ states, sound) and s.77-78 (raster-split slots, speed).
   Its big tables (~53K, um_mem_size) sit above the ROM cache; the cart runs
   without the turbo PRG copy. Its BG cache owns char base 2 and screen blocks
   27-31. The 6502 reset writes $4017=$40 for it (frame IRQ off at power-on).
+- Savestates (s.95): the VTST block (vt_state.h; vt_regs.c vt_state_io /
+  vt_state_apply, with a VT_SV list in ppu_vt.c, ppu_vt369.c, vt369_snd.c)
+  holds the VT machine state. ANY new VT register, RAM or chip state must be
+  added there (bump VT_STATE_MAGIC on layout changes) or a loaded state runs
+  with it at power-on. Caches are rebuilt, never saved. sram.c's BUFFER1/2/3
+  are heap+0/64K/128K and must stay below ewram_heap_end (loadcart.c):
+  state_buffers_fit refuses otherwise (UM6578: always). After an SRAM or
+  state menu, redecompress on VT/UM carts repeats only init_cache's recorded
+  PRG copies (rec_copy); VT vblank work is skipped while ewram_owner_is_sram.
+  Check with tools/probes/gbaplay (FTDUMP replay; guide s.95).
+- Menus: ui_palette_claim(1/0) (pocketnes_text.c) around ui() and the ROM
+  menu; vt369_pal_upload leaves BG colours 64-95 (the font, banks 4-5) alone
+  while vt_ui_pal is set.
+- doReset (io.s) stores WAITCNT 0 before the flash-cart reset writes and
+  SoftReset (s.95, as the PocketNES fork: the Omega's menu).
 - memset32 (memcopy.s) is memset16 underneath: it only works for a value
   whose two halves are equal (the tail and any fill under 24 bytes use strh
   of the low half). Fill words with distinct halves with a loop (s.94).
@@ -238,7 +258,8 @@ states, sound) and s.77-78 (raster-split slots, speed).
 3. Stale BG tile cache (item 21): Push the Ball's 20 px; per-byte cost added to
    the video DMA loop made Table Soccer VT369 lose two bracket corners (s.93);
    EWRAM layout alone (s.93 core + 1600 B of EWRAM_BSS) re-exposes it, and
-   s.94 leaves one stale tile on Table Soccer VT369's knockout screen. Lead:
+   s.94 leaves one stale tile on Table Soccer VT369's knockout screen (s.95:
+   the select screen's Brazil label, 98.56% -> 98.54%). Lead:
    vt_chr4_copy_to_vram probes only 4 words per 2K page for stomps (s.94). The VG band of
    missing tiles was a BKEXTEN slot stomp, fixed by the slot checksums (s.85c);
    the VG games at 96-98% (3/4, 3/5, 4/1, 4/2) still have a small residue.
@@ -246,9 +267,12 @@ states, sound) and s.77-78 (raster-split slots, speed).
 5. Funny Coins: 1-line streaks at the board's raster-split edges (s.92).
 6. Soccer 2009 matches at 42-44 fps: the 6502 core alone is ~272K of the 281K
    cycles a frame; left over: sprite slot update ~15K, palette rebuild ~14K.
-7. Star Ally UM6578: savestates hold no UM6578 (or VT) state; 8x16 sprites
-   ~0.5 GBA line low (stock scaling); boot $2002 polling drifts game state
-   against Furbtendulator (s.94).
+7. Star Ally UM6578: savestates refused (its 53K block leaves the heap too
+   small for the savestate buffers, s.95); 8x16 sprites ~0.5 GBA line low
+   (stock scaling); boot $2002 polling drifts game state against
+   Furbtendulator (s.94). VT369 sound HLE runs on GBA timers, so a loaded
+   state replays Funny Coins / Table Soccer VT369 with small RAM timing
+   differences (s.95).
 8. Scramble's shot (s.70c): one-pixel sprite on texture row 7 dropped by the
    sprite affine matrix.
 

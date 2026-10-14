@@ -108,6 +108,18 @@ void loadfontpal()
 {
 	memcpy32(FONT_PAL,&fontpal,64);
 }
+/* s.95: a menu is on screen (on) or gone (off).  An 8bpp VT369 picture also
+ * uses the font's palette banks 4-5; vt369_pal_upload leaves them to the font
+ * while a menu holds them, and redraws the whole palette after it. */
+void ui_palette_claim(int on)
+{
+#if VT_MODE
+	extern u8 vt_ui_pal, vt369_pal_nbg;
+	vt_ui_pal = on ? 1 : 0;
+	if (!on) vt369_pal_nbg = 0;		/* full palette copy at the next vblank */
+#endif
+	if (on) loadfontpal();
+}
 void get_ready_to_display_text()
 {
 	setdarknessgs(0);

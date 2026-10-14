@@ -61,8 +61,9 @@ void crash(u32 *stackpointer, u32 *irqstackpointer)
 	stop_dma_interrupts();
 	get_ready_to_display_text();
 	REG_DISPCNT = 0x0400;
+	loadfontpal();			//s.95: a VT369 8bpp picture may have taken the font's colours
 	
-	drawtext(0,"Oh no! PocketNES crashed!",0);
+	drawtext(0,"Oh no! PocketVT crashed!",0);
 	drawtext(1,"Press SELECT to reboot.",0);
 	drawtext(2,"Register contents:",0);
 	drawtext(3,"(send me these)",0);

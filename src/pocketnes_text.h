@@ -31,6 +31,7 @@ void move_ui(void);
 
 void loadfont(void);
 void loadfontpal(void);
+void ui_palette_claim(int on);
 void get_ready_to_display_text(void);
 u32 getmenuinput(int menuitems);
 void cls(int chrmap);

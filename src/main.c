@@ -142,9 +142,13 @@ void C_entry()
 //	PPU_reset();
 	
 #if SAVE
+	//s.95: packed, 64K each (both serve as the 64K LZO workspace) and the
+	//compressed output above.  BUFFER3 was BUFFER2+128K: with PocketVT's 62K
+	//of EWRAM data that is 0x0203F900, so a compressed state ran over the
+	//tables at the top of EWRAM and wrapped onto 0x02000000.
 	BUFFER1 = ewram_start;
 	BUFFER2 = BUFFER1+0x10000;
-	BUFFER3 = BUFFER2+0x20000;
+	BUFFER3 = BUFFER2+0x10000;
 #endif
 
 	if(pogoshell)
@@ -214,7 +218,7 @@ void C_entry()
 			ui_x=0;
 			move_ui();
 			drawtext(0,"No ROMS found!",0);
-			drawtext(1,"Use PocketNES Menu Maker",0);
+			drawtext(1,"Use PocketVT's builder.py",0);
 			drawtext(2,"to build a compilation ROM,",0);
 			drawtext(3,"or use Pogoshell with a",0);
 			drawtext(4,"supported flash cartridge.",0);

@@ -566,6 +566,7 @@ tags:
 	.ascii "SND0"
 	.ascii "SND1"   @old SND0 no longer loaded
 	.ascii "TIME"
+	.ascii "VTST"	@ s.95: VT machine state (vt_regs.c vt_state_io)
 	.ascii "NOPE"
 
 
