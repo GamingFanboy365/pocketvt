@@ -7,7 +7,7 @@
 
 #define DEBUG 0     //Set to 1 to have code called at the end of each instruction
 
-#define VERSION_NUMBER "PocketVT 0.2.0"
+#define VERSION_NUMBER "1.0"		// s.95: shown as "PocketVT 1.0 on GBA" (ui.c)
 
 // ============================================================================
 // VT CHIP SELECTION

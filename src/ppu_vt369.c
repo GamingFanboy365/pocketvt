@@ -386,6 +386,12 @@ static void vt369_bg_update(void)
 }
 
 EWRAM_BSS u8 vt369_pal_nbg, vt369_pal_nobj, vt369_pal_age;   /* s.89 */
+/* s.95: set while a menu is on screen (ui_palette_claim, pocketnes_text.c).
+ * The menu font uses BG palette banks 4-5 (colours 64-95, words 32-47 here),
+ * which an 8bpp picture also uses; they are left to the font until the menu
+ * goes, and ui_palette_claim(0) then asks for a full copy. */
+EWRAM_BSS u8 vt_ui_pal;
+#define VT369_UI_WORD(i) ((u32)(i) - 32u < 16u && vt_ui_pal)
 
 __attribute__((noinline))
 static void vt369_pal_upload(void)
@@ -414,7 +420,7 @@ static void vt369_pal_upload(void)
                 const u32 v = p[i];
                 const u32 c = vt369_col(v & 0xFF, v >> 8 & 0xFF) | (u32)vt369_col(v >> 16 & 0xFF, v >> 24) << 16;
                 g[i] = c;
-                if (i < 128) { if (i < nbg) bg[i] = c; }
+                if (i < 128) { if (i < nbg && !VT369_UI_WORD(i)) bg[i] = c; }
                 else if (i - 128 < nobj) obj[i - 128] = c;
             }
         }
@@ -422,7 +428,7 @@ static void vt369_pal_upload(void)
     if (full) {
         vt369_pal_nbg = (u8)nbg; vt369_pal_nobj = (u8)nobj; vt369_pal_age = 0;
         const u32 *src = (const u32 *)vt369_gba_pal;
-        for (u32 i = 0; i < nbg; i++) bg[i] = src[i];
+        for (u32 i = 0; i < nbg; i++) if (!VT369_UI_WORD(i)) bg[i] = src[i];
         for (u32 i = 0; i < nobj; i++) obj[i] = src[128 + i];
     }
 }
@@ -918,6 +924,33 @@ void vt369_vblank(void)
     vt369_pal_upload();
     vt369_sprites();
     *ime = saved;
+}
+
+/* s.95: savestates (vt_regs.c vt_state_io).  The nametables are NES_VRAM2/4,
+ * in the NES blocks of the state; the tile, sprite and palette caches rebuild
+ * from the registers on the next vblank. */
+#include "vt_state.h"
+u8 *vt369_state_io(u8 *p, int save)
+{
+    VT_SV(p, save, vt369_reg);
+    VT_SV(p, save, vt369_pal);
+    VT_SV(p, save, vt369_oam);
+    VT_SV(p, save, vt369_oam_hi);
+    VT_SV(p, save, vt369_oam_live);
+    return p;
+}
+
+void vt369_state_apply(void)
+{
+    const int on = vt369_reg[0x1E] != 0;
+    if (on != vt369_enh) { vt369_set_mode(on); return; }   /* loadcart left it off */
+    if (!on) return;
+    vt369_cfg = 0xFFFFFFFFu;               /* as vt369_set_mode(1) */
+    vt369_ocfg = 0xFFFFFFFFu;
+    vt369_oparam = 0xFFFFFFFFu;
+    vt369_pal_dirty = 1;
+    for (int i = 0; i < 64; i++) ((u32 *)vt369_pal_dw)[i] = 0x01010101u;
+    vt369_pal_nbg = 0;
 }
 
 #endif

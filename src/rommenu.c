@@ -61,6 +61,7 @@ void rommenu(void) {
 		// Clearing bits 29/30 makes refreshNESjoypads store neither pad.
 		menu_joycfg_save = joycfg & 0x60000000u;
 		joycfg &= ~0x60000000u;
+		ui_palette_claim(1);	// s.95: the menu font's colours while games run behind it
 
 		ui_x = 256;
 		rommenu_state = DISABLED;
@@ -90,6 +91,7 @@ void rommenu(void) {
 	move_ui();
 	setdarknessgs(0);
 	rommenu_state = DISABLED;
+	ui_palette_claim(0);	// s.95: also after restart() left ui() for this menu
 	joycfg |= menu_joycfg_save;   // hand the pads back to the game
 //#if SAVE
 //	if(autostate&1)quickload();

@@ -244,6 +244,9 @@ doReset:
 	strh r0,[r1,#REG_DM3CNT_H]
 	add r1,r1,#0x200
 	str r0,[r1,#8]		@interrupts off
+	strh r0,[r1,#4]		@s.95: power-on wait states (WAITCNT 0) for the cart's reset
+				@writes and whatever boots next: a flash cart's menu
+				@(EZ-Flash Omega) may not run at PocketVT's 3/1 + prefetch
 
 	.if VISOLY
 

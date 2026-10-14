@@ -1315,6 +1315,7 @@ __attribute__((target("arm")))
 void vt_chr4_rebuild_if_dirty(void)
 {
     if (vt369_enh) return;         /* s.82: ppu_vt369.c owns BG VRAM */
+    if (ewram_owner_is_sram) return;   /* s.95: heap lent to the SRAM menus */
     /* s.87: the BKEXTEN batch runs later in the vblank, after the HBlank DMA
      * set-up (vt_bk_late, called from ppu.s): run here, a heavy frame (Star
      * Ally) delayed that set-up into the next frame's picture. */
@@ -1327,7 +1328,7 @@ void vt_chr4_rebuild_if_dirty(void)
 __attribute__((target("arm")))
 void vt_bk_late(void)
 {
-    if (!vt_bk_late_pending) return;
+    if (!vt_bk_late_pending || ewram_owner_is_sram) return;   /* s.95 */
     vt_bk_late_pending = 0;
     if (vt369_enh || !vt_bkexten_live) return;
     {                              // slots replace the page-linear pipeline;
@@ -2275,6 +2276,10 @@ static void vt_16c_palette_fixup_body(void)
     vt_pal_owned = vt_active && (vt369_enh || (vt_reg_2010 & 0x02));
     if (vt_pal_owned) *(volatile u16 *)0x04000004 &= (u16)~0x0020;   /* DISPSTAT: no VCOUNT IRQ */
     if (!vt_active) return;
+    /* s.95: a savestate or SRAM menu has lent the EWRAM heap, which may hold
+     * the PRG copy the tile and sprite paths read, to its buffers (sram.c).
+     * The game is paused; nothing here is due before redecompress. */
+    if (ewram_owner_is_sram) return;
     if (vt369_enh) { vt369_vblank(); return; }   /* s.82 */
 #ifdef VT_AUTOPLAY
     // Debug-only self-playing script.  Drives the user's reported route into
@@ -3081,3 +3086,36 @@ void vt_bands_frame_end(void)
     vt_band[0].line = 0; vt_regs_copy(vt_band[0].reg, vt_chr_reg);
     vt_nband = 1; vt_band_fresh = 1;
 }
+
+#if VT_MODE
+/* s.95: savestates (vt_regs.c vt_state_io). */
+#include "vt_state.h"
+u8 *ppu_vt_state_io(u8 *p, int save)
+{
+    VT_SV(p, save, vt_reg_2010);
+    VT_SV(p, save, vt_reg_2011);
+    VT_SV(p, save, vt_ppumode);
+#if VT_ENHANCED_PALETTE
+    VT_SV(p, save, vt_palette_active);
+    VT_SV(p, save, vt_palette_ram);
+#endif
+#if VT_HICOLOR_SPRITES
+    VT_SV(p, save, vt_oam_ext);
+#endif
+    return p;
+}
+
+void ppu_vt_state_apply(void)
+{
+#if VT_ENHANCED_PALETTE
+    vt_palette_dirty = true;
+    vt_pal_built_2010 = 0;                 /* the 16-colour palette builds afresh */
+#endif
+    vt_bkexten_live = ((vt_reg_2010 & 0x12) == 0x12) || vt369_enh;
+    vt_bk_invalidate();
+    if (vt_bkexten_live) vt_bk_pending_whole = 1;
+    else _bg_cache_full = 1;
+    /* the extension sprite slots' OBJ VRAM is not in the state */
+    for (int s = 0; s < VT_EVA_SLOTS; s++) vt_eva_key[s] = 0;
+}
+#endif

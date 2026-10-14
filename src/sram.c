@@ -552,6 +552,34 @@ void deletemenu(int statesize)
 
 
 
+/* s.95: BUFFER1 and BUFFER2 (64K each, LZO workspace and SRAM copies) and the
+ * compressed state at BUFFER3 borrow the EWRAM heap from its start; the ROM
+ * cache there is rebuilt afterwards (redecompress), but what init_cache keeps
+ * at the top of the heap is not.  A state of rawsize bytes compresses to at
+ * most rawsize + rawsize/16 + 67 bytes (LZO1X worst case). */
+static int state_buffers_fit(u32 rawsize)
+{
+	extern u8 *ewram_heap_end;
+	u8 *limit = ewram_heap_end;
+#if CHEATFINDER
+	if (cheatfinder_bits && (u8*)cheatfinder_bits < limit) limit = (u8*)cheatfinder_bits;
+#endif
+	if (!limit) return 1;
+	return BUFFER2 + 0x10000 <= limit &&
+	       BUFFER3 + sizeof(stateheader) + rawsize + rawsize/16 + 67 <= limit;
+}
+
+static void no_room_for_states(void)
+{
+	int i;
+	cls(2);
+	drawtext(32+8,"  Not enough memory left for",0);
+	drawtext(32+9,"  savestates with this game.",0);
+	for(i=90;i;--i)
+		waitframe();
+	cls(2);
+}
+
 void savestatemenu() {
 	int i;
 	int menuitems;
@@ -560,6 +588,13 @@ void savestatemenu() {
 	//	ewram_owner_is_sram=1;  //getsram sets it
 	
 	i=savestate(BUFFER2);
+	if (!state_buffers_fit(i))
+	{
+		scrolll(0);
+		no_room_for_states();
+		scrollr();
+		return;
+	}
 	compressstate(i,STATESAVE,BUFFER2,BUFFER1);
 
 	getsram();
@@ -734,6 +769,11 @@ bool quicksave() {
 	drawtext(32+9,"           Saving.",0);
 
 	i=savestate(BUFFER2);
+	if (!state_buffers_fit(i))
+	{
+		no_room_for_states();
+		return false;
+	}
 	compressstate(i,STATESAVE,BUFFER2,BUFFER1);
 	i=findstate(checksum((u8*)romstart),STATESAVE,&sh);
 	if(i<0) i=65536;	//make new save if one doesn't exist

@@ -110,6 +110,22 @@ a save type from the ROM give it the SRAM it keeps settings and saves in.
 Without one the core still starts (it re-initialises a blank or foreign save
 area), but settings and saves are not kept.
 
+Exit in the L+R menu puts the cartridge timing back to the power-on value
+before it sends the flash carts' reset sequences and restarts, as the
+PocketNES fork does. Without that, an EZ-Flash Omega did not return to its
+menu (reported by a user; the fix has not been tried on the Omega yet).
+
+### Savestates
+
+Save State and Load State in the L+R menu (and the R+SELECT / R+START quick
+keys) keep the VT chip's state as well: its registers, palettes, the VT369
+picture and sound CPU. A state loads exactly where it was saved, in the same
+session or after switching the GBA off and on (checked on every VT test cart
+in mGBA). Saving a state no longer corrupts memory, which used to crash the
+game afterwards. States saved by older builds still load, but without the VT
+state. UM6578 carts (Star Ally UM6578) leave too little memory for the
+savestate buffers, and the Save State menu says so.
+
 ## Building
 
 With Docker (no local toolchain needed), from the repository root:

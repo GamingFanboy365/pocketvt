@@ -198,7 +198,7 @@ const char *const followtxt2[]={"Sprite Number: ","Address: "};
 #if BRANCHHACKDETAIL
 const char *const branchtxt[]={"None","BPL","BMI","BVC","BVS","BCC","BCS","BNE","BEQ","JMP"};
 #endif
-#define EMUNAME "PocketNES"
+#define EMUNAME "PocketVT"
 
 void drawui1()
 {
@@ -368,6 +368,7 @@ void ui()
 	REG_TM0CNT_H=0;				//stop sound (directsound)
 
 	selected=0;
+	ui_palette_claim(1);		//s.95: the font's colours, also on 8bpp VT369 pictures
 //	drawuiX[mb]();
 	drawui1();
 	for(i=0;i<8;i++)
@@ -433,6 +434,7 @@ void ui()
 	REG_SOUNDCNT_L=soundvol;	//resume sound (GB)
 	REG_TM0CNT_H=tm0cnt;		//resume sound (directsound)
 	cls(3);
+	ui_palette_claim(0);		//s.95: the game's colours back
 }
 
 void subui(int menunr) {

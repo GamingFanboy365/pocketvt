@@ -4,6 +4,10 @@
 
 #include "gba.h"
 #include <string.h>
+#if VT_MODE
+#include "vt_state.h"
+#include "sram.h"
+#endif
 
 #if !MOVIEPLAYER
 typedef u8 *save_ptr;
@@ -32,6 +36,7 @@ typedef enum
 	SAVE_VRAM1,
 	SAVE_VRAM4,
 	SAVE_NONE,
+	SAVE_VTST,
 	SAVE_INVALID
 } Savefunc_t;
 
@@ -44,6 +49,7 @@ static int save_vram1(save_ptr *dest, const u8* src, int size, u32 tag);
 static int save_vram4(save_ptr *dest, const u8* src, int size, u32 tag);
 static int save_none(save_ptr *dest, const u8* src, int size, u32 tag);
 static int save_invalid(save_ptr *dest, const u8* src, int size, u32 tag);
+static int save_vtst(save_ptr *dest, const u8* src, int size, u32 tag);
 
 static int load_normal(u8* dest, load_ptr *src, int actualsize, int expectedsize);
 static int load_deref(u8* dest, load_ptr *src, int actualsize, int expectedsize);
@@ -53,6 +59,7 @@ static int load_vram1(u8* dest, load_ptr *src, int actualsize, int expectedsize)
 static int load_vram4(u8* dest, load_ptr *src, int actualsize, int expectedsize);
 static int load_none(u8* dest, load_ptr *src, int actualsize, int expectedsize);
 static int load_invalid(u8* dest, load_ptr *src, int actualsize, int expectedsize);
+static int load_vtst(u8* dest, load_ptr *src, int actualsize, int expectedsize);
 
 extern const char saveversion[];
 extern const savefunc save_functions[];
@@ -80,7 +87,7 @@ static void restore_more_variables_for_loadstate(void);
 
 //declarations end...code starts
 
-const char saveversion[]="PocketNES " VERSION_NUMBER " savestate";
+const char saveversion[]="PocketVT " VERSION_NUMBER " savestate";
 #define VERSION_TAG 0
 
 //#define VRAM1_TAG 5
@@ -97,6 +104,7 @@ const savefunc save_functions[]=
 	save_vram1,
 	save_vram4,
 	save_none,
+	save_vtst,
 	save_invalid
 };
 const loadfunc load_functions[]=
@@ -108,6 +116,7 @@ const loadfunc load_functions[]=
 	load_vram1,
 	load_vram4,
 	load_none,
+	load_vtst,
 	load_invalid
 };
 
@@ -128,6 +137,7 @@ const char save_function_numbers[]=
 	SAVE_NONE,
 	SAVE_NORMAL,
 	SAVE_NORMAL,
+	SAVE_VTST,
 	SAVE_INVALID
 };
 
@@ -149,6 +159,7 @@ defined in cart.s
 	DCB "SND0"
 	DCB "SND1"
 	DCB "TIME"
+	DCB "VTST"
 	DCB "NOPE"
 */
 
@@ -169,7 +180,8 @@ typedef enum
 	BLOCK_SND0 = 1 << 12,
 	BLOCK_SND1 = 1 << 13,
 	BLOCK_TIME = 1 << 14,
-	BLOCK_NOPE = 1 << 15,
+	BLOCK_VTST = 1 << 15,
+	BLOCK_NOPE = 1 << 16,
 } BlockLoaded_T;
 
 
@@ -190,6 +202,7 @@ void *const addresses[]=
 	(void*)NULL,
 	(void*)sound_state,
 	(void*)TimeoutState,
+	(void*)NULL,	//VTST: staged in BUFFER3 (save_vtst, load_vtst)
 	(void*)NULL
 };
 
@@ -216,6 +229,7 @@ const int sizes[]=
 	-1,     //snd0 (invalid)
 	sizeof(sound_state),
 	208,	//TimeoutState
+	VT_STATE_MAX,	//VTST
 	-1		//invalid
 };
 
@@ -542,6 +556,19 @@ int save_invalid(save_ptr *dest, const u8* src, int size, u32 tag)
 {
 	return -1;
 }
+/* s.95: the VT block, only on a VT cart.  It is staged in BUFFER3, which is
+ * free while a state is saved or loaded: sram.c compresses into it only after
+ * savestate returns, and loadstate reads the raw state from BUFFER2. */
+int save_vtst(save_ptr *dest, const u8* src, int size, u32 tag)
+{
+#if VT_MODE
+	size=vt_state_io(BUFFER3,1);
+	if (size<=0) return -1;
+	return save_normal(dest,BUFFER3,size,tag);
+#else
+	return -1;
+#endif
+}
 int save_none(save_ptr *dest, const u8* src, int size, u32 tag)
 {
 	return -1;
@@ -614,6 +641,14 @@ int load_vram4(u8* dest, load_ptr *src, int actualsize, int expectedsize)
 int load_invalid(u8 *dest, load_ptr *src, int actualsize, int expectedsize)
 {
 	return load_writeonly(dest,src,actualsize,expectedsize);
+}
+int load_vtst(u8 *dest, load_ptr *src, int actualsize, int expectedsize)
+{
+#if VT_MODE
+	return load_normal(BUFFER3,src,actualsize,expectedsize);
+#else
+	return load_writeonly(dest,src,actualsize,expectedsize);
+#endif
 }
 
 
@@ -692,6 +727,13 @@ void restore_variables_for_loadstate()
 }
 void restore_more_variables_for_loadstate()
 {
+#if VT_MODE
+	//s.95: the VT registers before the graphics are restored from them
+	if ((blocks_loaded & BLOCK_VTST) && vt_state_io(BUFFER3,0))
+	{
+		vt_state_apply();
+	}
+#endif
 	//restore palette
 	//PaletteTxAll();
 	//restore other graphics

@@ -11,6 +11,42 @@ EWRAM_BSS char do_not_decompress=0;	//while loading state, do not decompress rom
 EWRAM_BSS char do_not_reset_all=0;	//when loading an old savestate, do not call "reset all"
 
 EWRAM_BSS u32 my_checksum=0;	//set by init_cache, called by loadcart
+/* s.95: the top of the EWRAM heap the cart leaves to the ROM cache: init_cache
+ * carves the bank tables (and on a UM6578 cart its RAM block, on a four-screen
+ * cart the scanline buffers) off the top.  The savestate and SRAM buffers
+ * (sram.c) borrow the heap below it and must not cross it. */
+EWRAM_BSS u8 *ewram_heap_end;
+/* s.95: the PRG copies init_cache makes for speed: into the EWRAM heap (the
+ * whole PRG of a cart up to 128K, the 32K twin the raster-split slots move the
+ * 6502 onto) and into VRAM (char blocks 2/3, OBJ 0x06010000).  The SRAM and
+ * savestate menus overwrite the heap; on a VT or UM6578 cart redecompress
+ * repeats only the EWRAM copies, because a full init_cache would also copy PRG
+ * back over VRAM that the VT tile, sprite and split-slot caches have taken
+ * (with the 6502 moved onto the twins).  The VRAM copies are repeated only
+ * when init_cache skipped them: a state being loaded (do_not_decompress). */
+#define HEAP_COPIES 6
+EWRAM_BSS u8 *heap_copy_dst[HEAP_COPIES];
+EWRAM_BSS const u8 *heap_copy_src[HEAP_COPIES];
+EWRAM_BSS u32 heap_copy_len[HEAP_COPIES];
+EWRAM_BSS u8 heap_copy_n;
+EWRAM_BSS u8 heap_copy_vram_pending;
+
+static void rec_copy(u8 *dst, const u8 *src, u32 len)
+{
+	if (heap_copy_n < HEAP_COPIES)
+	{
+		heap_copy_dst[heap_copy_n]=dst;
+		heap_copy_src[heap_copy_n]=src;
+		heap_copy_len[heap_copy_n]=len;
+		heap_copy_n++;
+	}
+	if (do_not_decompress)
+	{
+		heap_copy_vram_pending=1;
+		return;
+	}
+	memcpy32(dst,src,len);
+}
 
 void redecompress()
 {
@@ -18,6 +54,19 @@ void redecompress()
 	if (cartflags&TRAINER) nesheader-=512;
 	
 	ewram_owner_is_sram=0;
+#if VT_MODE
+	if ((mapper==253 || mapper==UM6578_MAPPER) && !rom_is_compressed)	//s.95
+	{
+		int i;
+		for (i=0;i<heap_copy_n;i++)
+		{
+			if ((u32)heap_copy_dst[i] < 0x03000000 || heap_copy_vram_pending)
+				memcpy32(heap_copy_dst[i],heap_copy_src[i],heap_copy_len[i]);
+		}
+		heap_copy_vram_pending=0;
+		return;
+	}
+#endif
 	init_cache(nesheader,0);
 }
 
@@ -595,6 +644,11 @@ void init_cache(u8* nes_header, int called_from)
 	
 	cachebase = dest;
 	cache_end_of_rom=cachebase+192*1024;
+	if (called_from!=0)
+	{
+		heap_copy_n=0;		//s.95: rec_copy records them below
+		heap_copy_vram_pending=0;
+	}
 	
 	if (!fourscreen)
 	{
@@ -720,6 +774,10 @@ void init_cache(u8* nes_header, int called_from)
 			
 			end_of_cache = p;
 		}
+	}
+	if (called_from==1)
+	{
+		ewram_heap_end = end_of_cache;	//s.95
 	}
 	
 	// Session 18: the per-scanline effect tables come in double-buffered
@@ -980,7 +1038,7 @@ void init_cache(u8* nes_header, int called_from)
 				{
 					int firstpage=0;
 					
-					memcpy_if_okay(cachebase,_rombase+firstpage*16384,pages_to_copy*16384);
+					rec_copy(cachebase,_rombase+firstpage*16384,pages_to_copy*16384);
 					assign_prg_pages2(cachebase,firstpage*PRG_16,pages_to_copy*PRG_16);
 					
 //					cachebase+=128*1024;
@@ -1012,7 +1070,7 @@ void init_cache(u8* nes_header, int called_from)
 					}
 					
 					
-					memcpy_if_okay(novrom_bank,_rombase+firstpage*16384,pages_to_copy*16384);
+					rec_copy(novrom_bank,_rombase+firstpage*16384,pages_to_copy*16384);
 					assign_prg_pages2(novrom_bank,firstpage*PRG_16,pages_to_copy*PRG_16);
 #if VT_SPLIT_SLOTS
 					/* guide s.77: the VT raster-split slots need BG char
@@ -1022,15 +1080,16 @@ void init_cache(u8* nes_header, int called_from)
 					if (mapper == 253)
 					{
 						extern u8 *vt_prg_shadow;
-						if (do_not_decompress)
-							vt_prg_shadow = NULL;
-						else if (_rombase < (u8*)0x08000000)	/* decompressed into EWRAM */
-							vt_prg_shadow = _rombase + firstpage*16384;
+						/* s.95: a state being loaded (do_not_decompress) gets
+						 * its twin too: rec_copy leaves the copy to
+						 * redecompress, which runs before the 6502 does */
+						if (_rombase < (u8*)0x08000000)	/* decompressed into EWRAM */
+							vt_prg_shadow = do_not_decompress ? NULL : _rombase + firstpage*16384;
 						else if (rompages <= 8)		/* whole PRG copied above */
 							vt_prg_shadow = cachebase + firstpage*16384;
 						else
 						{
-							memcpy32(cachebase, _rombase + firstpage*16384, pages_to_copy*16384);
+							rec_copy(cachebase, _rombase + firstpage*16384, pages_to_copy*16384);
 							vt_prg_shadow = cachebase;
 						}
 					}
@@ -1041,7 +1100,7 @@ void init_cache(u8* nes_header, int called_from)
 						//one more page!  first page for some reason
 						pages_to_copy=1;
 						firstpage=0;
-						memcpy_if_okay(vrom_bank_2,_rombase+firstpage*16384,pages_to_copy*16384);
+						rec_copy(vrom_bank_2,_rombase+firstpage*16384,pages_to_copy*16384);
 						assign_prg_pages2(vrom_bank_2,firstpage*PRG_16,pages_to_copy*PRG_16);
 #if VT_MODE
 						/* guide s.79: PRG page 0 now lives in OBJ VRAM
@@ -1052,7 +1111,10 @@ void init_cache(u8* nes_header, int called_from)
 						if (mapper == 253)
 						{
 							extern const u8 *vt_prg_page0;
-							if (do_not_decompress)
+							/* s.95: not NULL while a state loads: vt_prg_evict_obj
+							 * takes NULL as "nothing in OBJ VRAM", and the copy
+							 * there is made again before the 6502 runs */
+							if (do_not_decompress && _rombase < (u8*)0x08000000)
 								vt_prg_page0 = NULL;
 							else if (rompages <= 8)		/* whole PRG copied to cachebase above */
 								vt_prg_page0 = cachebase;
@@ -1066,7 +1128,7 @@ void init_cache(u8* nes_header, int called_from)
 				{
 					pages_to_copy=1;
 					firstpage=rompages-pages_to_copy;
-					memcpy_if_okay(vrom_bank_2,_rombase+firstpage*16384,pages_to_copy*16384);
+					rec_copy(vrom_bank_2,_rombase+firstpage*16384,pages_to_copy*16384);
 					assign_prg_pages2(vrom_bank_2,firstpage*PRG_16,pages_to_copy*PRG_16);
 					//sprite_vram_in_use=1;
 					
@@ -1075,7 +1137,7 @@ void init_cache(u8* nes_header, int called_from)
 					//so that back branches from C0xx to BFxx work.  Fixes Arkista's Ring
 					if (page_size == 32)
 					{
-						memcpy_if_okay(vrom_bank_2-256,_rombase+firstpage*16384-256,256);
+						rec_copy(vrom_bank_2-256,_rombase+firstpage*16384-256,256);
 					}
 				}
 			}

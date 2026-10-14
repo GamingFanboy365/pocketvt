@@ -1208,6 +1208,82 @@ void vt_reg_write(u8 addr_lo, u8 val)
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * s.95: savestates.  What a VT cart's machine holds beyond the NES blocks of
+ * a savestate (savestate2.c): the VT registers and the shadows the write
+ * handlers keep of them, the palette RAM, VT369's registers, palette, OAM and
+ * sound CPU RAM.  vt_state_io copies it into or out of the "VTST" block,
+ * vt_state_apply rebuilds what is derived from it.  The caches (tiles, sprite
+ * and split slots, the GBA palette) are not saved: loadcart has just reset
+ * them, or they are invalidated here, and they rebuild themselves.
+ * ------------------------------------------------------------------------- */
+#include "vt_state.h"
+EWRAM_BSS static u8 vt_state_x3;      /* CPU x3 to set: vt_cpu_x3 tracks the patches */
+
+u8 *vt_regs_state_io(u8 *p, int save)
+{
+    if (save) vt_state_x3 = vt_cpu_x3;
+    VT_SV(p, save, vt);
+    VT_SV(p, save, vt_chr_reg);
+    VT_SV(p, save, vt_chr_reg_2018);
+    VT_SV(p, save, vt_chr_reg_201A);
+    VT_SV(p, save, vt_chr_outer_4100);
+    VT_SV(p, save, vt_mirror_value);
+    VT_SV(p, save, vt_dma_settings);
+    VT_SV(p, save, vt_dma_lo);
+    VT_SV(p, save, vt_timer_render_seen);
+    VT_SV(p, save, vt_timer_armed);
+    VT_SV(p, save, vt_w41_fast);
+    VT_SV(p, save, vt_timer_last_fire);
+    VT_SV(p, save, vt_mmc3_cmd);
+    VT_SV(p, save, vt369_gpio_mask);
+    VT_SV(p, save, vt369_gpio_latch);
+    VT_SV(p, save, vt_alu14);
+    VT_SV(p, save, vt_alu56);
+    VT_SV(p, save, vt_alu67);
+    VT_SV(p, save, vt_alu_rd);
+    VT_SV(p, save, vt_state_x3);
+    VT_SV(p, save, tk);
+    VT_SV(p, save, vt_tk_4017);
+    VT_SV(p, save, vt_tk_data);
+    return p;
+}
+
+u32 vt_state_io(u8 *p, int save)
+{
+    u8 *const p0 = p;
+    u32 magic = VT_STATE_MAGIC, size = 0;
+    if (!vt_active) return 0;
+    if (!save) {
+        memcpy(&magic, p, 4); memcpy(&size, p + 4, 4);
+        if (magic != VT_STATE_MAGIC || size < 8 || size > VT_STATE_MAX) return 0;
+    }
+    p += 8;
+    p = vt_regs_state_io(p, save);
+    p = ppu_vt_state_io(p, save);
+    p = vt369_state_io(p, save);
+    p = vt369_snd_state_io(p, save);
+    size = (u32)(p - p0);
+    if (save) { magic = VT_STATE_MAGIC; memcpy(p0, &magic, 4); memcpy(p0 + 4, &size, 4); }
+    return size;
+}
+
+/* After loadcart (power-on VT state) and the NES blocks, with the VT block's
+ * variables back in place: rebuild the derived state in dependency order.
+ * The PRG memory map itself came back with the MAPR block (bank6-bankE,
+ * rebankswitch); recomputing vt_prg_banks only re-marks the same banks. */
+void vt_state_apply(void)
+{
+    vt_prg_invalidate();
+    vt_recompute_prg_banks();
+    vt_rebuild_optable();                  /* opcode encryption, from vt */
+    vt_cpu_x3_set(vt_state_x3);
+    vt369_state_apply();                   /* enhanced mode before the BG mode below */
+    ppu_vt_state_apply();
+    vt_chr_sync_from_prg();
+    vt369_snd_state_apply();
+}
+
 u8 vt_reg_read(u8 addr_lo)
 {
     if (addr_lo < 0x20) {

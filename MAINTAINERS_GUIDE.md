@@ -5596,3 +5596,157 @@ depends on the EWRAM layout, is not established. It is left for open item 3.
 Moving the UM hooks into tests on the VT path (the first version) re-timed
 the VT vblank and flipped this cart's frame set the same way, which is why
 the hooks are patched literals now.
+
+## 95. Flash cart exit, savestates on VT carts, the menu font, the version label
+
+The user ran PocketVT on an EZ-Flash Omega and reported four things. It
+works, but Exit in the L+R menu did not return to the Omega's menu (it does
+in their PocketNES fork, GamingFanboy365/pocketnes). Savestates seemed to
+crash the game, though a saved state could be loaded. The menu title read
+"PocketNES PocketVT 0.2.0". And on Fire Fighter VT369 the menu text was
+black. All four were reproduced or traced in mGBA. The Omega itself could
+not be tested here.
+
+Exit. exit_ (ui.c) calls doReset (io.s), which stops DMA and interrupts,
+copies visoly.s to NES_VRAM2 and runs it from there. That code writes the
+reset sequences of several flash carts (EZ-Flash, SuperCard, Visoly, M3,
+G6) and reboots through BIOS SoftReset. The fork's doReset has one more
+store, WAITCNT = 0 before the copy, added with its 3/1 + prefetch timing
+("the default is restored before resetting to the BIOS or a flash cart
+menu"). PocketVT runs at 0x4317 since s.79 (s.91 probes for it), and
+SoftReset leaves WAITCNT alone, so the cart's reset writes and whatever the
+cart boots next ran at the fast timing. doReset now stores 0 there too. In
+mGBA, WAITCNT reads 0 and IME 0 when the copied code at NES_VRAM2 starts;
+the previous core still had 0x4317 there. That the Omega's menu needs the
+power-on timing is inferred from the fork, where the same change goes with
+a working Exit; it was not measured.
+
+The menu font. The menu draws on BG2 with FONT_PALETTE_NUMBER 4, so its
+colours are BG palette banks 4 and 5 (colours 64-95). loadfontpal fills
+them once at boot. An 8bpp VT369 picture uses all 256 BG colours, and
+vt369_pal_upload writes changed colours at once and every colour every 64
+frames, also while a menu is open, because the GBA vblank handler keeps
+running. So the font took Fire Fighter's colours 64-95, which are dark.
+Nothing else writes past colour 63 (the 16-colour builder and the UM6578
+upload stop there), which is why only 8bpp carts showed it. ui_palette_claim
+(pocketnes_text.c) now marks a menu as up (vt_ui_pal) and reloads the font
+palette; vt369_pal_upload leaves words 32-47 alone while it is set, and
+ui_palette_claim(0) asks for a full copy when the menu goes. ui() claims and
+releases. rommenu claims while games run behind the ROM menu and releases
+before run(1), which also covers restart(), which leaves ui() for rommenu
+without returning. The crash screen reloads the font palette directly. While
+a menu is up, the darkened 8bpp picture behind it shows the font's colours
+in its colours 64-95; the game's come back when the menu closes. Checked in
+mGBA on Fire Fighter's L+R menu and on a two-game build's ROM menu with
+Fire Fighter running behind it (the previous core: dark, nearly invisible
+text).
+
+Savestates, the crash. sram.c works in three buffers that main.c placed at
+the start of the EWRAM heap: BUFFER1 (an SRAM copy and the 64K LZO
+workspace), BUFFER2 at +64K (the raw state, or a second SRAM copy, or the
+workspace) and BUFFER3 at +192K (the compressed state). PocketNES's EWRAM
+data is small, so BUFFER3 used to land well below the tables at the top of
+EWRAM. PocketVT's is 62K and the heap starts at 0x0200F900, so BUFFER3 was
+0x0203F900, 1.8K below the end of EWRAM. A compressed state (a few K) was
+written over TEXTMEM, CachedConfig, the BG0CNT/DISPCNT line buffers, the
+bank buffers and the sprite cache maps, and its tail wrapped round to
+0x02000000, the .ewram code and the first EWRAM data. That is the crash
+after a save. It also explains mGBA's "Write error! Memory full" with 24K
+free: the vblank handler rewrote the new state's header in the line buffers
+before updatestates read its size. BUFFER3 is now BUFFER2 + 64K. init_cache
+records where the heap the cart leaves free ends (ewram_heap_end: below the
+bank tables, the four-screen line buffers and, on a UM6578 cart, its 53K
+block). state_buffers_fit (sram.c) refuses a save whose workspace or worst-case
+compressed size (raw + raw/16 + 67) would cross it, with a message, in the
+Save State menu and in quicksave. On a VT cart a state is about 28K raw and
+BUFFER3 ends near 0x02037000, well below. On the UM6578 the 53K block leaves
+about 125K, less than the two 64K buffers and the output need, so its savestates
+are refused. Keeping the UM6578's RAM and CHR-RAM outside the heap would
+need room that EWRAM does not have.
+
+Savestates, after the menu. The SRAM and savestate menus lend the heap,
+which holds the cart's PRG copies, to those buffers. ewram_owner_is_sram
+then makes timeout.s call redecompress before the next frame, and
+redecompress ran init_cache(…,0), which on a VT cart also copies PRG back
+into char blocks 2/3 and OBJ VRAM. Those belong to the raster-split slots,
+the VT369 tile cache and the extension sprite slots once the 6502 has moved
+onto its EWRAM or ROM twins (s.77, s.79), and their caches did not know.
+After a save, Fire Fighter lost its sprites and HUD for good and Star
+Ally's cursor stayed garbled. init_cache now records its PRG copies
+(rec_copy, up to six). On a VT or UM6578 cart, redecompress repeats only
+the EWRAM ones, and the VRAM ones only when init_cache skipped them, which
+happens when a state is being loaded (do_not_decompress). While the heap is
+lent, the VT vblank work that reads PRG through it is skipped
+(vt_16c_palette_fixup_body, vt_chr4_rebuild_if_dirty, vt_bk_late); the game
+is paused then. A load also no longer leaves vt_prg_page0 NULL or drops the
+split slots' twin. vt_prg_evict_obj takes NULL as "nothing in OBJ VRAM", so
+the first extension sprite slot written after a load went over the PRG page
+the 6502 was running from.
+
+Savestates, the VT state. The NES blocks bring back the CPU, RAM, VRAM,
+the nametables and the PRG mapping (MAPR holds bank6-bankE and rebankswitch
+re-applies them), so after a load the game logic replayed exactly. But
+loadcart resets the VT chip to power-on and nothing put it back, so the
+picture was garbage. A new block, "VTST" (tag after TIME in cart.s), holds
+what the VT chip keeps. That is the VTState struct, the CHR bank shadows
+($2012-$2017, $2018, $201A, $4100's outer bank), mirroring, the $4034/DMA
+low byte, the timer flags and last expiry, the MMC3 command byte, VT369
+GPIO, the ALU, CPU x3, the TK-8007 protocol, $2010/$2011/$2107, the palette
+RAM, the OAM extension, VT369's $2000-$203F, palette (1K) and OAM (512
+bytes), and the sound CPU's RAM (2K) with its on flag, start edges and IRQ
+fraction. It is about 4.4K before compression. Each module copies its part
+with VT_SV (vt_state.h); vt_state_io adds a magic word ("VST1") and the
+size. The block is staged in BUFFER3, which is free while a state is saved
+or loaded. vt_state_apply then rebuilds what derives from it in dependency
+order: the PRG shadow (invalidated, then recomputed), the opcode table for
+the encryption state, CPU x3, VT369's enhanced mode and caches, the BKEXTEN
+mode and a whole-map redraw, the extension sprite slots, the CHR window, and
+the sound CPU. The caches are not saved. loadcart has just reset them or
+the apply invalidates them, and they rebuild on the next frames. A state
+from an older build has no VTST block and loads as before, with the VT
+registers at power-on. Any new VT register or RAM must go into the block,
+with VT_STATE_MAGIC bumped when its layout changes.
+
+Verification. tools/probes/gbaplay drives the menus with input keyed to GBA
+frames (NES frames stop while a menu is open) and dumps CPU RAM, the 4K-RAM
+overlay, the vt struct, the palette RAM, VT369's registers and palette at
+the instruction that moves frametotal. Those are compared with the same
+NES frame of a second pass. A first version sampled at GBA frame
+boundaries; that lands at different points of the NES frame in each pass,
+and a raster-split game's timer period changes within the frame, which
+read as differences. In the same session, save, play on, load: 19 of the
+21 VT test carts replay exactly 20, 100 and 200 NES frames on (state and
+picture). Funny Coins and Table Soccer VT369 differ only in $0C/$0D, a
+counter their main loop bumps while it waits, and in stack bytes. With
+-DVT369_SND_OFF both replay exactly, so this is the sound HLE's fills on
+GBA timers (as Zuma in s.93), not missing state. Across a power-on (the SRAM
+carried into a fresh boot, the state loaded from the menu), with states
+saved at the title and in gameplay after two Start presses, the same holds
+on every cart. Sky Fighter differs in one stack byte, where the NMI
+interrupted its idle loop. Table Soccer VT369's 18-pixel picture difference
+is the stale Brazil tile of open item 3, present in the first pass. The
+Docker core gives the same results on Star Ally VT03, Fire Fighter, Soccer
+2009, Zuma and Lonely Island. Fire Fighter's +20 picture differs once by
+its flames' animation phase, display lag from the catch-up frames right
+after a load, with state identical. Star Ally UM6578 shows the refusal and
+plays on.
+
+The label. VERSION_NUMBER is "1.0" and EMUNAME "PocketVT", so the menu reads
+"PocketVT 1.0 on GBA". The crash screen says PocketVT, and the no-ROMs
+screen points to builder.py. The savestate version string is "PocketVT 1.0
+savestate"; its VERS block is skipped on load, so older states still load.
+The number is a choice made here; it is one define in config.h.
+
+Regression against the s.94 core. In the frame-set test every new frame is
+in the boot transition (GBA frames 69-136; Jewel Master VT03's boot screen
+builds up differently) except Jumper's 217-222 (one line at the top of a
+fade frame), one all-black Add 'em Up frame (366) and Table Soccer VT369's
+709. That last is the Brazil label's stale tile in another state, 9 pixels;
+compare_furb goes from 98.56% to 98.54%. It is the EWRAM-layout race of open
+item 3 (s.94), and the heap moved by 88 bytes. compare_furb at NES 150, 400
+and 700 is otherwise identical on every test ROM, except game-state drift:
+Star Ally VT03 at 400 from 99.59% to 99.64%, Star Ally UM6578 at 700 from
+98.16% to 99.84%, and Time Pilot at 700 from 97.68% to 97.65% (its frame
+set has no new frames). Speeds are unchanged. The Docker core ends .bss at
+0x03007AA0 and .vram1 at 0x06003FF0, and the heap starts at 0x0200F960.
+Under the real BIOS, Star Ally VT03 and Fire Fighter score as in mGBA.
