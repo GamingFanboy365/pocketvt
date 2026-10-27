@@ -227,6 +227,34 @@ op_vt_JMP_abs:
     mov     r1, #0
     strb    r1, [r0, #vt_state_enc_pending]
 op_vt_jmp_abs_go:
+    @ s.96: a JMP to itself ("jmp *", SMB's EndlessLoop) is left only by an
+    @ interrupt, so its turns up to the next event run at once: whole turns
+    @ (3 cycles, 3 or 9 dots) come off the cycles left, and _4C's own charge
+    @ then ends the slice with exactly the count the turns one by one would
+    @ leave.  Jumper's level loads ran ~10K unhacked turns a NES frame while
+    @ the sprite-0 hack held the one hack slot (~860K cycles).
+    ldrb    r0, [m6502_pc]
+    ldrb    r1, [m6502_pc, #1]
+    orr     r0, r0, r1, lsl#8       @ target
+    ldr_    r1, lastbank
+    sub     r1, m6502_pc, r1
+    sub     r1, r1, #1              @ this JMP's own address
+    cmp     r0, r1
+    bne     1f
+    ldr     r1, =vt_cpu_x3
+    ldrb    r1, [r1]
+    cmp     r1, #0
+    movne   r1, #3                  @ dots a turn
+    moveq   r1, #9
+    ldrne   r2, =0x55555556         @ 2^32/3, rounded up
+    ldreq   r2, =0x1C71C71D         @ 2^32/9, rounded up
+    mov     r0, cycles, asr#CYC_SHIFT
+    cmp     r0, r1
+    blt     1f
+    umull   addy, r2, r0, r2        @ r2 = turns
+    mul     r0, r2, r1
+    sub     cycles, cycles, r0, lsl#CYC_SHIFT
+1:
     b_long  _4C                 @ tail-call original JMP abs
 
 @ s.86: JMP abs with the idle-loop speed hack (set_cpu_hack installs it

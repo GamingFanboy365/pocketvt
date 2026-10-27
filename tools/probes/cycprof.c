@@ -8,7 +8,8 @@
  * frames) and the profiled steps, as gbaplay does: to profile a stretch of a gbaplay session.
  * OPT=<op_table> LB=<_lastbank> also charges every step to the 6502 instruction being run (the
  * last opcode-handler entry: 6502 pc = r9 - 1 - lastbank) and lists the costliest 6502 pcs;
- * CORE=lo-hi charges a 6502 pc only for steps in that ARM range. */
+ * CORE=lo-hi charges a 6502 pc only for steps in that ARM range; HPC=<addr> (with OPT/LB) lists
+ * the 6502 pcs at which the opcode handler at addr was entered. */
 #include <mgba/core/core.h>
 #include <mgba/core/timing.h>
 #include <mgba/gba/core.h>
@@ -67,6 +68,8 @@ int main(int argc, char **argv) {
 	static unsigned hset[1024]; static unsigned long long pcc[65536]; static unsigned pcn[65536];
 	unsigned opt = getenv("OPT") ? strtoul(getenv("OPT"), 0, 16) : 0, lba = getenv("LB") ? strtoul(getenv("LB"), 0, 16) : 0;
 	unsigned cur6502 = 0; unsigned long long irqc = 0, reg[16] = {0};
+	/* HPC=<handler address>: which 6502 pcs enter that opcode handler */
+	unsigned hpc = getenv("HPC") ? strtoul(getenv("HPC"), 0, 16) & ~1u : 0; static unsigned hpcn[65536];
 	unsigned core_lo = getenv("CORE") ? strtoul(getenv("CORE"), 0, 16) : 0, core_hi = core_lo ? strtoul(strchr(getenv("CORE"), '-') + 1, 0, 16) : 0;
 	if (opt) for (int i = 0; i < 256; i++) {
 		unsigned a = c->busRead32(c, opt + 4 * i) & ~1u, hh = (a * 2654435761u) >> 22;
@@ -74,7 +77,10 @@ int main(int argc, char **argv) {
 		hset[hh] = a;
 	}
 	for (long i = 0; i < N; i++) {
-		unsigned pc = (cpu->gprs[15] - (cpu->cpsr.t ? 4 : 8)) & ~1u;
+		/* before a step mGBA's r15 is the next instruction + 4 (ARM) or + 2 (Thumb):
+		 * ARMStep advances it before executing (s.96; -8/-4 charged each step to the
+		 * instruction before, and a handler's entry to the code ahead of it) */
+		unsigned pc = (cpu->gprs[15] - (cpu->cpsr.t ? 2 : 4)) & ~1u;
 		c->step(c);
 		if (c->frameCounter(c) != gfc) { gfc = c->frameCounter(c); ++gf; c->setKeys(c, gkeys(getenv("KEYSG"), gf) | (nkeys ? gkeys(nkeys, ftk) : 0)); }
 		if (nkeys && c->busRead32(c, FTA) != ftk) { ftk = c->busRead32(c, FTA); c->setKeys(c, gkeys(getenv("KEYSG"), gf) | gkeys(nkeys, ftk)); }
@@ -83,6 +89,7 @@ int main(int argc, char **argv) {
 			unsigned hh = (pc * 2654435761u) >> 22;
 			while (hset[hh] && hset[hh] != pc) hh = (hh + 1) & 1023;
 			if (hset[hh] == pc) { cur6502 = (cpu->gprs[9] - 1 - c->busRead32(c, lba)) & 0xFFFF; pcn[cur6502]++; reg[(cpu->gprs[9] >> 24) & 15]++; }
+			if (hpc && pc == hpc) hpcn[(cpu->gprs[9] - 1 - c->busRead32(c, lba)) & 0xFFFF]++;
 			/* CORE=lo-hi: charge the 6502 pc only for steps in that ARM range (the IWRAM
 			 * opcode and RAM handlers): interrupt work would otherwise land on whatever
 			 * 6502 instruction it interrupted */
@@ -106,6 +113,11 @@ int main(int argc, char **argv) {
 		printf("6502 code fetched from (ARM region of r9 at each opcode):");
 		for (int r = 0; r < 16; r++) if (reg[r]) printf(" %X:%.1f%%", r, 100.0 * reg[r] / (ni ? ni : 1));
 		printf("\n");
+	}
+	if (hpc) {   /* HPC: the 6502 pcs that entered it, most first */
+		for (int r = 0; r < 12; r++) { int best = -1; for (int i = 0; i < 65536; i++) if (hpcn[i] && (best < 0 || hpcn[i] > hpcn[best])) best = i;
+			if (best < 0) break;
+			printf("HPC %08X entered at 6502 %04X: %u times\n", hpc, best, hpcn[best]); hpcn[best] = 0; }
 	}
 	if (opt) {   /* the 30 costliest 6502 pcs */
 		for (int r = 0; r < 30; r++) { int best = -1; for (int i = 0; i < 65536; i++) if (pcc[i] && (best < 0 || pcc[i] > pcc[best])) best = i;
