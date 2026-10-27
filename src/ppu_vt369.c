@@ -42,7 +42,8 @@ extern u8 vt_chr_reg[6];
 extern u32 _vram_write_tbl[16];
 extern const u32 vt_bk_consts[4];      /* ppu.s: BG_CACHE, NES_VRAM2, NES_VRAM4, AGB_BG */
 extern void vt369_pal_W(void);         /* mapVT.s: $3C00-$3FFF $2007 writes */
-extern int vt369_high_slots_ok(void);  /* ppu_vt.c: PRG copy moved out of 0x06008000? */
+extern int vt369_high_slots_ok(void);  /* ppu_vt.c: PRG copy moved out of 0x06008000? (asks for it) */
+extern int vt369_high_slots_live(void); /* ppu_vt.c: the same, without asking (s.96) */
 extern int vt369_obj_ok(void);         /* ppu_vt.c: PRG page 0 moved out of OBJ VRAM? */
 extern u8 YSCALE_LOOKUP[];             /* mem.s */
 
@@ -205,7 +206,7 @@ static void vt369_copy_tile(u32 s, u32 tile)
 static u32 vt369_nslot_now(void)
 {
     if (!vt369_bpp8()) return VT369_ALL4;
-    return vt369_high_slots_ok() ? VT369_ALL8 : VT369_LOW8;
+    return vt369_high_slots_live() ? VT369_ALL8 : VT369_LOW8;
 }
 
 /* A slot no map cell uses, preferring the oldest; 0xFFFF if none. */
@@ -218,6 +219,9 @@ static u32 vt369_alloc(void)
         if (s >= n) s = 0;
         if (vt369_rc[s] == 0) { vt369_alloc_cur = (u16)(s + 1); return s; }
     }
+    /* s.96: the low 8bpp slots are full: only now ask for the PRG copy in
+     * 0x06008000+ to move out (vt_prg_hot_check keeps the game's code there) */
+    if (n == VT369_LOW8) vt369_high_slots_ok();
     vt369_nofree = 1; vt369_full_gen = vt369_free_gen; vt369_full_n = (u16)n;
     return 0xFFFF;
 }

@@ -2,7 +2,13 @@
  * ELF_NM_FILE: output of `arm-none-eabi-nm -n pocketvt.elf` (sorted).  Each step is charged
  * the GBA cycles it took (mTimingGlobalTime delta), so EWRAM/ROM wait states count.
  * WARMFT=<nes frame> (needs FT=) warms up until frametotal reaches it instead of WARMUP_FRAMES,
- * pressing KEYS="first-last:mask,..." (NES frames, GBA key bits A=1 Start=8) on the way. */
+ * pressing KEYS="first-last:mask,..." (NES frames, GBA key bits A=1 Start=8) on the way;
+ * with KEYSPROF=1 the KEYS stay keyed to NES frames through the profiled steps too.
+ * KEYSG="first-last:mask,..." instead keys GBA frames, through the warm-up (WARMUP_FRAMES GBA
+ * frames) and the profiled steps, as gbaplay does: to profile a stretch of a gbaplay session.
+ * OPT=<op_table> LB=<_lastbank> also charges every step to the 6502 instruction being run (the
+ * last opcode-handler entry: 6502 pc = r9 - 1 - lastbank) and lists the costliest 6502 pcs;
+ * CORE=lo-hi charges a 6502 pc only for steps in that ARM range. */
 #include <mgba/core/core.h>
 #include <mgba/core/timing.h>
 #include <mgba/gba/core.h>
@@ -18,6 +24,14 @@ static struct mLogger q = { .log = nolog };
 #define HB (1<<16)
 static unsigned bk[HB]; static unsigned long long bc[HB];
 static unsigned sa[MAXS]; static char sn[MAXS][48]; static unsigned long long sc[MAXS]; static int ns;
+static unsigned gkeys(const char *ks, unsigned f) {     /* KEYSG: keys of GBA frame f */
+	unsigned keys = 0; if (!ks) return 0;
+	while (*ks) { unsigned f0, f1, m; int used;
+		if (sscanf(ks, "%u-%u:%u%n", &f0, &f1, &m, &used) != 3) break;
+		if (f >= f0 && f <= f1) keys |= m;
+		ks += used; if (*ks == ',') ks++; }
+	return keys;
+}
 static int cmpc(const void *a, const void *b) { unsigned long long x = sc[*(int*)a], y = sc[*(int*)b]; return x < y ? 1 : x > y ? -1 : 0; }
 int main(int argc, char **argv) {
 	mLogSetDefaultLogger(&q);
@@ -36,27 +50,46 @@ int main(int argc, char **argv) {
 	c->reset(c);
 	int warm = atoi(argv[3]); long N = atol(argv[4]);
 	unsigned FTA = getenv("FT") ? strtoul(getenv("FT"), 0, 16) : 0;
+	const char *nkeys = (FTA && getenv("KEYSPROF")) ? getenv("KEYS") : 0;
 	if (FTA && getenv("WARMFT")) {
-		unsigned target = strtoul(getenv("WARMFT"), 0, 10), kf[64], kt[64], km[64], nk = 0;
-		for (const char *p = getenv("KEYS"); p && *p && nk < 64; nk++) {
-			char *e; kf[nk] = strtoul(p, &e, 10); kt[nk] = strtoul(e + 1, &e, 10); km[nk] = strtoul(e + 1, &e, 10);
-			p = *e ? e + 1 : e;
-		}
+		unsigned target = strtoul(getenv("WARMFT"), 0, 10);
 		for (int i = 0; i < 200000 && c->busRead32(c, FTA) < target; i++) {
-			unsigned ft = c->busRead32(c, FTA), m = 0;
-			for (unsigned j = 0; j < nk; j++) if (ft >= kf[j] && ft <= kt[j]) m |= km[j];
-			c->setKeys(c, m); c->runFrame(c);
+			c->setKeys(c, gkeys(getenv("KEYS"), c->busRead32(c, FTA))); c->runFrame(c);
 		}
 	} else
-	for (int i = 0; i < warm; i++) { c->setKeys(c, 0); c->runFrame(c); }
-	c->setKeys(c, 0);
+	for (int i = 0; i < warm; i++) { c->setKeys(c, gkeys(getenv("KEYSG"), i + 1)); c->runFrame(c); }
+	c->setKeys(c, gkeys(getenv("KEYSG"), warm + 1) | (nkeys ? gkeys(nkeys, c->busRead32(c, FTA)) : 0));
+	uint32_t gfc = c->frameCounter(c); int gf = warm + 1;
 	struct ARMCore *cpu = c->cpu;
-	unsigned ft0 = FTA ? c->busRead32(c, FTA) : 0;
+	unsigned ft0 = FTA ? c->busRead32(c, FTA) : 0, ftk = ft0;
 	unsigned long long other = 0, total = 0; uint64_t t0 = mTimingGlobalTime(c->timing);
+	/* OPT/LB: the opcode handlers' addresses, a 64K histogram of 6502 pcs */
+	static unsigned hset[1024]; static unsigned long long pcc[65536]; static unsigned pcn[65536];
+	unsigned opt = getenv("OPT") ? strtoul(getenv("OPT"), 0, 16) : 0, lba = getenv("LB") ? strtoul(getenv("LB"), 0, 16) : 0;
+	unsigned cur6502 = 0; unsigned long long irqc = 0, reg[16] = {0};
+	unsigned core_lo = getenv("CORE") ? strtoul(getenv("CORE"), 0, 16) : 0, core_hi = core_lo ? strtoul(strchr(getenv("CORE"), '-') + 1, 0, 16) : 0;
+	if (opt) for (int i = 0; i < 256; i++) {
+		unsigned a = c->busRead32(c, opt + 4 * i) & ~1u, hh = (a * 2654435761u) >> 22;
+		while (hset[hh] && hset[hh] != a) hh = (hh + 1) & 1023;
+		hset[hh] = a;
+	}
 	for (long i = 0; i < N; i++) {
 		unsigned pc = (cpu->gprs[15] - (cpu->cpsr.t ? 4 : 8)) & ~1u;
 		c->step(c);
+		if (c->frameCounter(c) != gfc) { gfc = c->frameCounter(c); ++gf; c->setKeys(c, gkeys(getenv("KEYSG"), gf) | (nkeys ? gkeys(nkeys, ftk) : 0)); }
+		if (nkeys && c->busRead32(c, FTA) != ftk) { ftk = c->busRead32(c, FTA); c->setKeys(c, gkeys(getenv("KEYSG"), gf) | gkeys(nkeys, ftk)); }
 		uint64_t t1 = mTimingGlobalTime(c->timing); unsigned long long d = t1 - t0; t0 = t1; total += d;
+		if (opt) {
+			unsigned hh = (pc * 2654435761u) >> 22;
+			while (hset[hh] && hset[hh] != pc) hh = (hh + 1) & 1023;
+			if (hset[hh] == pc) { cur6502 = (cpu->gprs[9] - 1 - c->busRead32(c, lba)) & 0xFFFF; pcn[cur6502]++; reg[(cpu->gprs[9] >> 24) & 15]++; }
+			/* CORE=lo-hi: charge the 6502 pc only for steps in that ARM range (the IWRAM
+			 * opcode and RAM handlers): interrupt work would otherwise land on whatever
+			 * 6502 instruction it interrupted */
+			if (cpu->cpsr.priv == MODE_IRQ) irqc += d;
+			else if (!core_lo || (pc >= core_lo && pc < core_hi)) pcc[cur6502] += d;
+			else irqc += d;
+		}
 		int lo = 0, hi = ns - 1, k = -1;
 		while (lo <= hi) { int m = (lo + hi) / 2; if (sa[m] <= pc) { k = m; lo = m + 1; } else hi = m - 1; }
 		if (k >= 0 && pc - sa[k] < 0x4000) sc[k] += d; else other += d;
@@ -66,6 +99,19 @@ int main(int argc, char **argv) {
 	qsort(idx, ns, sizeof(int), cmpc);
 	unsigned nf = FTA ? c->busRead32(c, FTA) - ft0 : 0;
 	printf("total cycles %llu (%.1f GBA frames) NES frames %u\n", total, total / 280896.0, nf);
+	if (opt) {
+		unsigned long long ni = 0; for (int i = 0; i < 65536; i++) ni += pcn[i];
+		printf("6502 instructions %llu per NES frame\n", nf ? ni / nf : ni);
+		printf("not charged to a 6502 pc (irq mode or outside CORE) %llu cyc/NESframe\n", nf ? irqc / nf : irqc);
+		printf("6502 code fetched from (ARM region of r9 at each opcode):");
+		for (int r = 0; r < 16; r++) if (reg[r]) printf(" %X:%.1f%%", r, 100.0 * reg[r] / (ni ? ni : 1));
+		printf("\n");
+	}
+	if (opt) {   /* the 30 costliest 6502 pcs */
+		for (int r = 0; r < 30; r++) { int best = -1; for (int i = 0; i < 65536; i++) if (pcc[i] && (best < 0 || pcc[i] > pcc[best])) best = i;
+			if (best < 0) break;
+			printf("6502 %04X %6.2f%%  %llu cyc/NESframe  %u exec\n", best, 100.0 * pcc[best] / total, nf ? pcc[best] / nf : pcc[best], pcn[best]); pcc[best] = 0; }
+	}
 	if (getenv("ABS")) { for (int i = 0; i < ns; i++) if (sc[i]) printf("abs %llu %s\n", nf ? sc[i] / nf : sc[i], sn[i]); return 0; }
 	for (int i = 0; i < 25 && sc[idx[i]]; i++) printf("%6.2f%%  %08X %s\n", 100.0 * sc[idx[i]] / total, sa[idx[i]], sn[idx[i]]);
 	printf("%6.2f%%  (unresolved)\n", 100.0 * other / total);

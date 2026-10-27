@@ -334,9 +334,11 @@ static inline u16 vt03_composite_to_gba(u8 lo, u8 hi)
 }
 
 void vt_mapped_rgb_fixup(void);
+void vt_prg_hot_check(void);
 __attribute__((target("arm")))
 void vt_palette_rebuild_gba(void)
 {
+    if (vt_console == 0x0A) vt_prg_hot_check();     /* s.96: VT369 */
     if (vt369_enh) { vt369_frame_end(); return; }   /* s.82 */
     /* s21b62: newframe_nes_vblank (NES line 242) calls this first; the frame's
      * catch-ups have already filled bg0cntbuff to line 240 and the buffer swap
@@ -2877,16 +2879,85 @@ int vt369_high_slots_ok(void)
     return !vt_prg_evict_pending;
 }
 
+/* s.96: the same answer without asking for the move.  ppu_vt369.c asks
+ * (vt369_high_slots_ok) only once the low slots are full, so a VT369 game
+ * whose screens fit in them keeps its PRG copy in VRAM: Jumper shows at
+ * most 94 distinct tiles against 319 low 8bpp slots. */
+int vt369_high_slots_live(void) { return vt_prg_evicted && !vt_prg_evict_pending; }
+
+/* s.96: the VRAM PRG copy follows the 6502 on VT369 carts.  init_cache puts
+ * the last 32K of PRG in char blocks 2/3, which a OneBus cart runs only while
+ * it boots; Jumper then runs from one 32K block of cart ROM for good, where
+ * every opcode and operand byte costs 4 cycles against VRAM's 1 (~50K cycles
+ * a NES frame).  When $8000-$FFFF has mapped the same contiguous 32K of cart
+ * ROM for VT_PRG_HOT_FRAMES NES frames, the block is copied over the VRAM
+ * copy: banks in VRAM go to their twin (vt_prg_reloc), the block's banks to
+ * VRAM, and the block's cart-ROM home becomes the twin for a later
+ * vt_prg_evict.  Called at NES line 242 (vt_palette_rebuild_gba), where the
+ * 6502 is stopped; timeout.s re-applies the banks as newframe_nes_vblank
+ * returns, as after an eviction.  Never once the slots own the VRAM. */
+#define VT_PRG_HOT_FRAMES 60
+EWRAM_BSS const u8 *vt_prg_hot_cand;    /* cart-ROM start of the candidate block */
+EWRAM_BSS u16 vt_prg_hot_age;           /* NES frames it has stayed mapped */
+EWRAM_BSS u32 vt_prg_hot_moves;         /* blocks moved in since the cart started */
+extern const u8 *vt_isim_hack[4];       /* new_speed_hack.c */
+
+static const u8 *vt_prg_reloc_hot(const u8 *x, const u8 *p)
+{
+    x = vt_prg_reloc(x);
+    if ((u32)(x - p) < 0x8000u) x = (const u8 *)0x06008000u + (x - p);
+    return x;
+}
+
+void vt_prg_hot_check(void)
+{
+    if (vt_prg_evicted || vt_prg_evict_pending || !vt_prg_shadow) return;
+    u8 *const *mm = (u8 *const *)memmap_tbl;
+    u8 *const m = mm[4];
+    const u8 *const p = m + 0x8000;
+    if (mm[5] != m || mm[6] != m || mm[7] != m || (u32)p < 0x08000000u) { vt_prg_hot_age = 0; return; }
+    if (p != vt_prg_hot_cand) { vt_prg_hot_cand = p; vt_prg_hot_age = 0; return; }
+    /* each move costs a 32K copy (~55K cycles): a game that keeps changing
+     * blocks waits twice as long for each next move, up to 16 times */
+    const u32 need = VT_PRG_HOT_FRAMES << (vt_prg_hot_moves < 4 ? vt_prg_hot_moves : 4);
+    if (++vt_prg_hot_age < need) return;
+    vt_prg_hot_age = 0;
+    if ((u32)mm[3] + 0x6000u - 0x06008000u < 0x8000u) return;   /* $6000 runs from the VRAM copy */
+    memcpy32((void *)0x06008000, p, 0x8000);
+    const u16 ime = REG_IME;
+    REG_IME = 0;
+    if (!vt_prg_evicted) {                  /* the vblank IRQ may have evicted meanwhile */
+        const int n = rompages * PRG_16;
+        for (int b = 0; b < n; b++)
+            instant_prg_banks[b] = (u8 *)vt_prg_reloc_hot(instant_prg_banks[b], p);
+        for (int i = 0; i < 4; i++) {
+            speedhacks[i].hack_pc = vt_prg_reloc_hot(speedhacks[i].hack_pc, p);
+            vt_isim_hack[i] = vt_prg_reloc_hot(vt_isim_hack[i], p);
+        }
+        _speedhack_pc  = vt_prg_reloc_hot(_speedhack_pc, p);
+        _speedhack_pc2 = vt_prg_reloc_hot(_speedhack_pc2, p);
+        vt_prg_shadow = (u8 *)p;
+        vt_prg_evict_pending = 1;
+        vt_prg_hot_moves++;
+    }
+    REG_IME = ime;
+}
+
 void vt_split_reset(void)
 {
     vt_split_valid[0] = vt_split_valid[1] = vt_split_valid[2] = 0;
     vt_blk_lent = 0;
     vt_prg_evicted = 0;
     vt_prg_evict_pending = 0;
+    vt_prg_hot_cand = 0;
+    vt_prg_hot_age = 0;
+    vt_prg_hot_moves = 0;
     vt_tag_buf[0] = vt_tag_buf[1] = 0;      /* first use scans all 240 lines */
 }
 #else
 int vt369_high_slots_ok(void) { return 0; }
+int vt369_high_slots_live(void) { return 0; }
+void vt_prg_hot_check(void) {}
 #endif
 
 /* The slot (0-2) holding bank set k, building it on a miss; -1 if every

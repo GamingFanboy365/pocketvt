@@ -2,12 +2,16 @@
  * those stop while PocketVT's menu is open), for driving the L+R menu, savestates and exit.
  *   KEYS="first-last:mask,..."  GBA keys by GBA frame (A 1, B 2, Select 4, Start 8, Right 16,
  *                               Left 32, Up 64, Down 128, R 256, L 512)
+ *   KEYSN="first-last:mask,..." (with FT) the same keyed to NES frames (frametotal): the game
+ *                               then plays the same on a faster or slower core (speed A/B)
  *   SHOTS="f,f,..." OUT=prefix  writes prefix_fNNNNN.ppm (240x160) after those GBA frames
  *   PEEK="addr[:n],..."         at every shot prints words (or n bytes) at those addresses
  *   FT=<frametotal addr>        prints frametotal with every shot (NES frames run so far)
  *   WATCH="addr,..." STEPFROM=f single-steps from GBA frame f on and reports each first arrival
  *                               of the ARM pc at a watched address, with REG_WAITCNT and IME
  *   BIOS=gba_bios.bin           boots through the real BIOS (reference/gba_bios.bin)
+ *   PEEK6502="addr:n,..." MM=<_memmap_tbl>  at every shot also prints n bytes of 6502 address
+ *                               space through PocketVT's memory map (8 entries of 8K)
  *   SRAMIN=file SRAMOUT=file    loads cart SRAM (64K) from a file at power-on / writes it at the
  *                               end: a savestate made in one run, loaded in another after power-on
  *   FTDUMP="n,n,..." DUMP="addr:len,..."  (with FT) each time frametotal arrives at n, writes
@@ -76,7 +80,7 @@ int main(int argc, char **argv) {
 	int arrivals[64] = {0};
 	for (const char *p = watch; p && *p && nw < 16; ) { char *e; wa[nw++] = strtoul(p, &e, 16) & ~1u; p = e; if (*p == ',') p++; }
 	for (int f = 1; f <= n; f++) {
-		c->setKeys(c, keys_at(ks, f));
+		c->setKeys(c, keys_at(ks, f) | (fta ? keys_at(getenv("KEYSN"), c->busRead32(c, fta)) : 0));
 		/* FTDUMP: the state is dumped at the instruction that moves frametotal (single-
 		 * stepping this GBA frame), so both passes are sampled at the same point of the
 		 * NES frame; a GBA frame boundary falls anywhere in it, and a raster-split game's
@@ -138,6 +142,14 @@ int main(int argc, char **argv) {
 				if (cnt) { printf(" [%08X]=", a); for (unsigned i = 0; i < cnt; i++) printf("%02X", c->busRead8(c, a + i)); }
 				else printf(" [%08X]=%08X", a, c->busRead32(c, a));
 				if (*p == ',') p++; }
+			if (getenv("PEEK6502") && getenv("MM")) {
+				unsigned mm = strtoul(getenv("MM"), 0, 16);
+				for (const char *p = getenv("PEEK6502"); *p; ) { char *e; unsigned a = strtoul(p, &e, 16), cnt = 16; p = e;
+					if (*p == ':') { cnt = strtoul(p + 1, &e, 0); p = e; }
+					printf("\n  6502 %04X:", a);
+					for (unsigned i = 0; i < cnt; i++) { unsigned x = (a + i) & 0xFFFF; printf(" %02X", c->busRead8(c, c->busRead32(c, mm + 4 * (x >> 13)) + x)); }
+					if (*p == ',') p++; }
+			}
 			printf("\n");
 		}
 		if (f % 60 == 0 || f == n) {
