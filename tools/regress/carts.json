@@ -1,0 +1,279 @@
+{
+ "schema": 1,
+ "about": "PocketVT test carts, read by tools/regress/regress.py. The ROMs are NOT in git (copyright): regress.py --stage finds them by md5 in testroms/, the session uploads folder or any zip (the user keeps all of them as pocketvt_testroms.zip) and copies them into testroms/ (gitignored). ram_benign: NES RAM ranges (6502 addresses) whose differences are known and harmless; drift: game state follows GBA timing, so NES RAM is not compared; speedhack_race: a RAM difference is re-checked on -DVT_NO_SPEEDHACK builds.",
+ "vg_pocket_wrap": "VG_Pocket_VT09.nes is the raw 4 MB vgpocket.bin behind the NES 2.0 header 4E 45 53 1A 00 00 00 0B 01 01 00 00 00 08 00 00 (guide s.54)",
+ "carts": [
+  {
+   "id": "Add_em_Up",
+   "file": "Add_em_Up.nes",
+   "md5": "e0f8bd5252be089a8843292d9d37440a",
+   "size": 286736,
+   "mapper": "256.1",
+   "console": "VT03",
+   "sound_hle": false,
+   "ram": 2048
+  },
+  {
+   "id": "Aero_Gyrodine",
+   "file": "Aero_Gyrodine.nes",
+   "md5": "a114ecb09d11e079403bb8fd3621f783",
+   "size": 65552,
+   "mapper": "256.0",
+   "console": "VT03",
+   "sound_hle": false,
+   "ram": 2048
+  },
+  {
+   "id": "Fire_Fighter_VT369",
+   "file": "Fire_Fighter_VT369.nes",
+   "md5": "110bda4a468a0f14cb4f0c074efb6fdf",
+   "size": 528400,
+   "mapper": "256.0",
+   "console": "VT369",
+   "sound_hle": true,
+   "ram": 4096
+  },
+  {
+   "id": "Funny_Coins",
+   "file": "Funny_Coins.nes",
+   "md5": "0bdef57f26b52974899f0129a2065530",
+   "size": 262160,
+   "mapper": "256.13",
+   "console": "VT369",
+   "sound_hle": true,
+   "ram": 4096,
+   "note": "sound-on runs can stay at ~15 fps when find_idle_loop keeps failing (s.97f)"
+  },
+  {
+   "id": "Hex_City_X",
+   "file": "Hex_City_X.nes",
+   "md5": "a590959c20ff2a1145319713690fb287",
+   "size": 65552,
+   "mapper": "256.0",
+   "console": "VT03",
+   "sound_hle": false,
+   "ram": 2048
+  },
+  {
+   "id": "Jewel_Master_VT03",
+   "file": "Jewel_Master_VT03.nes",
+   "md5": "113354965383cf4b77ca14add51b77bc",
+   "size": 65552,
+   "mapper": "256.15",
+   "console": "VT03",
+   "sound_hle": false,
+   "ram": 2048
+  },
+  {
+   "id": "Jewel_Master_VT369",
+   "file": "Jewel_Master_VT369.nes",
+   "md5": "91e7748218548a1ed110bbf25a6213ee",
+   "size": 266256,
+   "mapper": "256.0",
+   "console": "VT369",
+   "sound_hle": true,
+   "ram": 4096,
+   "ram_benign": [
+    "0x01EB-0x01EE"
+   ],
+   "note": "four stack bytes take one of two states where the NMI lands in its idle loop, as between main's own toolchains (s.97f)"
+  },
+  {
+   "id": "Jumper_SMB_hack",
+   "file": "Jumper_SMB_hack.nes",
+   "md5": "7c65d5cf1b2dfd658436631b1c1cbd62",
+   "size": 1048592,
+   "mapper": "256.13",
+   "console": "VT369",
+   "sound_hle": true,
+   "ram": 4096
+  },
+  {
+   "id": "Lonely_Island",
+   "file": "Lonely_Island.nes",
+   "md5": "42ca31c7db535617f4c689d59862e7ad",
+   "size": 131088,
+   "mapper": "256.15",
+   "console": "VT03",
+   "sound_hle": false,
+   "ram": 2048
+  },
+  {
+   "id": "Lucky_Lawn_Mower_VT09",
+   "file": "Lucky_Lawn_Mower_VT09.nes",
+   "md5": "75e0e6c547466123f2664ee094186c46",
+   "size": 65552,
+   "mapper": "256.0",
+   "console": "VT09",
+   "sound_hle": false,
+   "ram": 4096
+  },
+  {
+   "id": "Lucky_Lawn_Mower_VT369",
+   "file": "Lucky_Lawn_Mower_VT369.nes",
+   "md5": "ea6a37e944e5e5a2c7ab14ccb3b3f456",
+   "size": 135184,
+   "mapper": "256.0",
+   "console": "VT369",
+   "sound_hle": true,
+   "ram": 4096
+  },
+  {
+   "id": "Push_the_Ball",
+   "file": "Push_the_Ball.nes",
+   "md5": "b7b06050db0e3e8da285c5604a777d1c",
+   "size": 131088,
+   "mapper": "256.15",
+   "console": "VT03",
+   "sound_hle": false,
+   "ram": 2048
+  },
+  {
+   "id": "Scramble",
+   "file": "Scramble.nes",
+   "md5": "80035cb49e97f9255d0622c4c9c73783",
+   "size": 131088,
+   "mapper": "256.0",
+   "console": "VT03",
+   "sound_hle": false,
+   "ram": 2048
+  },
+  {
+   "id": "Sky_Fighter",
+   "file": "Sky_Fighter.nes",
+   "md5": "0a084c223f2bbf11db83613c3739180e",
+   "size": 524304,
+   "mapper": "256.13",
+   "console": "VT369",
+   "sound_hle": true,
+   "ram": 4096,
+   "note": "VT369; sound-on gameplay swings 13-61 fps on every core (s.97g)"
+  },
+  {
+   "id": "Sky_Fighter_VT09",
+   "file": "Sky_Fighter_VT09.nes",
+   "md5": "936f49be81c6eb92e72803f983737b96",
+   "size": 131088,
+   "mapper": "256.0",
+   "console": "VT09",
+   "sound_hle": false,
+   "ram": 4096,
+   "note": "a VT09 dump of Sky Fighter, new in s.97g"
+  },
+  {
+   "id": "Soccer_2009",
+   "file": "Soccer_2009.nes",
+   "md5": "69595c271998e76f3912c4d43b757d5a",
+   "size": 393232,
+   "mapper": "256.0",
+   "console": "VT03",
+   "sound_hle": false,
+   "ram": 2048
+  },
+  {
+   "id": "Star_Ally_UM6578",
+   "file": "Star_Ally_UM6578.nes",
+   "md5": "797fc9384b73472c9617da1591a02386",
+   "size": 131088,
+   "mapper": "405.0",
+   "console": "UM6578",
+   "sound_hle": false,
+   "ram": 2048,
+   "drift": true,
+   "note": "game state follows GBA timing even without sound: main differs from itself across toolchains (s.94, s.97e)"
+  },
+  {
+   "id": "Star_Ally_VT03",
+   "file": "Star_Ally_VT03.nes",
+   "md5": "0f432ce2f93d99476f23b54146d71412",
+   "size": 262160,
+   "mapper": "256.15",
+   "console": "VT03",
+   "sound_hle": false,
+   "ram": 2048,
+   "ram_benign": [
+    "0x01E4",
+    "0x04FB"
+   ],
+   "note": "two bytes differ between toolchains at NES 1000 and agree again by 1200 (s.97d)"
+  },
+  {
+   "id": "Table_Soccer_VT03",
+   "file": "Table_Soccer_VT03.nes",
+   "md5": "4d16e8804c220c900d5f7520225616de",
+   "size": 262160,
+   "mapper": "419.0",
+   "console": "VT03",
+   "sound_hle": false,
+   "ram": 2048
+  },
+  {
+   "id": "Table_Soccer_VT369",
+   "file": "Table_Soccer_VT369.nes",
+   "md5": "d72e6cf6ea496b86c831236e16f0fdba",
+   "size": 262160,
+   "mapper": "256.13",
+   "console": "VT369",
+   "sound_hle": true,
+   "ram": 4096
+  },
+  {
+   "id": "Time_Pilot",
+   "file": "Time_Pilot.nes",
+   "md5": "9fb2a70014948e3d94030cad13b00c38",
+   "size": 262160,
+   "mapper": "256.0",
+   "console": "VT03",
+   "sound_hle": false,
+   "ram": 2048,
+   "ram_benign": [
+    "0x0000-0x0003"
+   ],
+   "note": "single zero-page temporaries ($00/$02/$03) and one transition frame differ between main's own toolchains (s.97f)"
+  },
+  {
+   "id": "VG_Pocket_VT09",
+   "file": "VG_Pocket_VT09.nes",
+   "md5": "4b8273578d9bffe1afafb8ffadddd163",
+   "size": 4194320,
+   "mapper": "256.0",
+   "console": "VT09",
+   "sound_hle": false,
+   "ram": 4096,
+   "ram_benign": [
+    "0x0000"
+   ],
+   "speedhack_race": true,
+   "note": "game launch from the menu races the idle-loop finder (GBA-time sampling): identical only with -DVT_NO_SPEEDHACK (s.97e)",
+   "raw_md5": "bb174a2cf5a8b088660bb2c552db99a5",
+   "raw_header": "4E45531A0000000B0101000000080000"
+  },
+  {
+   "id": "Zuma",
+   "file": "Zuma.nes",
+   "md5": "3d04ff70004319aad209bb0e4f997c7a",
+   "size": 524304,
+   "mapper": "256.13",
+   "console": "VT369",
+   "sound_hle": true,
+   "ram": 4096
+  }
+ ],
+ "controls": [
+  "Star_Ally_VT03",
+  "Lonely_Island",
+  "Scramble",
+  "Lucky_Lawn_Mower_VT09",
+  "VG_Pocket_VT09"
+ ],
+ "quick": [
+  "Star_Ally_VT03",
+  "Lonely_Island",
+  "Scramble",
+  "Lucky_Lawn_Mower_VT09",
+  "VG_Pocket_VT09",
+  "Table_Soccer_VT369",
+  "Jumper_SMB_hack",
+  "Star_Ally_UM6578"
+ ]
+}

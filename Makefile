@@ -100,6 +100,12 @@ CXXFLAGS := $(CFLAGS) \
  			-fno-rtti -fno-exceptions
 
 ASFLAGS	:=	$(ARCH)
+
+# EXTRA_CFLAGS reaches C and the assembler, as in build_pvt.sh (VT= above
+# reaches C only: ASFLAGS is set again after it).  For diagnostic builds:
+#   make EXTRA_CFLAGS="-DVT369_SND_OFF -DVT_NO_SPEEDHACK"
+CFLAGS	+=	$(EXTRA_CFLAGS)
+ASFLAGS	+=	$(EXTRA_CFLAGS)
 LDFLAGS	=	-g $(ARCH) -Wl,-Map,$(notdir $@).map -Wl,-z,muldefs
 
 #---------------------------------------------------------------------------------

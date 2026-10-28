@@ -19,6 +19,9 @@
  *                               moved frametotal) and .ppm (that GBA frame), k counting the
  *                               arrivals: a loaded savestate takes frametotal back, so k=1 is the
  *                               replay of k=0 and the two files should be identical
+ *   STOPFT=n                    (with FT) ends the run at the end of the GBA frame in which
+ *                               frametotal passes n, so a slow core still gets there in one call
+ *                               (NFRAMES is then the cap); tools/regress/regress.py uses it
  * Every 60 frames (and at the end) it prints the ARM pc and frametotal, so a crash or a hang
  * shows as a pc outside the core or a frametotal that stops. */
 #include <mgba/core/core.h>
@@ -78,6 +81,7 @@ int main(int argc, char **argv) {
 	unsigned wa[16]; int nw = 0, seen[16] = {0};
 	const char *ftdump = getenv("FTDUMP"), *dumps = getenv("DUMP");
 	int arrivals[64] = {0};
+	long stopft = getenv("STOPFT") ? atol(getenv("STOPFT")) : -1;
 	for (const char *p = watch; p && *p && nw < 16; ) { char *e; wa[nw++] = strtoul(p, &e, 16) & ~1u; p = e; if (*p == ',') p++; }
 	for (int f = 1; f <= n; f++) {
 		c->setKeys(c, keys_at(ks, f) | (fta ? keys_at(getenv("KEYSN"), c->busRead32(c, fta)) : 0));
@@ -152,11 +156,13 @@ int main(int argc, char **argv) {
 			}
 			printf("\n");
 		}
-		if (f % 60 == 0 || f == n) {
+		int stop = fta && stopft >= 0 && (long)c->busRead32(c, fta) > stopft;
+		if (f % 60 == 0 || f == n || stop) {
 			printf("frame %d pc=%08X", f, cpu->gprs[15]);
 			if (fta) printf(" frametotal=%u", c->busRead32(c, fta));
 			printf("\n");
 		}
+		if (stop) break;
 	}
 	if (getenv("SRAMOUT")) {
 		FILE *so = fopen(getenv("SRAMOUT"), "wb");
