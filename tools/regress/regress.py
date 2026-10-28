@@ -163,18 +163,34 @@ def git(*a, cwd=REPO):
 
 
 class Tree:
-    """A source tree to build: the working tree (uncommitted changes included) or a git ref."""
+    """A source tree to build: the working tree (uncommitted changes included) or a git ref.
+    The working tree is copied once, as it is hashed, so an edit made while the
+    run goes on cannot reach a core built later in it (the -DVT_NO_SPEEDHACK
+    confirmations are built on demand)."""
 
-    def __init__(self, spec):
+    def __init__(self, spec, cache):
         self.spec = spec
         if spec == 'WORKTREE':
             files = [f for f in git('ls-files', '-z', '-c', '-o', '--exclude-standard').split('\0') if f]
-            self.files = sorted(f for f in files if os.path.isfile(os.path.join(REPO, f)))
+            files = sorted(f for f in files if os.path.isfile(os.path.join(REPO, f)))
+            tmp = tempfile.mkdtemp(prefix='tree_', dir=cache)
             h = hashlib.sha1()
-            for f in self.files:
-                h.update(f.encode() + b'\0' + open(os.path.join(REPO, f), 'rb').read() + b'\0')
+            for f in files:
+                data = open(os.path.join(REPO, f), 'rb').read()
+                h.update(f.encode() + b'\0' + data + b'\0')
+                os.makedirs(os.path.dirname(os.path.join(tmp, f)), exist_ok=True)
+                with open(os.path.join(tmp, f), 'wb') as o:
+                    o.write(data)
+                shutil.copymode(os.path.join(REPO, f), os.path.join(tmp, f))
             self.key = 'wt-' + h.hexdigest()[:16]
             self.label = 'working tree'
+            self.snap = os.path.join(cache, 'trees', self.key)
+            os.makedirs(os.path.dirname(self.snap), exist_ok=True)
+            if os.path.isdir(self.snap):
+                shutil.rmtree(tmp)
+                os.utime(self.snap)
+            else:
+                os.rename(tmp, self.snap)
         else:
             self.key = git('rev-parse', spec + '^{tree}')[:16]
             self.label = '%s (%s)' % (spec, git('rev-parse', '--short', spec))
@@ -182,9 +198,7 @@ class Tree:
     def export(self, dest):
         os.makedirs(dest, exist_ok=True)
         if self.spec == 'WORKTREE':
-            for f in self.files:
-                os.makedirs(os.path.dirname(os.path.join(dest, f)), exist_ok=True)
-                shutil.copy2(os.path.join(REPO, f), os.path.join(dest, f))
+            shutil.copytree(self.snap, dest, dirs_exist_ok=True)
         else:
             arch = subprocess.Popen(['git', 'archive', '--format=tar', self.spec], cwd=REPO, stdout=subprocess.PIPE)
             subprocess.check_call(['tar', '-x', '-C', dest], stdin=arch.stdout)
@@ -227,6 +241,7 @@ class Builder:
             lk = self.locks.setdefault(out, threading.Lock())
         with lk:
             if os.path.exists(os.path.join(out, 'pocketvt.gba')):
+                os.utime(out)
                 return out
             t0 = time.time()
             work = tempfile.mkdtemp(prefix='regress_build_', dir=self.args.cache)
@@ -496,6 +511,20 @@ def judge_ref(cart, old, new):
 
 
 # ------------------------------------------------------------------ main
+def prune(cache, days):
+    """Drop cached cores and tree copies nobody has used for `days` days."""
+    limit = time.time() - days * 86400
+    for sub in ('cores', 'trees'):
+        d = os.path.join(cache, sub)
+        for e in os.listdir(d) if os.path.isdir(d) else ():
+            p = os.path.join(d, e)
+            try:
+                if os.path.getmtime(p) < limit:
+                    shutil.rmtree(p, ignore_errors=True)
+            except OSError:
+                pass
+
+
 def find_furb(given):
     cands = [given, os.environ.get('FURB_CLI'), os.path.join(REPO, 'tools', 'furb_cli', 'build', 'furb_cli'),
              os.path.join(os.path.dirname(REPO), 'gamingfanboy365', 'furbtendulator', 'bin', 'furb_cli'),
@@ -601,7 +630,8 @@ def main():
 
     if args.old is None:
         args.old = 'origin/main' if sh(['git', 'rev-parse', '--verify', '-q', 'origin/main'], cwd=REPO).returncode == 0 else 'main'
-    old_t, new_t = Tree(args.old), Tree(args.new)
+    prune(args.cache, days=14)
+    old_t, new_t = Tree(args.old, args.cache), Tree(args.new, args.cache)
     stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
     out = os.path.join(args.out, stamp)
     os.makedirs(out, exist_ok=True)
