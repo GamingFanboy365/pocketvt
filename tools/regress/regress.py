@@ -341,8 +341,10 @@ def run_state(args, core, cart, rom, outdir):
     play = play_rom(core, cart, rom)
     syms = symbols(core)
     frames = sorted({g for f in STATE_FRAMES for g in (f - 1, f, f + 1)})
+    # NES RAM, then the 6502 stack pointer (its low byte), for the dead-stack rule in judge_state
     env = dict(os.environ, KEYSN=keys_str(STATE_SPANS), FT=syms['frametotal'], FTDUMP=','.join(map(str, frames)),
-               DUMP='03000000:%d' % cart['ram'], OUT=os.path.join(outdir, 'd'), STOPFT=str(max(frames) + 1))
+               DUMP='03000000:%d,%s:4' % (cart['ram'], syms['_m6502_s']), OUT=os.path.join(outdir, 'd'),
+               STOPFT=str(max(frames) + 1))
     r = sh([args.gbaplay, play, '12000'], env=env, cwd=outdir)
     open(os.path.join(outdir, 'gbaplay.log'), 'w').write(r.stdout)
     res = {'frames': {}, 'last_ft': 0}
@@ -430,16 +432,27 @@ def judge_state(cart, old, new, outdir):
     missing = [f for f in want if f not in new['frames']]
     if missing:
         return 'FAIL', ['new core never reached NES %d (old did; stopped at %d)' % (missing[0], new['last_ft'])], False, []
-    ram_bad, benign_hits = [], 0
+    ram_bad, benign_hits, stack_hits = [], 0, 0
+    n = cart['ram']
     for f in want:
         a = open(old['frames'][f][0], 'rb').read()
         b = open(new['frames'][f][0], 'rb').read()
-        d, bad = ram_diffs(a, b, benign)
+        d, bad = ram_diffs(a[:n], b[:n], benign)
         benign_hits += len(d) - len(bad)
+        # Dead stack: with both stack pointers equal, bytes up to 32 below it are
+        # whatever an interrupt last pushed there, which moves with timing (the
+        # NMI landing at another point of an idle loop, s.97f).
+        if bad and len(a) > n and len(b) > n and a[n] == b[n]:
+            sp = 0x100 + a[n]
+            live = [i for i in bad if not (sp - 32 <= i <= sp)]
+            stack_hits += len(bad) - len(live)
+            bad = live
         if bad:
             ram_bad.append((f, len(bad), ['$%04X:%02X>%02X' % (i, a[i], b[i]) for i in bad[:6]]))
     if benign_hits:
         notes.append('%d known-benign RAM byte differences' % benign_hits)
+    if stack_hits:
+        notes.append('%d byte differences in dead stack just below an equal stack pointer' % stack_hits)
     verdict = 'PASS'
     if ram_bad:
         f, n, ex = ram_bad[0]

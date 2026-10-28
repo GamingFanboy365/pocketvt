@@ -76,7 +76,7 @@
    "ram_benign": [
     "0x01EB-0x01EE"
    ],
-   "note": "four stack bytes take one of two states where the NMI lands in its idle loop, as between main's own toolchains (s.97f)"
+   "note": "stack bytes ($1EB-$1F1) take one of two states where the NMI lands in its idle loop, as between main's own toolchains (s.97f); regress.py treats differences just below an equal stack pointer as dead stack (s.98)"
   },
   {
    "id": "Jumper_SMB_hack",
