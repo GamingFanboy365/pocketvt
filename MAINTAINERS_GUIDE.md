@@ -5993,8 +5993,8 @@ CHR cache, render_tiles_2) of a row holding that byte drew its last two
 pixels from the NMI count. The counter is the symbol nmi_count now (.sbss in
 timeout.s), and the planet is identical to main's again. A fixed RAM address
 in code is a stomp waiting for the layout to move: "EWRAM layout alone
-re-exposes it" in open item 3 fits this, though Push the Ball and Table
-Soccer VT369 were not in the session to check.
+re-exposes it" in open item 3 fits this (Table Soccer VT369's stale tile is
+gone, 97e).
 
 ### 97c. 2bpp re-renders over the 4bpp pages (devkitARM only)
 
@@ -6053,11 +6053,61 @@ every core: Furbtendulator draws its whites #FFFFFF where the s.57 DACs give
 | Star Ally VT03 | 58.13 / 49 | 58.65 / 52 | 58.13 / 49 | 58.65 / 51 |
 | Jumper (70 s, 96a) | 53.6 / 42 | 59.5 / 54 | 53.2 / 40 | 59.6 / 55 |
 
-### 97e. Not tested
+### 97e. Five more carts: the Brazil tile, and the speed hacks on GBA time
 
-Scramble, VG Pocket, Time Pilot, Push the Ball, Add 'em Up, Table Soccer
-(VT03 and VT369), Jewel Master (VT03 and VT369), Lucky Lawn Mower VT369, Fire
-Fighter, Zuma, Sky Fighter, Funny Coins, Soccer 2009 and Star Ally UM6578
+The user then supplied Push the Ball, Star Ally UM6578, Table Soccer VT03,
+Table Soccer VT369 and the raw 4 MB VG Pocket dump (wrapped as in s.54:
+4E 45 53 1A 00 00 00 0B 01 01 00 00 00 08 00 00, VT09). The same four
+checks ran, plus compare_furb at the regression frames of earlier sessions
+(NES 150, 400 and 700, Start at 320).
+
+Table Soccer VT369 is open item 3's cart: s.94 and s.95 left the "R" of
+"BRA" on its knockout screen stale (18 pixels, 98.56% then 98.54%). It is
+whole on the new core: 98.59% at 150, 400 and 700 on both toolchains,
+against main's 98.54% (build_pvt) and 98.22% (devkitARM, whose whole label
+row was broken, 139 pixels). Every pixel main drew right the new core draws
+right. With -DVT369_SND_OFF its NES RAM and pictures are identical to main's
+at all 15 frames; with sound on, 1-4 RAM bytes differ (the HLE on GBA time,
+s.96a) and the pictures by exactly the label's pixels. Push the Ball (97.49%
+at 150, the value before its stale column appeared in s.87) and Table Soccer
+VT03 are identical to main on both toolchains, RAM and pictures.
+
+Star Ally UM6578's RAM differs from main's from NES frame 60, but main's own
+build_pvt and devkitARM cores differ as much from each other (33-375 bytes),
+and each core repeats itself exactly: its game state follows GBA timing
+(s.94). compare_furb means 99.42/99.43 (build_pvt main/new) and 99.26/99.41
+(devkitARM). Speed over 70 s: 58.36 to 59.05 and 58.58 to 58.97 mean; every
+core dips in the same heavy scene near NES frame 2800 (worst seconds 49 and
+50, 50 and 51, 47 and 50, 45 and 51).
+
+VG Pocket's menu is 100% on every core, and "Get It Right" (Right held, A
+tapped from NES 600) 98.73-98.75% on every core from NES 950 to 1400. The new
+core's RAM leaves main's at the game's launch (NES 827) and stays about 20
+bytes apart (counters such as $501-$503 one step apart), though the screens
+agree. -DVT_NO_JMPSKIP (new, a diagnostic: no "jmp *" skip in either JMP
+wrapper) changes nothing there. build_pvt cores of each s.96 commit flip back
+and forth: 089c637 differs, 2cdbaf0 and 147780e match main, 182895f on
+differ. With -DVT_NO_SPEEDHACK main and the new core agree (all 15 frames;
+$0000 once, a temporary the dump catches at different points). The
+idle-loop finder samples the 6502 where the GBA vblank interrupts it, and a
+hack charges whole loop turns, so where and when a hack goes in moves NES
+timing by a few cycles; the game's launch races that. Main's two toolchains
+happen to land the same way. It is not new and not a fault of these
+commits, but it means NES-keyed RAM identity holds on a cart that installs
+hacks during a race only by luck; check with -DVT_NO_SPEEDHACK before
+calling a difference a regression.
+
+| NES fps, mean / min over 50 s | main build_pvt | new build_pvt | main devkitARM | new devkitARM |
+|---|---|---|---|---|
+| Push the Ball | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 |
+| Table Soccer VT03 | 59.59 / 40 | 59.61 / 41 | 59.57 / 40 | 59.59 / 41 |
+| Table Soccer VT369 | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 |
+| VG Pocket VT09 | 59.04 / 48 | 59.15 / 48 | 59.11 / 49 | 59.02 / 48 |
+
+### 97f. Not tested
+
+Scramble, Time Pilot, Add 'em Up, Jewel Master (VT03 and VT369), Lucky Lawn
+Mower VT369, Fire Fighter, Zuma, Sky Fighter, Funny Coins and Soccer 2009
 were not in the session. vto_jmp runs every VT cart's JMP abs; vt_jmp_norm
 every cart's JMPs while a JMP speed hack is in; the nmi_count change moves
 EWRAM on every cart and ends the CHR_DECODE stomp everywhere; the page repair
