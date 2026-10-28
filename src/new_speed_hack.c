@@ -816,6 +816,138 @@ bool quickhackfinder(const u8 *initpc, const u8 *lastbank, int hacknum)
 	return true;
 }
 
+#if VT_MODE
+/* s.98: a second idle-loop hack, slot 2 ("B").  Sky Fighter waits in two
+ * loops: its main loop polls $30 ($C47F-$C4CE, LDA $30 / AND / BEQ four
+ * times, BEQ $C47F) and, after a frame's work, it waits at $C4AB for bit 0
+ * to clear (BNE).  set_cpu_hack holds one hack (slot 0 or 1, "A"), the loop
+ * the finder sampled last; each phase of the game left the other loop
+ * spinning, 57% of the 6502 instructions of its slow stretch, and at CPU x3
+ * a NES frame of spinning costs three GBA frames (25-50 fps).  B holds a
+ * second loop whose branch is another opcode than A's: each opcode's hack
+ * handler has its own patched branch length, so the two never share one.
+ * dobranchhack and dobranchhackbne (6502.s) compare the pc with
+ * speedhack_pcb after speedhack_pc and skip through slot 2
+ * (dobranchhack2b).  When the finder moves A onto B's loop, B takes A's old
+ * loop.  B goes after 120 NES frames unused (the game's two phases last 10-20
+ * frames each, and an 8-frame limit dropped B before its loop came back);
+ * while A is in and B is not, the vblank looks for one every 16th frame. */
+extern const u8 *_speedhack_pc2, *_speedhack_pcb, *_speedhack_pcb2;
+extern void *speedhackops[9];
+extern void *vt_sh_norm[9];
+extern void _D0y(void);
+EWRAM_BSS u8 vt_hb_tick;
+EWRAM_BSS const u8 *vt_hb_last_a;          /* A at the last check, and its slot's */
+EWRAM_BSS speedhack_T vt_hb_last_par;      /* parameters then (the finder overwrites */
+EWRAM_BSS u16 vt_hb_last_incs[16];         /* the slot before set_cpu_hack runs) */
+
+static int vt_hb_type(const u8 *pc)        /* branch 0-7 the raw byte runs, or -1 */
+{
+	const u8 d = OP(*pc);
+	return (d & 0x1F) == 0x10 ? (d - 0x10) >> 5 : -1;
+}
+
+static void vt_hb_forget(void)
+{
+	_speedhack_pcb = 0;
+	_speedhack_pcb2 = 0;
+	speedhacks[2].hack_pc = 0;
+}
+
+/* B's slot back as it was: the plain handler, or for a BNE the default BNE
+ * hack (set_cpu_hack keeps _D0y there, length 3) */
+static void vt_hb_unpatch(const u8 *pb)
+{
+	const int n = vt_hb_type(pb);
+	if (n == 6) ((u8 *)(void *)_D0y)[12] = 3;
+	else if (n >= 0) op_table[*pb] = vt_sh_norm[n];
+}
+
+static void vt_hb_apply(void)
+{
+	const u8 *pb = _speedhack_pcb2;
+	const int n = vt_hb_type(pb);
+	if (n < 0) { vt_hb_forget(); return; }
+	op_table[*pb] = speedhackops[n];
+	((u8 *)speedhackops[n])[12] = (u8)(0x100 - pb[1]);   /* branch length, as set_cpu_hack */
+}
+
+/* a loop B may hold beside A (pa) */
+static int vt_hb_fits(const u8 *h, const u8 *pa)
+{
+	return h && vt_hb_type(h) >= 0 && (!pa || (h != pa && *h != *pa));
+}
+
+static void vt_hb_set(const u8 *h, const speedhack_T *from, const u16 *incs)
+{
+	speedhack_T *b = &speedhacks[2];
+	if (from) {
+		b->num_incs = from->num_incs;
+		b->cycles_per_iteration = from->cycles_per_iteration;
+		b->divider = from->divider;
+		for (int i = 0; i < 16; i++) SPEEDHACK_INCS[2 * 16 + i] = incs[i];
+	}
+	b->hack_pc = h;
+	b->hack_was_used = 0;
+	b->frames_hack_not_used = 0;
+	_speedhack_pcb2 = h;
+	_speedhack_pcb = h + 2;
+	vt_hb_apply();
+}
+
+/* set_cpu_hack, after A changed.  ARM: assembly calls it with bl_long, an
+ * ldr to pc, which does not switch to Thumb on the ARM7. */
+__attribute__((target("arm")))
+void vt_hack_b_check(void)
+{
+	const u8 *pa = _speedhack_pc2, *pb = _speedhack_pcb2, *old = vt_hb_last_a;
+	if (pb) {
+		if (pa == pb) {                      /* A took B's loop: B takes A's old one */
+			vt_hb_forget();
+			if (old && vt_hb_last_par.cycles_per_iteration && vt_hb_fits(old, pa))
+				vt_hb_set(old, &vt_hb_last_par, vt_hb_last_incs);
+		} else if (pa && *pa == *pb) {
+			vt_hb_forget();                  /* A's opcode now: A's branch length */
+		} else {
+			vt_hb_apply();
+		}
+	}
+	vt_hb_last_a = pa;
+	vt_hb_last_par.cycles_per_iteration = 0;
+	for (int i = 0; i < 2 && pa; i++) {
+		if (speedhacks[i].hack_pc != pa) continue;
+		vt_hb_last_par = speedhacks[i];
+		for (int k = 0; k < 16; k++) vt_hb_last_incs[k] = SPEEDHACK_INCS[i * 16 + k];
+		break;
+	}
+}
+
+/* timeout.s vblank_handler_0, after call_quickhackfinder: pc is the 6502's
+ * (ARM, as vt_hack_b_check) */
+__attribute__((target("arm")))
+void vt_hack_b_vblank(const u8 *pc, const u8 *lastbank)
+{
+	speedhack_T *b = &speedhacks[2];
+#ifdef VT_NO_SPEEDHACK
+	return;
+#endif
+	if (!vt_active) return;
+	if (_speedhack_pcb2) {
+		if (b->hack_was_used) { b->hack_was_used = 0; b->frames_hack_not_used = 0; }
+		else if (++b->frames_hack_not_used >= 120) { vt_hb_unpatch(_speedhack_pcb2); vt_hb_forget(); }
+		return;
+	}
+	const u8 *pa = _speedhack_pc2;
+	if (!pa || (++vt_hb_tick & 15)) return;
+	b->hack_pc = 0;
+	if (!quickhackfinder(pc, lastbank, 2)) { b->hack_pc = 0; return; }
+	const u8 *h = b->hack_pc;
+	b->hack_pc = 0;
+	if (!vt_hb_fits(h, pa) || h == speedhacks[0].hack_pc || h == speedhacks[1].hack_pc) return;
+	vt_hb_set(h, 0, 0);
+}
+#endif
+
 int konami_match(const u8 *base_pc, int size)
 {
 	int hacknumber;

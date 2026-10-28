@@ -431,6 +431,11 @@ vblank_handler_0:
 	bl call_quickhackfinder
 	
 #if VT_MODE
+	@ s.98: the second idle-loop hack (new_speed_hack.c vt_hack_b_vblank)
+	mov r0,m6502_pc
+	ldr_ r1,lastbank
+	bl_long vt_hack_b_vblank
+
 	@ guide s.78e: the VT frame-end work (bands, split slots, palette) on the
 	@ EWRAM stack -- the vblank IRQ nests its own C work on top of whatever it
 	@ interrupts, and IWRAM leaves ~410-470 bytes of user stack.

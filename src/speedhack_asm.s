@@ -70,6 +70,8 @@ cpuhack_reset:
 	mov r1,#0
 	str_ r1,speedhack_pc
 	str_ r1,speedhack_pc2
+	str_ r1,speedhack_pcb
+	str_ r1,speedhack_pcb2
 	ldr r0,=speedhacks
 	mov r2,#64
 	bl memset32_
@@ -176,6 +178,19 @@ call_quickhackfinder:
 @ Z = low byte zero) and cycles (r8: C and V in the low bits): the 6502 often
 @ stops just before a branch, and with the flags unknown the simulation gave
 @ up there (Funny Coins at 16 fps).
+@ s.98: dobranchhack (6502.s) for the second hack, slot 2: as dobranchhack2,
+@ in ROM because .vram1 is full (it runs once per timeslice at most).
+	.global dobranchhack2b
+dobranchhack2b:
+	tst cycles,#BRANCH
+	orr cycles,cycles,#BRANCH
+	beq 5f
+	mov r2,#2
+	bl_long usespeedhack_r2
+5:
+	ldrsb r0,[m6502_pc,#-1]
+	b_long branchhack_back
+
 	.global speedhack_manager_regs
 speedhack_manager_regs:
 	ldr r12,=vt_isim_regs
@@ -304,6 +319,13 @@ set_cpu_hack:
 	strb r1,[r0,#12]
 	
 0:
+#if VT_MODE
+	@ s.98: the second hack keeps its handler only while it differs from
+	@ this one in opcode (new_speed_hack.c); r3 is m6502_nz
+	stmfd sp!,{r3}
+	bl_long vt_hack_b_check
+	ldmfd sp!,{r3}
+#endif
 	ldmfd sp!,{lr}
 	bx lr
 
@@ -428,6 +450,7 @@ dobranchhack2:
 	
 usespeedhack:
 	ldrb_ r2,speedhacknumber
+usespeedhack_r2:			@ s.98: dobranchhack2b comes in here, r2 = 2
 	ldr r12,=speedhacks
 	add r12,r12,r2,lsl#4
 	stmfd sp!,{r2,r12,lr}
@@ -696,6 +719,9 @@ _speedhacknumber: .byte 0
  .byte 0
  .byte 0
  .byte 0
+	.global _speedhack_pcb, _speedhack_pcb2	@ s.98: the second hack (slot 2)
+_speedhack_pcb: .word 0
+_speedhack_pcb2: .word 0
  	.global _deadbeef
 _deadbeef: .word 0xDEADBEEF
  
