@@ -72,8 +72,17 @@ __text_start	=	ORIGIN(rom);
 __eheap_end	=	ORIGIN(ewram) + LENGTH(ewram);
 __iwram_start	=	ORIGIN(iwram);
 __iwram_top	=	ORIGIN(iwram) + LENGTH(iwram);;
-__sp_irq	=	__iwram_top - 0x200;
-__sp_usr	=	__sp_irq - 0x0a0;
+/* s.96: the IRQ stack starts at 0x03007F00 (it was 0x03007E00, with the
+ * user stack 0xA0 below it).  Each nested interrupt takes 40 bytes of it
+ * (24 the BIOS entry pushes, 16 interruptdispatcher.s), so 160 bytes held
+ * four.  Main's own core already nests four deep when Jumper starts again
+ * from the ROM menu after the L+R menu's Restart, and a fifth (the s.96
+ * devkitARM core) wrote over the 6502 loop's saved registers: a crash.
+ * Nothing used 0x03007E00-0x03007EFF; the BIOS supervisor stack starts at
+ * 0x03007FE0 (crt0 leaves it) and needs few bytes.  The user stack top is
+ * unchanged. */
+__sp_irq	=	__iwram_top - 0x100;
+__sp_usr	=	__iwram_top - 0x200 - 0x0a0;
 __irq_flags	=	0x03007ff8;
 
 SECTIONS
