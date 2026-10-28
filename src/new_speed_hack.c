@@ -483,7 +483,7 @@ typedef struct {
 	int pc, depth, cycles, ok, tookback, budget;
 } is_sim;
 EWRAM_BSS is_sim vt_isim;
-EWRAM_BSS u32 vt_isim_regs[3];   /* A, X, Y << 24 at the call (speedhack_asm.s) */
+EWRAM_BSS u32 vt_isim_regs[5];   /* A, X, Y << 24, m6502_nz, cycles at the call (speedhack_asm.s) */
 
 static const u8 is_mode[256] = {
 	[0xAA]=IS_IMP,[0x8A]=IS_IMP,[0xA8]=IS_IMP,[0x98]=IS_IMP,[0xE8]=IS_IMP,[0xCA]=IS_IMP,[0xC8]=IS_IMP,[0x88]=IS_IMP,
@@ -745,7 +745,15 @@ static bool find_idle_loop_run(const u8 *initpc, const u8 *lastbank, int hacknum
 	S->budget = 640;                         /* instructions, over all the tries below */
 	t->a = vt_isim_regs[0] >> 24; t->x = vt_isim_regs[1] >> 24; t->y = vt_isim_regs[2] >> 24;
 	t->s = (u32)_m6502_s & 0xFF;
-	t->n = t->z = t->c = t->v = -1;          /* unknown: reading one before it is set gives up */
+	/* s.98: the flags as the 6502 left them (encodeP's reading of m6502_nz and
+	 * cycles).  They used to start unknown, and the 6502 often stops right
+	 * before a branch on a compare: Funny Coins' board loop is mostly LDA /
+	 * CMP / Bcc, so most samples gave up at their first instruction, and after
+	 * three in a row the finder backed off to every 32nd call (15 fps for good). */
+	t->n = vt_isim_regs[3] >> 31;
+	t->z = (vt_isim_regs[3] & 0xFF) == 0;
+	t->c = vt_isim_regs[4] & 0x01;           /* CYC_C */
+	t->v = (vt_isim_regs[4] >> 6) & 1;       /* CYC_V */
 	t->strobe = 0; t->nw = 0;
 	t->ser0 = t->ser1 = 0;
 	/* the pads' real shift state is not known here: strobe them first in the

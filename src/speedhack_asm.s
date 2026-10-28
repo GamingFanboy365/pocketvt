@@ -172,11 +172,15 @@ call_quickhackfinder:
 @ s.92: call_quickhackfinder (.vram1) calls speedhack_manager through here.
 @ The 6502's A, X and Y are still in r5-r7 (value << 24); find_idle_loop
 @ (new_speed_hack.c) starts its simulation from them.  In ROM, so .vram1 only
-@ had a literal changed.
+@ had a literal changed.  s.98: also its flags, m6502_nz (r3: N = bit 31,
+@ Z = low byte zero) and cycles (r8: C and V in the low bits): the 6502 often
+@ stops just before a branch, and with the flags unknown the simulation gave
+@ up there (Funny Coins at 16 fps).
 	.global speedhack_manager_regs
 speedhack_manager_regs:
 	ldr r12,=vt_isim_regs
-	stmia r12,{r5-r7}
+	stmia r12!,{r5-r7}
+	stmia r12,{r3,r8}
 	ldr r12,=speedhack_manager
 	bx r12
 	.ltorg
