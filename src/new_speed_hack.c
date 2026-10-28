@@ -829,10 +829,11 @@ bool quickhackfinder(const u8 *initpc, const u8 *lastbank, int hacknum)
  * share one.  dobranchhack and dobranchhackbne (6502.s) and op_vt_JMP_absy
  * (6502_vt.s) compare the pc with speedhack_pcb after speedhack_pc and skip
  * through slot 2 (dobranchhack2b).  Funny Coins' board loop ends in JMP
- * $C21A while its other loops take A.  When the finder moves A onto B's loop, B takes A's old
- * loop.  B goes after 120 NES frames unused (the game's two phases last 10-20
- * frames each, and an 8-frame limit dropped B before its loop came back);
- * while A is in and B is not, the vblank looks for one every 16th frame. */
+ * $C21A while its other loops take A.  When the finder moves A onto B's
+ * loop, B takes A's old loop.  B goes after 120 NES frames unused (the game's
+ * two phases last 10-20 frames each, and an 8-frame limit dropped B before
+ * its loop came back); while A is in and B is not, the vblank looks for one
+ * every 16th frame. */
 extern const u8 *_speedhack_pc2, *_speedhack_pcb, *_speedhack_pcb2;
 extern void *speedhackops[9];
 extern void *vt_sh_norm[9];

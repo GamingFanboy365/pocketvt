@@ -171,13 +171,6 @@ call_quickhackfinder:
  .text
  .align
 
-@ s.92: call_quickhackfinder (.vram1) calls speedhack_manager through here.
-@ The 6502's A, X and Y are still in r5-r7 (value << 24); find_idle_loop
-@ (new_speed_hack.c) starts its simulation from them.  In ROM, so .vram1 only
-@ had a literal changed.  s.98: also its flags, m6502_nz (r3: N = bit 31,
-@ Z = low byte zero) and cycles (r8: C and V in the low bits): the 6502 often
-@ stops just before a branch, and with the flags unknown the simulation gave
-@ up there (Funny Coins at 16 fps).
 @ s.98: dobranchhack (6502.s) for the second hack, slot 2: as dobranchhack2,
 @ in ROM because .vram1 is full (it runs once per timeslice at most).
 	.global dobranchhack2b
@@ -191,6 +184,13 @@ dobranchhack2b:
 	ldrsb r0,[m6502_pc,#-1]
 	b_long branchhack_back
 
+@ s.92: call_quickhackfinder (.vram1) calls speedhack_manager through here.
+@ The 6502's A, X and Y are still in r5-r7 (value << 24); find_idle_loop
+@ (new_speed_hack.c) starts its simulation from them.  In ROM, so .vram1 only
+@ had a literal changed.  s.98: also its flags, m6502_nz (r3: N = bit 31,
+@ Z = low byte zero) and cycles (r8: C and V in the low bits): the 6502 often
+@ stops just before a branch, and with the flags unknown the simulation gave
+@ up there (Funny Coins at 16 fps).
 	.global speedhack_manager_regs
 speedhack_manager_regs:
 	ldr r12,=vt_isim_regs

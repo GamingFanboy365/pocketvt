@@ -21,10 +21,12 @@ For each cart and toolchain (build_pvt.sh and the devkitARM Docker image, the
 one CI uses) the old and the new core run three checks. **state** plays the
 same input keyed to NES frames on both cores and compares NES RAM and the
 picture at 15 frames; VT369 carts run on `-DVT369_SND_OFF` builds because
-their sound HLE runs on GBA time. RAM must be identical outside the byte
-ranges `carts.json` marks benign; a difference is re-run on
-`-DVT_NO_SPEEDHACK` builds, and one that goes away there is the idle-loop
-finder's race (s.97e), a WARN. A picture that differs but equals the old
+their sound HLE runs on GBA time. gbaplay applies the input exactly at the
+NES frame (it single-steps near each key change). RAM must be identical
+outside the byte ranges `carts.json` marks benign, the dead stack just below
+an equal stack pointer, and RAM from a cart's `drift_from` frame on (VG
+Pocket's launch); a difference is re-run on `-DVT_NO_SPEEDHACK` builds, and
+one that goes away there is the idle-loop finder's race (s.97e), a WARN. A picture that differs but equals the old
 core's picture of a neighbouring NES frame is display phase; any other
 picture change is a WARN with an old | new | difference PNG next to it.
 **ref** runs compare_furb against Furbtendulator at NES 150/400/700 (Start at
