@@ -6104,11 +6104,49 @@ calling a difference a regression.
 | Table Soccer VT369 | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 |
 | VG Pocket VT09 | 59.04 / 48 | 59.15 / 48 | 59.11 / 49 | 59.02 / 48 |
 
-### 97f. Not tested
+### 97f. Eight more carts after the merge; Funny Coins' stuck finder
 
-Scramble, Time Pilot, Add 'em Up, Jewel Master (VT03 and VT369), Lucky Lawn
-Mower VT369, Fire Fighter, Zuma, Sky Fighter, Funny Coins and Soccer 2009
-were not in the session. vto_jmp runs every VT cart's JMP abs; vt_jmp_norm
+After PR #20 was merged the user supplied Fire Fighter, Jewel Master VT369,
+Funny Coins, Lucky Lawn Mower VT369, Zuma (the VT369 carts), Time Pilot,
+Soccer 2009 and Jewel Master VT03. Pre-PR main (1bfea0e) against the merged
+core, on both toolchains; `make VT=VT369_SND_OFF` builds the devkitARM core
+without the sound HLE (the define only reaches vt369_snd.c, which is all it
+needs), so NES RAM identity holds on the shipped toolchain too.
+
+With the sound HLE off, NES RAM and pictures are identical to main at all 15
+frames on both toolchains for Fire Fighter, Funny Coins, LLM VT369, Zuma,
+Soccer 2009 and Jewel Master VT03. Jewel Master VT369's pictures are
+identical, and four stack bytes ($1EB-$1EE) take one of two states where the
+NMI lands in its idle loop, as they do between main's own two toolchains.
+Time Pilot differs in single zero-page temporaries ($00/$02/$03) and one
+transition frame, also seen between main's toolchains. compare_furb, sound
+on, at NES 150/400/700 (Start at 320) and from 150 to 1050 (Start at 100,
+300, 500): identical on all four cores for all eight. Speeds over 50 s: Fire
+Fighter 59.0-59.2 to 60.00, Jewel Master VT369 59.93 to 60.00, the others
+unchanged (Zuma and Soccer 2009's menus 60, LLM VT369 59.70, Time Pilot
+59.7-59.8, Jewel Master VT03 59.91).
+
+Funny Coins is not a regression but a fault worth chasing. With the HLE on,
+every core slows to 9-40 fps for about 10 s once the board's music starts
+(with it off, every core holds 60: the slowdown is the HLE's work). Most
+runs then return to 60, but some stay at about 15 fps for good: in the
+standard session the build_pvt core of the merge, in sessions with the input
+moved by a few frames main's build_pvt core (15.1), main's devkitARM core
+(36.8, 42.5) and the merged devkitARM core (23.6). In a stuck run the 6502
+spends 1.19M cycles a NES frame (main's 275K) in the board's idle loop at
+$C21A-$C252 (JSR $CB25, LDA $35, then compares of $41-$3E against a table
+at $C298 indexed by $36*4, JMP $C21A), about 6500 turns a NES frame: the
+hack main installs on the JMP at $C252 is missing, and vt_isim_fails climbs
+(3, 4, 5), so find_idle_loop fails on every attempt and, after three, tries
+only every 32nd call. Its samples are not phase-locked (26 calls land on 13
+different pcs of the loop), so the simulation itself gives up somewhere;
+where is not yet known. Candidates: a start on a branch whose flags were set
+before the sample (the flags start unknown), and A/X/Y from vt_isim_regs on
+a path that did not store them.
+
+### 97g. Not tested
+
+Scramble, Add 'em Up and Sky Fighter were not in the session. vto_jmp runs every VT cart's JMP abs; vt_jmp_norm
 every cart's JMPs while a JMP speed hack is in; the nmi_count change moves
 EWRAM on every cart and ends the CHR_DECODE stomp everywhere; the page repair
 acts on VT carts in 16-colour mode without BKEXTEN (Aero, Hex, Add 'em Up,
