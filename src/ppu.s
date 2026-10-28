@@ -999,11 +999,36 @@ render_recent_tiles_loop:
 	beq 0b
 1:
 	@r3 = original tilenum, r0 = highest consecutive tilenum
+#if VT_MODE
+	@ s.97: the 2K BG pages (64 tiles each) this run writes go into
+	@ vt_bg2_stomp, for ppu_vt.c to copy back from the 4bpp tiles while
+	@ those own BG VRAM.  Marked after the writes: a vblank in between would
+	@ otherwise copy the pages back and clear the bits before the stomp.
+	sub r1,r0,#1
+	mov r1,r1,lsr#6
+	mov r12,#2
+	mov r12,r12,lsl r1		@ 2 << last page
+	mov r1,r3,lsr#6
+	mov r10,#1
+	sub r12,r12,r10,lsl r1		@ - (1 << first page)
+	sub r3,r0,r3
+	stmfd sp!,{r12}
+	adr lr,2f
+	@destroys r0,r1,r3,r4,r9,r10,r11,r12
+	b render_tiles_2
+2:	ldmfd sp!,{r0}
+	ldr r1,=vt_bg2_stomp
+	ldrb r12,[r1]
+	orr r12,r12,r0
+	strb r12,[r1]
+	b render_recent_tiles_loop
+#else
 	sub r3,r0,r3
 	adr lr,render_recent_tiles_loop
 	@destroys r0,r1,r3,r4,r9,r10,r11,r12
 	b render_tiles_2
-	
+#endif
+
 	.if MIXED_VRAM_VROM
 consume_recent_tiles_2_entry:
 	ldr_ r_tiles,dmarecent_tiles

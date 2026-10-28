@@ -1242,11 +1242,20 @@ static void vt_chr4_assemble(void)
 // are identical and they never need copying.  Steady state: 8 word compares
 // instead of 4096 word copies.
 extern volatile u8 vt_blk_lent;
+/* s.97: the 2K BG pages PocketNES's 2bpp tile renderer (render_recent_tiles,
+ * ppu.s) wrote since the last copy, bit p = page p.  The probes below see a
+ * stomp only when it hits one of their four words: after a CHR bank change
+ * the 2bpp cache re-renders every tile, and Hex City X's devkitARM core kept
+ * four 2bpp ground tiles for good once the order of the vblank's work moved
+ * (guide s.97).  Marked pages are copied whatever the probes say. */
+EWRAM_BSS u8 vt_bg2_stomp;
 __attribute__((target("arm"), noinline))
 static void vt_chr4_copy_to_vram(void)
 {
     if (vt_bkexten_live) return;   // BG char VRAM is slot-managed (session 18)
     const u32 skip = (u32)vt_blk_lent - 1u;   // a half lent to split slot 2 (s.79); ~0 = none
+    const u32 stomp = vt_bg2_stomp;
+    vt_bg2_stomp = 0;
     for (int p = 0; p < 8; p++) {
         if ((u32)(p >> 2) == skip) continue;
         const u32 *s = (const u32*)(vt_chr4_buf + (u32)p * 2048u);
@@ -1263,7 +1272,7 @@ static void vt_chr4_copy_to_vram(void)
         // page of blank tiles can't produce a false match on a single zero.
         u16 sig = vt_chr4_sigoff[p];
         u32 i0 = (sig == 0xFFFF) ? 0u : sig;
-        if (d[i0] == s[i0] && d[129] == s[129] &&
+        if (!((stomp >> p) & 1) && d[i0] == s[i0] && d[129] == s[129] &&
             d[257] == s[257] && d[385] == s[385])
             continue;                           // still our 4bpp content
 
@@ -1282,6 +1291,7 @@ static void vt_chr4_copy_to_vram_all(void)
     if (vt_bkexten_live) return;   // BG char VRAM is slot-managed (session 18)
     const u32 *s = (const u32*)vt_chr4_buf;
     const u32 skip = (u32)vt_blk_lent - 1u;   // a half lent to split slot 2 (s.79); ~0 = none
+    vt_bg2_stomp = 0;                         // s.97: every page is copied
     for (int tile = 0; tile < 512; tile++, s += 8) {
         if ((u32)(tile >> 8) == skip) continue;
         u32 addr = 0x06000000u + (u32)tile * 32u;
@@ -2283,6 +2293,10 @@ static void vt_16c_palette_fixup_body(void)
      * The game is paused; nothing here is due before redecompress. */
     if (ewram_owner_is_sram) return;
     if (vt369_enh) { vt369_vblank(); return; }   /* s.82 */
+    /* s.97: consume_recent_tiles ran after this vblank's 4bpp copy
+     * (vt_chr4_rebuild_if_dirty); put back the BG pages it wrote before
+     * they are shown, under the copy's own conditions. */
+    if (vt_bg2_stomp && !vt_bkexten_live && (vt_reg_2010 & 0x06)) vt_chr4_copy_to_vram();
 #ifdef VT_AUTOPLAY
     // Debug-only self-playing script.  Drives the user's reported route into
     // the side-scrolling stage: hold Up ~3.5s, Right ~1s, Up ~1s.  Never
