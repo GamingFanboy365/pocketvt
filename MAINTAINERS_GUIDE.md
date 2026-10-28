@@ -6144,9 +6144,30 @@ where is not yet known. Candidates: a start on a branch whose flags were set
 before the sample (the flags start unknown), and A/X/Y from vt_isim_regs on
 a path that did not store them.
 
-### 97g. Not tested
+### 97g. The last four: Sky Fighter (two dumps), Add 'em Up, Scramble
 
-Scramble, Add 'em Up and Sky Fighter were not in the session. vto_jmp runs every VT cart's JMP abs; vt_jmp_norm
+The user's Sky Fighter came as two different dumps: the 512K VT369 cart of
+the test set (submapper 13) and a 128K VT09 version (console type 8, kept as
+testroms/Sky_Fighter_VT09.nes), new to the set. With the sound HLE off, NES
+RAM is identical to main at all 15 frames on both toolchains for all four.
+Sky Fighter and Add 'em Up's pictures are identical too. Sky Fighter VT09's
+pictures at NES 400 and 450 are main's pictures of NES 401 and 451, and
+Scramble's at 520 main's of 521: the faster core has the next frame up when
+the dump instruction runs. Around NES 1400 Scramble's pictures equal main's
+frame for frame except four (two are pictures main shows at 1409, the
+terrain edge in another phase). compare_furb is identical on all four cores
+except Sky Fighter VT09 at 450 (99.67 to 99.39, the shifted frame) and
+Scramble at 700 and 750 (+-0.02). Speeds: Sky Fighter VT09 60.00, Add 'em Up
+59.7, Scramble 59.04 to 59.20.
+
+Sky Fighter (VT369) in this session (Right held, A tapped from NES 600)
+swings between 13 and 61 fps from NES ~1500 on every core with the sound HLE
+on and holds 60.00 with it off: 48.9 (main) to 51.0 mean, worst second 13 to
+24. Per NES frame at 1700, vt369_dma_4014 takes about 95K cycles on both
+cores and the sound decode 27K on main against 2.7K in the overlay. The
+earlier 60 fps figure came from other scenes; this is not new.
+
+Every test cart has now run against s.96/s.97 (s.97a-g). vto_jmp runs every VT cart's JMP abs; vt_jmp_norm
 every cart's JMPs while a JMP speed hack is in; the nmi_count change moves
 EWRAM on every cart and ends the CHR_DECODE stomp everywhere; the page repair
 acts on VT carts in 16-colour mode without BKEXTEN (Aero, Hex, Add 'em Up,

@@ -119,7 +119,7 @@ speed hack passes other JMPs to vt_jmp_norm; nmi_handler's debug counter is
 the symbol nmi_count, no longer a fixed address inside CHR_DECODE; the 2bpp
 renderer marks the BG pages it writes (vt_bg2_stomp) and the 4bpp copy puts
 them back in the same vblank, which also ends Table Soccer VT369's stale
-"BRA" tile; nineteen carts checked in all, s.97e-f), s.96 (Jumper 53.6 -> 59.5 fps: its code moved into
+"BRA" tile; every test cart checked, s.97e-g), s.96 (Jumper 53.6 -> 59.5 fps: its code moved into
 the VRAM PRG copy, "jmp *" loops skipped exactly, spriteinit from tables, an
 IWRAM overlay over dead mapper code for the opcode-table toggle, the VT369
 sound decode and the frame-end patch; op_table copied back at every cart
@@ -300,14 +300,15 @@ states, sound) and s.77-78 (raster-split slots, speed).
   the 3K EWRAM stack. Measure with tools/probes/spmin from power-on.
 
 ## Open work, in priority order
-0. s.97 checked s.96 on every test cart but Scramble, Add 'em Up and Sky
-   Fighter, on both toolchains: game state identical to main (sound HLE off
-   for VT369), pictures equal or better, speeds at or above main's (s.97d-f).
-   Those three are owed the regression set, compare_furb and their speed.
+0. s.97 checked s.96 on every test cart (and a new VT09 Sky Fighter dump),
+   on both toolchains: game state identical to main (sound HLE off for
+   VT369), pictures equal or better, speeds at or above main's (s.97d-g).
    Funny Coins (pre-existing, s.97f): after the board's music starts, some
    runs on any core stay at ~15 fps because find_idle_loop keeps failing on
    the idle loop at $C21A-$C252 (main hacks the JMP at $C252); find out
-   where the simulation gives up.
+   where the simulation gives up. Sky Fighter VT369 (pre-existing, s.97g):
+   with sound on its later gameplay swings between 13 and 61 fps on every
+   core; vt369_dma_4014 costs ~95K cycles a NES frame there.
 1. VT369 leftovers (s.82): 8bpp 16-row sprites through $201D bit 2 are done
    but untested, hi-res mode ($201C bit 2), CPU x3 in ROM handlers (s.88d).
    Speed at x3: Fire Fighter 54-60 (s.89, before the s.96 overlay; not
