@@ -393,12 +393,13 @@ static int get_prg_bank_size(int mapper)
  * or a multiboot build, whose range is empty) the C versions run.  IME is
  * off meanwhile: the sound fill and the vblank work use them. */
 extern u8 __iwram_ovl_start[], __iwram_ovl_end[], __iwram_start__[], __iwram_lma[];
-extern const u8 vto_blob[], vto_swap[], vto_dec48[], vto_fend[], vto_step[], vto_mix[], vto_end[];
+extern const u8 vto_blob[], vto_swap[], vto_dec48[], vto_fend[], vto_jmp[], vto_step[], vto_mix[], vto_end[];
 extern const s8 vt369_step[16][16];
 EWRAM_BSS void (*vt_ovl_swap)(void **t, const u16 *pairs, u32 n);	/* vt_regs.c */
 extern void (*vt_ovl_dec48)(void *s, u32 k);				/* vt369_snd.c */
 extern void (*vt_ovl_fend)(u16 *b, u32 set);				/* ppu_vt369.c */
 extern s32 *vt369_mixp;							/* vt369_snd.c */
+EWRAM_BSS void *vt_ovl_jmp;	/* s.97: vto_jmp's IWRAM copy, for vt_patch_optable (6502_vt.s) */
 
 static void iwram_ovl_select(int vt)
 {
@@ -411,6 +412,7 @@ static void iwram_ovl_select(int vt)
 	vt_ovl_dec48 = 0;
 	vt_ovl_fend = 0;
 	vt369_mixp = 0;
+	vt_ovl_jmp = 0;
 	if (vt && size <= room)
 	{
 		memcpy(o, vto_blob, size);
@@ -419,6 +421,7 @@ static void iwram_ovl_select(int vt)
 		vt_ovl_dec48 = (void (*)(void *, u32))(o + (vto_dec48 - vto_blob));
 		vt_ovl_fend = (void (*)(u16 *, u32))(o + (vto_fend - vto_blob));
 		vt369_mixp = (s32 *)(o + (vto_mix - vto_blob));
+		vt_ovl_jmp = o + (vto_jmp - vto_blob);
 	}
 	else if (room)
 	{
@@ -435,9 +438,15 @@ static void iwram_ovl_select(int vt)
  * nine branch and JMP slots, and mapVTinit patches in the VT opcodes after
  * this. */
 extern u8 __data_lma[], __data_start__[];
+/* s.97: the JMP abs handler the cart runs with no hack (_4C, or the VT one
+ * vt_patch_optable puts in); op_vt_JMP_absy, a JMP speed hack, sends every
+ * JMP but the hacked one there.  It went to the VT wrapper in cart ROM on
+ * every cart. */
+EWRAM_BSS void *vt_jmp_norm;
 static void op_table_reset(void)
 {
 	memcpy(op_table, __data_lma + ((u8 *)op_table - __data_start__), sizeof(void *) * 256);
+	vt_jmp_norm = op_table[0x4C];
 }
 #endif
 

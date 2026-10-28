@@ -96,9 +96,17 @@ vt_patch_optable:
     @ See DATASHEET_DIGEST.md appendix A.  Do not enable these on the main CPU.
 
 #if VT09_ENCRYPTION
-    @ Replace JMP abs and JMP ind with encryption-commit wrappers
-    ldr     r0, =op_vt_JMP_abs
+    @ Replace JMP abs and JMP ind with encryption-commit wrappers.
+    @ s.97: JMP abs runs the IWRAM overlay's copy (vt_ovl.s vto_jmp) when
+    @ the overlay is in, and vt_jmp_norm (loadcart.c) names it for
+    @ op_vt_JMP_absy.
+    ldr     r0, =vt_ovl_jmp
+    ldr     r0, [r0]
+    cmp     r0, #0
+    ldreq   r0, =op_vt_JMP_abs
     str     r0, [r4, #(0x4C * 4)]
+    ldr     r1, =vt_jmp_norm
+    str     r0, [r1]
 
     ldr     r0, =op_vt_JMP_ind
     str     r0, [r4, #(0x6C * 4)]
@@ -264,7 +272,8 @@ op_vt_JMP_absy:
     ldr_    r0, speedhack_pc
     cmp     m6502_pc, r0
     beq_long dobranchhackjmp
-    b       op_vt_JMP_abs
+    ldr     r0, =vt_jmp_norm        @ s.97: the cart's own JMP abs (_4C on
+    ldr     pc, [r0]                @ a NES cart, vto_jmp on a VT one)
 
 op_vt_JMP_ind:
     ldr     r0, =vt
