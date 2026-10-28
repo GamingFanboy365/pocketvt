@@ -104,7 +104,7 @@ scaleloop:
 spriteinit:	@build yscale_lookup tbl (called by ui.c)
 @called by ui.c:  void spriteinit()
 @----------------------------------------------------------------------------
-	stmfd sp!,{r10,lr}
+	stmfd sp!,{r4-r6,r10,lr}
 	ldr r10,=GLOBAL_PTR_BASE
 	
 	@add the canary
@@ -130,9 +130,11 @@ spriteinit:	@build yscale_lookup tbl (called by ui.c)
 	ldreq r2,=259
 	ldrhi r1,=yscale_hi
 	ldrhi r2,=264
+	@ (r10 stays globalptr: ui.c calls this with interrupts on, and the
+	@ handlers take r10 as it is)
 si1:	subs r2,r2,#16
-	ldmplia r1!,{r0,r10,r12,lr}
-	stmplia r3!,{r0,r10,r12,lr}
+	ldmplia r1!,{r0,r4,r5,r6}
+	stmplia r3!,{r0,r4,r5,r6}
 	bgt si1
 	beq si3
 	add r2,r2,#16
@@ -141,7 +143,7 @@ si4:	ldrb r0,[r1],#1
 	subs r2,r2,#1
 	bne si4
 si3:
-	ldmfd sp!,{r10,lr}
+	ldmfd sp!,{r4-r6,r10,lr}
 	bx lr
 	.pool
 	.align 2

@@ -910,11 +910,15 @@ int vt369_spr0_hit(u32 ctrl1)
 }
 
 /* NES line 242, before the effect buffers swap (vt_palette_rebuild_gba):
- * 8bpp or 4bpp and char base 0 on every line of BG0. */
+ * 8bpp or 4bpp and char base 0 on every line of BG0.  s.96: by the IWRAM
+ * overlay (vto_fend, vt_ovl.s; loadcart.c sets vt_ovl_fend) when it is
+ * installed: Thumb from ROM over EWRAM was ~4.9K cycles a NES frame. */
+EWRAM_BSS void (*vt_ovl_fend)(u16 *b, u32 set);
 void vt369_frame_end(void)
 {
     u16 *b = (u16 *)_bg0cntbuff;
     const u16 set = vt369_bpp8() ? 0x0080 : 0;
+    if (vt_ovl_fend && !((u32)b & 3)) { vt_ovl_fend(b, set); return; }
     for (int i = 0; i < 240; i++) b[i] = (u16)((b[i] & ~0x008C) | set);
 }
 

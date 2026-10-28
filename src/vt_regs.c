@@ -437,7 +437,7 @@ void vt_reset(void)
     // branch byte $F0 is invariant under the bit5<->6 swap and the loop
     // has no side effects.  Verify the exact raw signature and install
     // via set_cpu_hack (encryption-aware: s.86 decodes the opcode through
-    // vt_op_dec and patches the raw byte, for every submapper).
+    // vt_op_dec_p and patches the raw byte, for every submapper).
     // Loop cost ~9 cycles/iteration; num_incs=0 (pure wait).
     {
         static const u8 sig[6] = {0xC5,0x26,0xA5,0x26,0xF0,0xFC};
@@ -768,7 +768,16 @@ EWRAM_BSS static void *vt_optable_enc[256];
 EWRAM_BSS static u8 vt_op_dec_enc[256];
 EWRAM_BSS static u8 vt_sh_raw_c[2][9];
 EWRAM_BSS static u8 vt_enc_cache_mode;       /* encryption_mode + 1, 0 = none */
-extern u8 vt_op_dec[256];
+/* s.96: the raw bytes the encryption exchanges, i | dec(i) << 8 with
+ * i < dec(i).  Every decode so far is a set of bit swaps, an involution, so
+ * a $4169 toggle exchanges these entries of op_table in place instead of
+ * copying 1K (64 exchanges for modes 13 and 15, 96 for 12); a decode that
+ * is not one (vt_enc_inv 0) reloads the table as before. */
+EWRAM_BSS static u16 vt_enc_pairs[128];
+EWRAM_BSS static u8 vt_enc_npairs;
+EWRAM_BSS static u8 vt_enc_inv;
+extern const u8 *vt_op_dec_p;
+extern const u8 vt_op_ident[256];
 extern u8 vt_sh_raw[9];
 extern void *vt_sh_norm[9];
 
@@ -782,6 +791,14 @@ static void vt_optable_load(void)
             vt_op_dec_enc[i] = d;
             vt_optable_enc[i] = vt_optable_canonical[d];
         }
+        u32 np = 0, inv = 1;
+        for (u32 i = 0; i < 256; ++i) {
+            const u32 d = vt_op_dec_enc[i];
+            if (vt_op_dec_enc[d] != i) inv = 0;
+            else if (d > i) vt_enc_pairs[np++] = (u16)(i | d << 8);
+        }
+        vt_enc_npairs = (u8)np;
+        vt_enc_inv = (u8)inv;
         vt_enc_cache_mode = (u8)(vt.encryption_mode + 1);
         vt_sh_tables();
     } else if (!vt_sh_norm[0]) {
@@ -796,13 +813,7 @@ static void vt_optable_load(void)
             __asm__ volatile ("ldmia %0, {r2-r9}\n\tstmia %1, {r2-r9}"
                               : : "r"(sp), "r"(dp) : "r2","r3","r4","r5","r6","r7","r8","r9","memory");
     }
-    if (on) {
-        const u32 *d = (const u32 *)vt_op_dec_enc;
-        for (int i = 0; i < 64; ++i) ((u32 *)vt_op_dec)[i] = d[i];
-    } else {
-        u32 v = 0x03020100u;                            /* identity, a word at a time */
-        for (int i = 0; i < 64; ++i, v += 0x04040404u) ((u32 *)vt_op_dec)[i] = v;
-    }
+    vt_op_dec_p = on ? vt_op_dec_enc : vt_op_ident;    /* s.96: a pointer, not a 256-byte copy */
     for (int n = 0; n < 9; ++n) vt_sh_raw[n] = vt_sh_raw_c[on][n];
 }
 
@@ -812,25 +823,55 @@ static void vt_optable_load(void)
  * back on the byte that now decodes to $D0. */
 extern void *speedhackops[9];
 extern void _D0y(void);
+extern void (*vt_ovl_swap)(void **t, const u16 *pairs, u32 n);   /* loadcart.c: IWRAM copy, or NULL */
 __attribute__((target("arm")))
 static void vt_optable_toggle(void)
 {
-    vt_optable_load();
+    const int on = vt.encryption_active != 0;
     const u8 *p = _speedhack_pc2;
+    if (vt_enc_cache_mode != (u8)(vt.encryption_mode + 1) || !vt_enc_inv || !vt_sh_norm[0]) {
+        vt_optable_load();
+    } else {
+        /* s.96: in place.  The two slots the speed hacks changed get the
+         * old state's own handlers back first, so the exchanges leave
+         * exactly the new state's table (which a full load would copy:
+         * Jumper toggles four times a NES frame, ~3.6K cycles each). */
+        void *const *old = on ? (void *const *)vt_optable_canonical : (void *const *)vt_optable_enc;
+        void **t = op_table;
+        const u32 r6 = vt_sh_raw[6];
+        t[r6] = old[r6];
+        if (p) t[*p] = old[*p];
+        if (vt_ovl_swap) vt_ovl_swap(t, vt_enc_pairs, vt_enc_npairs);
+        else {
+            const u16 *pp = vt_enc_pairs;
+            for (u32 k = vt_enc_npairs; k; k--) {
+                const u32 v = *pp++, a = v & 0xFF, b = v >> 8;
+                void *const x = t[a]; t[a] = t[b]; t[b] = x;
+            }
+        }
+        vt_op_dec_p = on ? vt_op_dec_enc : vt_op_ident;
+        for (int n = 0; n < 9; ++n) vt_sh_raw[n] = vt_sh_raw_c[on][n];
+    }
     if (!p) return;
     op_table[vt_sh_raw[6]] = (void *)_D0y;
-    const u8 raw = *p, dec = vt_op_dec[raw];
+    const u8 raw = *p, dec = vt_op_dec_p[raw];
     const int n = dec == 0x4C ? 8 : (dec & 0x1F) == 0x10 ? (dec - 0x10) >> 5 : -1;
     if (n >= 0) op_table[raw] = speedhackops[n];
 }
 
 /* s.86: the speed-hack finder and set_cpu_hack read opcode bytes from PRG,
- * which are encrypted on submappers 12-15.  vt_op_dec maps a raw byte to the
+ * which are encrypted on submappers 12-15.  vt_op_dec_p maps a raw byte to the
  * opcode it runs; vt_sh_raw[n] is the raw byte that runs branch n ($10+$20n)
  * or, for n = 8, JMP abs; vt_sh_norm[n] is the handler that byte runs with no
  * hack installed.  A rebuild restores every op_table slot, which removes an
  * installed hack, so the hack state is cleared for set_cpu_hack to redo. */
-EWRAM_BSS u8 vt_op_dec[256];
+/* s.96: vt_op_dec_p points at the identity or at vt_op_dec_enc (it was a
+ * 256-byte array copied on every toggle) */
+#define VT_ID4(n)   (n), (n) + 1, (n) + 2, (n) + 3
+#define VT_ID16(n)  VT_ID4(n), VT_ID4((n) + 4), VT_ID4((n) + 8), VT_ID4((n) + 12)
+#define VT_ID64(n)  VT_ID16(n), VT_ID16((n) + 16), VT_ID16((n) + 32), VT_ID16((n) + 48)
+const u8 vt_op_ident[256] = { VT_ID64(0), VT_ID64(64), VT_ID64(128), VT_ID64(192) };
+EWRAM_DATA const u8 *vt_op_dec_p = vt_op_ident;
 EWRAM_BSS u8 vt_sh_raw[9];
 EWRAM_BSS void *vt_sh_norm[9];
 

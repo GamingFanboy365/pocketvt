@@ -16,8 +16,8 @@ extern int speedhack_cycles;
 
 #if VT_MODE
 /* s.86: the opcode a PRG byte runs (encrypted on VT submappers 12-15). */
-extern u8 vt_op_dec[256];
-#define OP(b) (vt_active ? vt_op_dec[(u8)(b)] : (u8)(b))
+extern const u8 *vt_op_dec_p;
+#define OP(b) (vt_active ? vt_op_dec_p[(u8)(b)] : (u8)(b))
 #else
 #define OP(b) ((u8)(b))
 #endif
@@ -926,7 +926,7 @@ void speedhack_manager(const u8* initpc, const u8* lastbank, int hacknum)
 	// correct _D0y for SA -- so it is SAFE for SA (boots, stable f2400 soak,
 	// 67%).  SA no longer hand-seeds any hack (see vt_regs.c); it relies on
 	// this finder entirely.  s.86: the finder and set_cpu_hack now decode
-	// opcodes for every encryption mode (vt_op_dec), so SA's LDA $6816 /
+	// opcodes for every encryption mode (vt_op_dec_p), so SA's LDA $6816 /
 	// BNE wait (raw $B0, refused before) is hacked too: 55 -> 60 fps.
 	speedhack_T *sh=&speedhacks[hacknum];
 

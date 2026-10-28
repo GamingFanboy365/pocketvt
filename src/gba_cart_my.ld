@@ -176,10 +176,22 @@ SECTIONS
 	.iwram ALIGN(4) : AT (__iwram_lma)
 	{
 		__iwram_start__ = ABSOLUTE(.) ;
-		*(.iwram)
+		*(EXCLUDE_FILE(*konami.o *map023771.o *map1.o *map4.o *map9.o) .iwram)
 		*iwram.*(.text)
 		*(SORT_BY_NAME(.iwram.*))
 		. = ALIGN(4);   /* REQUIRED. LD is flaky without it. */
+		/* s.96: these mappers' IWRAM code is dead while a VT cart runs.
+		 * loadcart.c (iwram_ovl_select) copies the VT overlay (vt_ovl.s)
+		 * over it for a VT cart and copies it back from its LMA for any
+		 * other cart. */
+		__iwram_ovl_start = ABSOLUTE(.);
+		*konami.o(.iwram)
+		*map023771.o(.iwram)
+		*map1.o(.iwram)
+		*map4.o(.iwram)
+		*map9.o(.iwram)
+		. = ALIGN(4);
+		__iwram_ovl_end = ABSOLUTE(.);
 		__iwram_end__ = ABSOLUTE(.) ;
 	} >iwram = 0xff
 
@@ -354,3 +366,6 @@ SECTIONS
   .ARM.attributes 0 : { KEEP (*(.ARM.attributes)) }
   /DISCARD/ : { *(.note.GNU-stack) }
 }
+
+/* s.96: the VT overlay must fit in the dead mapper code it replaces */
+ASSERT(vto_end - vto_blob <= __iwram_ovl_end - __iwram_ovl_start, "vt_ovl.s does not fit over the mapper IWRAM code (gba_cart_my.ld)")

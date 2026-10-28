@@ -382,6 +382,65 @@ static int get_prg_bank_size(int mapper)
 
 
 
+#if VT_MODE
+/* s.96: the VT IWRAM overlay.  gba_cart_my.ld gathers the IWRAM code of
+ * konami.o, map023771.o, map1.o, map4.o and map9.o at the end of .iwram
+ * (__iwram_ovl_start-__iwram_ovl_end); none of it runs on a VT cart (mapper
+ * 253, which includes 419).  For one, vt_ovl.s's blob goes over it, with
+ * vt369_step in its table space and its mix words zero, and the pointers
+ * below send the hot loops there; for any other cart the mapper code is
+ * copied back from its load address.  With the pointers NULL (another cart,
+ * or a multiboot build, whose range is empty) the C versions run.  IME is
+ * off meanwhile: the sound fill and the vblank work use them. */
+extern u8 __iwram_ovl_start[], __iwram_ovl_end[], __iwram_start__[], __iwram_lma[];
+extern const u8 vto_blob[], vto_swap[], vto_dec48[], vto_fend[], vto_step[], vto_mix[], vto_end[];
+extern const s8 vt369_step[16][16];
+EWRAM_BSS void (*vt_ovl_swap)(void **t, const u16 *pairs, u32 n);	/* vt_regs.c */
+extern void (*vt_ovl_dec48)(void *s, u32 k);				/* vt369_snd.c */
+extern void (*vt_ovl_fend)(u16 *b, u32 set);				/* ppu_vt369.c */
+extern s32 *vt369_mixp;							/* vt369_snd.c */
+
+static void iwram_ovl_select(int vt)
+{
+	u8 *const o = __iwram_ovl_start;
+	const u32 room = (u32)(__iwram_ovl_end - __iwram_ovl_start);
+	const u32 size = (u32)(vto_end - vto_blob);
+	const u16 ime = REG_IME;
+	REG_IME = 0;
+	vt_ovl_swap = 0;
+	vt_ovl_dec48 = 0;
+	vt_ovl_fend = 0;
+	vt369_mixp = 0;
+	if (vt && size <= room)
+	{
+		memcpy(o, vto_blob, size);
+		memcpy(o + (vto_step - vto_blob), vt369_step, sizeof(s8) * 256);
+		vt_ovl_swap = (void (*)(void **, const u16 *, u32))(o + (vto_swap - vto_blob));
+		vt_ovl_dec48 = (void (*)(void *, u32))(o + (vto_dec48 - vto_blob));
+		vt_ovl_fend = (void (*)(u16 *, u32))(o + (vto_fend - vto_blob));
+		vt369_mixp = (s32 *)(o + (vto_mix - vto_blob));
+	}
+	else if (room)
+	{
+		memcpy(o, __iwram_lma + (o - __iwram_start__), room);
+	}
+	REG_IME = ime;
+}
+
+/* s.96: op_table as linked (6502.s, .data.100), for every cart.  A VT cart
+ * permutes it for its opcode encryption, and $4169 acts at once (Jumper
+ * turns it on around its OAM copy in the NMI): a cart loaded from the menu
+ * while a VT cart had stopped there ran with the permuted table (a mapper-0
+ * test ROM's INC zp ran as an illegal NOP).  cpuhack_reset redoes only the
+ * nine branch and JMP slots, and mapVTinit patches in the VT opcodes after
+ * this. */
+extern u8 __data_lma[], __data_start__[];
+static void op_table_reset(void)
+{
+	memcpy(op_table, __data_lma + ((u8 *)op_table - __data_start__), sizeof(void *) * 256);
+}
+#endif
+
 void loadcart(int rom_number, int emu_flags, int called_from)
 {
 	//called_from: 0 if called from loadstate, 1 if called from rom menu
@@ -464,6 +523,10 @@ void loadcart(int rom_number, int emu_flags, int called_from)
 //	emuflags|=1;
 	
 	read_rom_header(nesheader);	//sets rombase
+#if VT_MODE
+	iwram_ovl_select(mapper == 253);	//s.96
+	op_table_reset();			//s.96
+#endif
 
 	//Reset RAM, SRAM, etc...
 	memset32(NES_RAM,0,2048);
