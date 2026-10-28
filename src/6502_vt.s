@@ -241,6 +241,7 @@ op_vt_jmp_abs_go:
     @ then ends the slice with exactly the count the turns one by one would
     @ leave.  Jumper's level loads ran ~10K unhacked turns a NES frame while
     @ the sprite-0 hack held the one hack slot (~860K cycles).
+#ifndef VT_NO_JMPSKIP
     ldrb    r0, [m6502_pc]
     ldrb    r1, [m6502_pc, #1]
     orr     r0, r0, r1, lsl#8       @ target
@@ -263,6 +264,7 @@ op_vt_jmp_abs_go:
     mul     r0, r2, r1
     sub     cycles, cycles, r0, lsl#CYC_SHIFT
 1:
+#endif
     b_long  _4C                 @ tail-call original JMP abs
 
 @ s.86: JMP abs with the idle-loop speed hack (set_cpu_hack installs it

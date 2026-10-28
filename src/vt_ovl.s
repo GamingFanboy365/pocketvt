@@ -143,7 +143,11 @@ vto_jmp:
 	ldrb r0,[r2,#0x21]		@ encryption_pending
 	cmp r0,#0
 	bne 2f
-1:	ldrb r0,[m6502_pc]
+1:
+#ifdef VT_NO_JMPSKIP
+	ldr pc,=_4C
+#endif
+	ldrb r0,[m6502_pc]
 	ldrb r1,[m6502_pc,#1]
 	ldr_ r2,lastbank
 	orr r0,r0,r1,lsl#8		@ target
