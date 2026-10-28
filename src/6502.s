@@ -1184,14 +1184,20 @@ dobranchhackbne:
 	ldr_ r1,speedhack_pc
 	cmp m6502_pc,r1
 	beq_long dobranchhack2
+	ldr_ r1,speedhack_pcb		@ s.98: the second hack
+	cmp m6502_pc,r1
+	beq_long dobranchhack2b
 	cmp r0,#-3
 	beq_long dobnehack
 	b branchhack_back
 dobranchhack:
 	ldr_ r1,speedhack_pc
 	cmp m6502_pc,r1
+	beq_long dobranchhack2
+	ldr_ r1,speedhack_pcb		@ s.98: the second hack
+	cmp m6502_pc,r1
 	bne branchhack_back
-	b_long dobranchhack2
+	b_long dobranchhack2b
 @----------------------------------------------------------------------------
 _F1:@   SBC ($nn),Y
 @----------------------------------------------------------------------------

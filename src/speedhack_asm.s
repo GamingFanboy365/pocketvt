@@ -70,6 +70,8 @@ cpuhack_reset:
 	mov r1,#0
 	str_ r1,speedhack_pc
 	str_ r1,speedhack_pc2
+	str_ r1,speedhack_pcb
+	str_ r1,speedhack_pcb2
 	ldr r0,=speedhacks
 	mov r2,#64
 	bl memset32_
@@ -169,14 +171,31 @@ call_quickhackfinder:
  .text
  .align
 
+@ s.98: dobranchhack (6502.s) for the second hack, slot 2: as dobranchhack2,
+@ in ROM because .vram1 is full (it runs once per timeslice at most).
+	.global dobranchhack2b
+dobranchhack2b:
+	tst cycles,#BRANCH
+	orr cycles,cycles,#BRANCH
+	beq 5f
+	mov r2,#2
+	bl_long usespeedhack_r2
+5:
+	ldrsb r0,[m6502_pc,#-1]
+	b_long branchhack_back
+
 @ s.92: call_quickhackfinder (.vram1) calls speedhack_manager through here.
 @ The 6502's A, X and Y are still in r5-r7 (value << 24); find_idle_loop
 @ (new_speed_hack.c) starts its simulation from them.  In ROM, so .vram1 only
-@ had a literal changed.
+@ had a literal changed.  s.98: also its flags, m6502_nz (r3: N = bit 31,
+@ Z = low byte zero) and cycles (r8: C and V in the low bits): the 6502 often
+@ stops just before a branch, and with the flags unknown the simulation gave
+@ up there (Funny Coins at 16 fps).
 	.global speedhack_manager_regs
 speedhack_manager_regs:
 	ldr r12,=vt_isim_regs
-	stmia r12,{r5-r7}
+	stmia r12!,{r5-r7}
+	stmia r12,{r3,r8}
 	ldr r12,=speedhack_manager
 	bx r12
 	.ltorg
@@ -227,6 +246,23 @@ set_cpu_hack:
 	@ table's, so op_vt_JMP_abs survives), and the default BNE hack goes
 	@ to vt_sh_raw[6], the raw byte that decodes to $D0.
 	@ ------------------------------------------------------------------
+#if VT_MODE
+	@ s.98: on a VT cart an empty sprite-0 slot (1) leaves slot 0's hack in.
+	@ The frame end installs slot 1 whenever the frame had a sprite-0 hit,
+	@ and with nothing in it every hack came out: Funny Coins' board loop
+	@ (JMP $C21A) spun unhacked through its music start (10-40 fps).
+	cmp r0,#1
+	bne 1f
+	ldr r1,=speedhacks+16
+	ldr r1,[r1]
+	cmp r1,#0
+	bne 1f
+	ldr r1,=vt_active
+	ldrb r1,[r1]
+	cmp r1,#0
+	movne r0,#0
+1:
+#endif
 	strb_ r0,speedhacknumber
 
 	@if it matches target's speedhack_pc, abort early.  (TESTME)
@@ -300,6 +336,13 @@ set_cpu_hack:
 	strb r1,[r0,#12]
 	
 0:
+#if VT_MODE
+	@ s.98: the second hack keeps its handler only while it differs from
+	@ this one in opcode (new_speed_hack.c); r3 is m6502_nz
+	stmfd sp!,{r3}
+	bl_long vt_hack_b_check
+	ldmfd sp!,{r3}
+#endif
 	ldmfd sp!,{lr}
 	bx lr
 
@@ -424,6 +467,8 @@ dobranchhack2:
 	
 usespeedhack:
 	ldrb_ r2,speedhacknumber
+	.global usespeedhack_r2		@ s.98: dobranchhack2b and op_vt_JMP_absy (6502_vt.s)
+usespeedhack_r2:			@ come in here for slot 2, r2 = 2
 	ldr r12,=speedhacks
 	add r12,r12,r2,lsl#4
 	stmfd sp!,{r2,r12,lr}
@@ -692,6 +737,9 @@ _speedhacknumber: .byte 0
  .byte 0
  .byte 0
  .byte 0
+	.global _speedhack_pcb, _speedhack_pcb2	@ s.98: the second hack (slot 2)
+_speedhack_pcb: .word 0
+_speedhack_pcb2: .word 0
  	.global _deadbeef
 _deadbeef: .word 0xDEADBEEF
  

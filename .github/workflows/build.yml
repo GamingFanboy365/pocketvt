@@ -6,6 +6,13 @@
 # Commits pushed with GITHUB_TOKEN do not trigger another run, so this
 # cannot loop.  For PRs from forks the token is read-only: the job then
 # only fails if the committed binaries are stale.
+#
+# The checks job then runs everything that needs no game ROM (MAINTAINERS_GUIDE
+# s.98): no ROMs committed, no fixed RAM addresses in code, the VT369 sound HLE
+# host test, the smoke ROMs (tools/ci/smoke: generated from source, compared
+# with Furbtendulator's results) on the devkitARM core and on a build_pvt.sh
+# core, and every diagnostic define still building.  The cart regression
+# (tools/regress/regress.py) needs the test ROMs and runs in sessions.
 name: Build core
 
 on:
@@ -59,3 +66,62 @@ jobs:
           path: |
             pocketvt.elf
             pocketvt.gba
+
+  checks:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pocketvt-core
+          path: ci-core
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi \
+            binutils-arm-none-eabi libmgba-dev python3-pil
+          git clone --depth 1 https://github.com/devkitPro/libgba ../libgba-master
+
+      - name: No game ROMs in git
+        run: python3 tools/ci/check_no_roms.py
+
+      - name: No fixed RAM addresses in code
+        run: python3 tools/ci/lint_ram_addresses.py
+
+      - name: VT369 sound HLE against the reference model
+        run: |
+          gcc -O2 -I tools/probes -DVT369_SND_HOSTTEST tools/probes/vt369snd_test.c -o vt369snd_test
+          ./vt369snd_test | tee vt369snd.log
+          grep -q " 0 failing" vt369snd.log
+
+      - name: Smoke ROMs on the devkitARM core
+        run: python3 tools/ci/smoke/smoke.py --core ci-core/pocketvt.gba --out smoke-devkitarm
+
+      - name: Smoke ROMs on a build_pvt.sh core
+        run: |
+          LIBGBA=../libgba-master BUILD=../pvt_build bash build_pvt.sh > build_pvt.log 2>&1 || { tail -40 build_pvt.log; exit 1; }
+          python3 tools/ci/smoke/smoke.py --core ../pvt_build/pocketvt.gba --out smoke-build_pvt
+
+      - name: Diagnostic defines still build
+        run: |
+          printf '%s\n' VT369_SND_OFF VT_NO_SPEEDHACK VT_NO_JMPSKIP VT_DIAG_NOVSYNC VT_TIMER_LOG \
+            BK_STOMP_PROBE FORCE_BK_REPAIR VALUE_SENTINEL DMA_LOG VT369_DEC48_CHECK VT_SPLIT_SLOTS=0 > diag.txt
+          xargs -P 4 -I{} sh -c 'n=$(echo {} | tr = _); EXTRA_CFLAGS="-D{}" LIBGBA=../libgba-master \
+            BUILD=../diag_$n bash build_pvt.sh > diag_$n.log 2>&1 || { tail -30 diag_$n.log; echo "::error::-D{} does not build"; exit 255; }' < diag.txt
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: checks-failure
+          path: |
+            smoke-*
+            *.log
+

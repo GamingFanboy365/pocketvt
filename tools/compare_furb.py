@@ -23,10 +23,14 @@ row table (dma0buff: scale75's 3-in-4 decimation, raster splits removed; the
 Writes DIR/cmp_tNNNN.png (reference-mapped | PocketVT | mismatches in red, 2x),
 DIR/furb_tNNNN.png (the reference frame, full 256x240) and DIR/report.json.
 
+--ref-cache DIR keeps furb_cli's frames there, keyed by ROM, input, frames and
+furb_cli build, so comparing several cores on one session runs the reference
+once (tools/regress/regress.py).
+
 Needs: tools/furb_cli/build/furb_cli (python3 tools/furb_cli/build.py),
 libmgba-dev, arm-none-eabi-nm, numpy, pillow.
 """
-import argparse, json, os, re, shutil, subprocess, sys, tempfile
+import argparse, fcntl, hashlib, json, os, re, shutil, subprocess, sys, tempfile
 import numpy as np
 from PIL import Image
 
@@ -49,6 +53,7 @@ ap.add_argument('--furb', default=os.path.join(FB, 'build', 'furb_cli'))
 ap.add_argument('--out', default='furbcmp')
 ap.add_argument('--keep', action='store_true', help='keep raw captures/dumps in OUT/raw')
 ap.add_argument('--bios', help='boot PocketVT through this real GBA BIOS (gba_bios.bin) instead of mGBA HLE')
+ap.add_argument('--ref-cache', help='keep the reference frames in this directory and reuse them')
 a = ap.parse_args()
 
 targets = sorted({int(t) for t in a.at.split(',') if t.strip()})
@@ -135,9 +140,28 @@ if hdr[:4] == b'NES\x1a' and hdr[7] & 0x0C == 0x08 and hdr[7] & 3 == 3 and hdr[1
     print('compare_furb: header byte 13 = 0x%02X; giving furb_cli 0x%X (extended console type)' % (hdr[13], hdr[13] & 15))
     cmd += ['--header', '13=%d' % (hdr[13] & 15)]
 cmd += a.furb_arg
-r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-if r.returncode:
-    sys.exit('compare_furb: furb_cli failed:\n' + r.stderr[-2000:])
+fbdir = tmp
+if a.ref_cache:
+    # Everything that decides the reference's frames: the ROM, every argument but
+    # --out, and which furb_cli build.  The lock makes a second compare_furb on the
+    # same session wait for the first instead of writing the same files.
+    st = os.stat(a.furb)
+    key = hashlib.sha1(open(a.rom, 'rb').read() + repr([c for i, c in enumerate(cmd) if i > 1 and cmd[i - 1] != '--out' and c != '--out']).encode()
+                       + repr((os.path.abspath(a.furb), st.st_size, int(st.st_mtime))).encode()).hexdigest()[:20]
+    fbdir = os.path.join(a.ref_cache, key)
+    os.makedirs(fbdir, exist_ok=True)
+    cmd[cmd.index('--out') + 1] = os.path.join(fbdir, 'fb')
+    with open(fbdir + '.lock', 'w') as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        if not os.path.exists(os.path.join(fbdir, 'done')):
+            r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if r.returncode:
+                sys.exit('compare_furb: furb_cli failed:\n' + r.stderr[-2000:])
+            open(os.path.join(fbdir, 'done'), 'w').close()
+else:
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if r.returncode:
+        sys.exit('compare_furb: furb_cli failed:\n' + r.stderr[-2000:])
 
 def read_ppm(path):
     data = open(path, 'rb').read()
@@ -205,7 +229,7 @@ for t in targets:
     best = None
     # nearest frames first; strict '>' keeps the nearest on ties (static screens)
     for f in sorted(range(max(0, t - a.window), t + a.window + 1), key=lambda f: (abs(f - t), f)):
-        ref = read_ppm(os.path.join(tmp, 'fb_f%04d.ppm' % f))
+        ref = read_ppm(os.path.join(fbdir, 'fb_f%04d.ppm' % f))
         ref_ids_full = ref_ids5(ref)
         for dy in range(-a.search, a.search + 1):
             for dx in range(-a.search, a.search + 1):

@@ -902,6 +902,10 @@ _m_ ,8
  _m_ sh_encrypted,4
  _m_ speedhacknumber,1
  _m_ ,3
+@ s.98: the second idle-loop hack (slot 2, vt_hack_b_* in new_speed_hack.c):
+@ the pc after its branch, as speedhack_pc, and the branch itself
+ _m_ speedhack_pcb,4
+ _m_ speedhack_pcb2,4
  _m_ deadbeef,4
 
 @----------------------------------------------------------------------------

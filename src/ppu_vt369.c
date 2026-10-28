@@ -764,13 +764,59 @@ static int vt369_dma_nt(u32 src, u32 len)
     const u8 *s8 = src < 0x2000 ? (const u8 *)NES_RAM : 0;
     const u32 rmask = vt_nes_ram_mask;
     u32 a = a0, any = 0;
-    for (u32 i = 0; i < len; i++, a += step) {
-        const u32 v = s8 ? s8[(src + i) & rmask] : _memmap_tbl[(src + i) >> 13][src + i];
-        const u32 off = base[a >> 10] | (a & 0x3FF);
-        if (nt[off] == v) continue;
-        nt[off] = (u8)v;
-        vt369_nt_dw[off >> 2] = 1;
-        any = 1;
+    if (step == 1) {
+        /* s.98: in pieces that stay in one nametable quadrant and one source
+         * bank (or RAM mirror), a word at a time where both ends are aligned.
+         * Sky Fighter DMAs a whole nametable from PRG every frame, 1K bytes at
+         * ~92 cycles a byte (94K cycles a NES frame, a third of the GBA frame);
+         * the marks were per word already, so the result is the same. */
+        for (u32 i = 0; i < len; ) {
+            const u32 off = base[a >> 10] | (a & 0x3FF);
+            u32 seg = 0x400 - (a & 0x3FF);
+            if (seg > len - i) seg = len - i;
+            const u8 *sp;
+            if (s8) {
+                const u32 so = (src + i) & rmask;
+                if (seg > rmask + 1 - so) seg = rmask + 1 - so;
+                sp = s8 + so;
+            } else {
+                const u32 sa = src + i;
+                if (seg > 0x2000 - (sa & 0x1FFF)) seg = 0x2000 - (sa & 0x1FFF);
+                sp = _memmap_tbl[sa >> 13] + sa;
+            }
+            u8 *dp = nt + off;
+            if (seg >= 4 && !(((u32)sp | (u32)dp) & 3)) {
+                const u32 *sw = (const u32 *)sp;
+                u32 *dw = (u32 *)dp;
+                u8 *mk = &vt369_nt_dw[off >> 2];
+                seg &= ~3u;
+                for (u32 k = 0; k < seg / 4; k++) {
+                    const u32 v = sw[k];
+                    if (dw[k] == v) continue;
+                    dw[k] = v;
+                    mk[k] = 1;
+                    any = 1;
+                }
+            } else {
+                for (u32 k = 0; k < seg; k++) {
+                    if (dp[k] == sp[k]) continue;
+                    dp[k] = sp[k];
+                    vt369_nt_dw[(off + k) >> 2] = 1;
+                    any = 1;
+                }
+            }
+            i += seg;
+            a += seg;
+        }
+    } else {
+        for (u32 i = 0; i < len; i++, a += step) {
+            const u32 v = s8 ? s8[(src + i) & rmask] : _memmap_tbl[(src + i) >> 13][src + i];
+            const u32 off = base[a >> 10] | (a & 0x3FF);
+            if (nt[off] == v) continue;
+            nt[off] = (u8)v;
+            vt369_nt_dw[off >> 2] = 1;
+            any = 1;
+        }
     }
     if (any) vt369_nt_any = 1;
     _vramaddr = (_vramaddr & 0xFFFF0000u) | (u16)(_vramaddr + len * step);   /* as vmdata_W's strh */

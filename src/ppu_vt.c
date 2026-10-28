@@ -2810,7 +2810,7 @@ asm(".global vt_ewram_stack_top\n.set vt_ewram_stack_top, vt_ewram_stack + 3072"
 EWRAM_BSS u8 vt_prg_evict_pending;     /* timeout.s: re-run vt_apply_prg_banks */
 EWRAM_BSS const u8 *vt_prg_page0;      /* page-0 twin, NULL = none (loadcart.c) */
 EWRAM_BSS u8 vt_prg_obj_evicted;
-extern const u8 *_speedhack_pc, *_speedhack_pc2;
+extern const u8 *_speedhack_pc, *_speedhack_pc2, *_speedhack_pcb, *_speedhack_pcb2;
 
 static const u8 *vt_prg_reloc_obj(const u8 *p)
 {
@@ -2832,6 +2832,8 @@ static int vt_prg_evict_obj(void)
         speedhacks[i].hack_pc = vt_prg_reloc_obj(speedhacks[i].hack_pc);
     _speedhack_pc  = vt_prg_reloc_obj(_speedhack_pc);
     _speedhack_pc2 = vt_prg_reloc_obj(_speedhack_pc2);
+    _speedhack_pcb  = vt_prg_reloc_obj(_speedhack_pcb);     /* s.98: the second hack */
+    _speedhack_pcb2 = vt_prg_reloc_obj(_speedhack_pcb2);
     vt_prg_obj_evicted = 1;
     vt_prg_evict_pending = 1;
     return 0;                              /* not until timeout.s applied it */
@@ -2879,6 +2881,8 @@ static int vt_prg_evict(void)
         speedhacks[i].hack_pc = vt_prg_reloc(speedhacks[i].hack_pc);
     _speedhack_pc  = vt_prg_reloc(_speedhack_pc);
     _speedhack_pc2 = vt_prg_reloc(_speedhack_pc2);
+    _speedhack_pcb  = vt_prg_reloc(_speedhack_pcb);
+    _speedhack_pcb2 = vt_prg_reloc(_speedhack_pcb2);
     vt_prg_evicted = 1;
     vt_prg_evict_pending = 1;
     return 1;
@@ -2950,6 +2954,8 @@ void vt_prg_hot_check(void)
         }
         _speedhack_pc  = vt_prg_reloc_hot(_speedhack_pc, p);
         _speedhack_pc2 = vt_prg_reloc_hot(_speedhack_pc2, p);
+        _speedhack_pcb  = vt_prg_reloc_hot(_speedhack_pcb, p);
+        _speedhack_pcb2 = vt_prg_reloc_hot(_speedhack_pcb2, p);
         vt_prg_shadow = (u8 *)p;
         vt_prg_evict_pending = 1;
         vt_prg_hot_moves++;

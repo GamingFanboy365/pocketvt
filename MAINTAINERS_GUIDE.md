@@ -6173,3 +6173,194 @@ EWRAM on every cart and ends the CHR_DECODE stomp everywhere; the page repair
 acts on VT carts in 16-colour mode without BKEXTEN (Aero, Hex, Add 'em Up,
 Push the Ball, Table Soccer VT03 among the test carts), and the marking runs
 on every VT cart's 2bpp renders.
+
+## 98. Regression checks without hand work; two idle loops at once
+
+The user asked for the two open faults of s.97 to be fixed, Funny Coins'
+stuck idle-loop finder and Sky Fighter's slow stretch, and for checks that
+catch regressions on the other carts without them having to hand the ROMs
+over again. Both parts are here: 98a-98b are the checks, 98c-98f the fixes,
+98g the results of the new runner on all of them.
+
+### 98a. tools/regress: every test cart in one command
+
+`python3 tools/regress/regress.py` builds the old core (default origin/main)
+and the new one (default the working tree, copied once as it is hashed) with
+build_pvt.sh and with the devkitARM Docker image CI uses, plays every test
+cart on both and writes `regress_out/<time>/report.md` with a PASS, WARN or
+FAIL per cart and toolchain; the exit status is 1 on any FAIL. It runs the
+three checks of s.97, unchanged, so the numbers compare with the guide's.
+state plays the s.97 session (Start at 100, 300 and 500, Right held from 600
+with A tapped every 50 frames) keyed to NES frames and compares NES RAM and
+the picture at 15 frames, on -DVT369_SND_OFF builds for VT369 carts. ref runs
+compare_furb at NES 150/400/700 with Start at 320 and on the state session at
+200/450/700/1000/1400; struct may not drop. speed is sbench's 50 s session
+with sound on; the mean may not drop and no cart may stall. A full run takes
+about ten minutes with the cores cached (~/.cache/pocketvt-regress, keyed by
+source tree, toolchain and defines; furb_cli's frames are cached too).
+
+The known harmless differences are data, not judgement. tools/regress/
+carts.json lists every cart with its md5, console and RAM size, the NES RAM
+bytes known to differ harmlessly (ram_benign), carts whose game state follows
+GBA timing (drift: Star Ally UM6578, s.94) and carts whose launch races the
+idle-loop finder (VG Pocket, s.97e). A RAM difference is re-run on
+-DVT_NO_SPEEDHACK builds of both cores before it counts: one that goes away
+there is the finder's GBA-time race, a WARN. Differences confined to the 32
+bytes below an equal stack pointer are dead stack, where an interrupt last
+pushed (Jewel Master VT369's NMI lands at another point of its idle loop,
+$1EB-$1F1, s.97f). A picture that equals the old core's picture of a
+neighbouring NES frame is display phase; any other picture change is a WARN
+with an old/new/difference PNG beside it, and a FAIL when compare_furb's
+struct drops on the same cart.
+
+The ROMs never enter git. `regress.py --stage` (run by every check) finds the
+carts by md5 in testroms/, the session's uploads folder and any zip or folder
+given with --bundle, wraps a raw vgpocket.bin in its NES 2.0 header, and
+copies them into testroms/. The user has all 23 in one file,
+pocketvt_testroms.zip, so a session needs one upload instead of five batches.
+
+The runner was tested on three planted faults before it was trusted: a
+3000-iteration loop in vt_bands_frame_end (Scramble 59.2 to 51.8 fps, speed
+FAIL; its RAM differed only with the speed hacks on, WARN), INC zp skipping a
+value ending in $F (state FAIL on Scramble and Table Soccer VT369, still
+different with the hacks off) and sprites never enabled (ref FAIL on Lucky
+Lawn Mower VT09, and on Scramble once a picture change with a struct drop
+counted as a fault). The same cores against themselves gave PASS on all 46
+cart/toolchain pairs: the method is deterministic.
+
+### 98b. Checks CI runs without a game ROM
+
+build.yml gains a `checks` job after the build. tools/ci/check_no_roms.py
+fails on any tracked iNES file, archive, play ROM (the core with a builder.py
+game block appended) or file over 2 MB. tools/ci/lint_ram_addresses.py fails
+on a numeric EWRAM/IWRAM address in code outside comments, the hardware ones
+listed with their reasons (it flags s.97's `ldr r0,=0x020007DF`). The linker
+now asserts `__bss_end__ <= 0x03007B84`. The VT369 sound HLE host test runs.
+Every diagnostic define (-DVT369_SND_OFF, -DVT_NO_SPEEDHACK, -DVT_NO_JMPSKIP,
+-DVT_DIAG_NOVSYNC, -DVT_TIMER_LOG, -DBK_STOMP_PROBE, -DFORCE_BK_REPAIR,
+-DVALUE_SENTINEL, -DDMA_LOG, -DVT369_DEC48_CHECK, -DVT_SPLIT_SLOTS=0) must
+still build. The Makefile takes EXTRA_CFLAGS for C and the assembler, as
+build_pvt.sh does (VT= reaches C only); a plain build is byte-identical.
+
+tools/ci/smoke/roms.py generates three small NES programs from Python, so CI
+tests the core without any game. cpu (mapper 0) runs 629 cases of the
+official 6502 instructions and stores each result and P; vtbank (NES 2.0
+mapper 256, VT03, 64K PRG without CHR-ROM, like the real dumps) reads back
+which 8K bank each window shows after $4107-$410B, COMR6, the MMC3-style
+$8000/$8001 writes and a 4-bank outer window; ppu (mapper 0) draws a still
+picture of tiles, attributes, fine X scroll and flipped and hidden sprites.
+smoke.py plays them on a core in mGBA: cpu and vtbank must leave NES RAM
+equal to Furbtendulator's byte for byte (py65 agrees on cpu), ppu must hash
+as blessed (blessed at 99.82% struct against Furbtendulator; the residue is
+the sprite row offset of the 3:4 scaling). They caught the planted INC fault
+("INC $10=7F: got 81, expected 80") and the sprite fault. One finding on the
+way: a VT03 test ROM with an 8K CHR-ROM read banks 2/2/3 at $A000/$C000/$E000
+at power-on on PocketVT and crashed at its first $4107 write, where
+Furbtendulator maps 1/6/7 and runs it; the real VT03 dumps carry no CHR-ROM
+and Soccer 2009's 256K CHR-ROM works, so the smoke ROM follows the dumps and
+the case is left open.
+
+### 98c. Funny Coins: the finder simulated without the flags
+
+find_idle_loop (s.92) simulates the idle loop from the 6502's live A, X and Y
+but started with N, Z, C and V unknown, giving up at the first branch that
+read one. The finder runs when the 6502's timeslice ends, and that is often
+just before a branch on a compare. Funny Coins' board loop is mostly LDA /
+CMP / Bcc: a simulator state left in EWRAM by a failed attempt showed one
+instruction run (budget 640 to 639) at a branch with all four flags unknown,
+every time, and after three failures the finder tried only every 32nd call.
+The call stub (speedhack_manager_regs) now stores m6502_nz (r3) and cycles
+(r8) beside A/X/Y and the simulation reads N, Z, C and V from them as encodeP
+does. In nine input sessions the build_pvt core of s.97 stayed at 16 fps in
+one; now all end at 60.
+
+### 98d. Sky Fighter: a nametable DMA by the word, and the real cause
+
+Each NES frame Sky Fighter DMAs a whole nametable from PRG ($9C00-$9FFF, four
+256-byte $4014 transfers). vt369_dma_nt copied, compared and marked it a byte
+at a time through the memory map, ~92 cycles a byte, 94K cycles a NES frame.
+Transfers that step by 1 now go in pieces within one quadrant and one source
+bank, a word at a time where both ends are aligned; the dirty marks were per
+word already, so nametable and marks come out the same. 45K a NES frame.
+
+The speed did not move (50.0 to 50.4 mean), and a profile showed why: 44% of
+the GBA's time sat in the BIOS halt while the game ran at 46-50 fps.
+tools/probes/pacetrace (new) logs every NES frame end, frame-end wait and
+handler entry against GBA time: the waits returned at once, and the slow
+stretch was NES frames of 888K cycles, three GBA frames of 6502 work each.
+The game waits in two loops. Its main loop polls $30 four times
+($C47F-$C4CE: LDA $30 / AND / BEQ, BEQ $C47F) and, after a frame's work, it
+waits at $C4AB for bit 0 to clear (BNE). set_cpu_hack holds one hack, and the
+finder kept whichever loop it sampled; in a 9M-step trace of the slow stretch
+57% of the 6502 instructions were the unhacked main loop. At CPU x3 a NES
+frame of spinning costs three GBA frames.
+
+### 98e. A second idle-loop hack slot
+
+Slot 2 ("B") holds a second loop beside the main hack ("A", slot 0 or 1).
+Each branch opcode has its own hack handler whose compare immediate
+set_cpu_hack patches with the hacked branch's length, so B may hold any
+conditional branch or JMP whose raw opcode differs from A's: the two never
+share a handler or a length. dobranchhack and dobranchhackbne (6502.s, 12
+bytes of IWRAM each) and op_vt_JMP_absy (6502_vt.s) compare the pc with
+speedhack_pcb after speedhack_pc; a match skips through slot 2's parameters
+(dobranchhack2b in ROM, since .vram1 is full, entering usespeedhack at
+usespeedhack_r2). speedhack_pcb and speedhack_pcb2 sit in the globals block
+after speedhacknumber. vt_hack_b_vblank (new_speed_hack.c, called from
+timeout.s vblank_handler_0 after call_quickhackfinder) runs the finder on
+slot 2 every 16th NES frame while A is in and B is not, and drops B after 120
+unused frames; vt_hack_b_check, at the end of every set_cpu_hack that changes
+A, re-applies B, or hands B A's old loop when A moved onto B's (the finder
+replaces A every time a phase leaves it unused for 8 frames, and Sky Fighter
+alternates phases of 10-20 frames). PRG relocation moves B's pointers with
+A's; an op_table reload or a $4169 toggle drops B, giving its slot the old
+handler back before the in-place exchanges. C called from assembly through
+bl_long (an ldr to pc, which does not switch to Thumb on the ARM7) must be
+target("arm"): the first build jumped into Thumb code in ARM state and hung.
+
+Sky Fighter now holds 60 through the stretch (mean 50.4 to 58.7); the only
+dip left is three seconds at 34-43 where the heavy section starts and B has
+not been found yet.
+
+### 98f. Funny Coins' other loops
+
+Funny Coins has at least four idle loops ($C1AA, the board's JMP $C21A at
+$C252, $CEBE, $C276). Two more faults kept them spinning. The board loop ends
+in a JMP, which B first refused. And in a NES frame with a sprite-0 hit the
+frame end installs slot 1, the sprite-0 slot: with nothing in it,
+set_cpu_hack took every hack out, so the board loop spun through the music
+start while slot 0 held it. On VT carts an empty slot 1 now leaves slot 0's
+hack in. Nine sessions: means 55.5-56.7 (after 98c) to 56.7-58.5, the music
+dip from ~8 s to 3-5 s. One session (input moved by 3 frames) still drops to
+0-16 fps for some seconds: the 6502 reads the joypad 8 bits at a time ~2600
+times a NES frame at $CF27-$CF3A while touching VT369 registers and CHR
+banks, a loop no finder can hack (it reads I/O); left open.
+
+### 98g. Results: the new runner on this change
+
+`regress.py --old origin/main --new HEAD` (828cc9c against 8320955, both
+toolchains, every test cart): 44 PASS, 2 WARN, no FAIL. Game state is
+identical to main on every cart (sound HLE off on VT369) apart from what
+carts.json and the rules of 98a explain. The two WARNs: Jewel Master VT369 on
+build_pvt, one stack byte at NES 120 with the two stack pointers two apart
+(the hacked idle loop parked at another point when the frame ended), gone
+with -DVT_NO_SPEEDHACK; and Star Ally UM6578 on devkitARM, compare_furb
+within 0.3 either way on its drifting game. VG Pocket's launch went the other
+way on both toolchains from NES 900 (98a's drift_from); its RAM before the
+launch and its pictures and reference scores match main's. The same check on
+the earlier commit c89a563 also found that launch with -DVT_NO_SPEEDHACK
+builds: the two outcomes swap between builds with the hacks off, which s.97e
+had not seen, so the race is not only the finder's.
+
+| NES fps, mean / worst second (50 s, sound on) | main build_pvt | new build_pvt | main devkitARM | new devkitARM |
+|---|---|---|---|---|
+| Sky Fighter | 50.98 / 24 | 57.65 / 26 | 50.87 / 23 | 57.63 / 25 |
+| Funny Coins | 49.85 / 10 | 57.70 / 23 | 54.67 / 10 | 57.59 / 23 |
+| Jumper | 59.33 / 54 | 59.35 / 54 | 59.39 / 54 | 59.65 / 56 |
+
+Every other cart's speed is unchanged. gbaplay's input became exact to the
+NES frame in this run (98a), which moved main's own Funny Coins session from
+26.35 (stuck) to 49.85; the comparison is with main under the same harness.
+The smoke ROMs pass on both cores, the IWRAM .bss ends at 0x03007B08
+(build_pvt) / 0x03007AF8 (devkitARM), and the user stack's lowest point is
+0x03007BA4 (Funny Coins, in the sound HLE, as on main).

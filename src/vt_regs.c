@@ -744,7 +744,7 @@ EWRAM_BSS static void *vt_optable_canonical[256];
 static u8    vt_optable_saved = 0;
 static void vt_sh_tables(void);
 static void vt_optable_load(void);
-extern const u8 *_speedhack_pc, *_speedhack_pc2;
+extern const u8 *_speedhack_pc, *_speedhack_pc2, *_speedhack_pcb, *_speedhack_pcb2;
 
 __attribute__((target("arm")))
 void vt_rebuild_optable(void)
@@ -757,6 +757,9 @@ void vt_rebuild_optable(void)
     vt_optable_load();
     _speedhack_pc = 0;
     _speedhack_pc2 = 0;
+    _speedhack_pcb = 0;             /* s.98: the second hack's slot went too */
+    _speedhack_pcb2 = 0;
+    speedhacks[2].hack_pc = 0;
 }
 
 /* s.88: the encrypted table, its decode and the speed-hack bytes are built
@@ -828,7 +831,13 @@ __attribute__((target("arm")))
 static void vt_optable_toggle(void)
 {
     const int on = vt.encryption_active != 0;
-    const u8 *p = _speedhack_pc2;
+    const u8 *p = _speedhack_pc2, *pb = _speedhack_pcb2;
+    /* s.98: the second hack is not carried over (Jumper toggles four times a
+     * NES frame); its slot gets the old state's handler back before the
+     * exchanges, like the first's */
+    _speedhack_pcb = 0;
+    _speedhack_pcb2 = 0;
+    speedhacks[2].hack_pc = 0;
     if (vt_enc_cache_mode != (u8)(vt.encryption_mode + 1) || !vt_enc_inv || !vt_sh_norm[0]) {
         vt_optable_load();
     } else {
@@ -841,6 +850,7 @@ static void vt_optable_toggle(void)
         const u32 r6 = vt_sh_raw[6];
         t[r6] = old[r6];
         if (p) t[*p] = old[*p];
+        if (pb) t[*pb] = old[*pb];
         if (vt_ovl_swap) vt_ovl_swap(t, vt_enc_pairs, vt_enc_npairs);
         else {
             const u16 *pp = vt_enc_pairs;

@@ -53,3 +53,8 @@ play_me.gba
 *.swp
 .DS_Store
 __pycache__/
+
+# --- tools/regress ---
+# regress.py's reports, and the ROM bundle the user keeps (never commit it)
+regress_out/
+pocketvt_testroms*.zip

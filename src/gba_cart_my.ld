@@ -378,3 +378,9 @@ SECTIONS
 
 /* s.96: the VT overlay must fit in the dead mapper code it replaces */
 ASSERT(vto_end - vto_blob <= __iwram_ovl_end - __iwram_ovl_start, "vt_ovl.s does not fit over the mapper IWRAM code (gba_cart_my.ld)")
+
+/* s.98: .bss must end below the deepest point of the IWRAM user stack, which
+ * starts at __sp_usr (0x03007D60) and was measured down to 0x03007BAC
+ * (tools/probes/spmin, Hex City X from power-on).  0x03007B84 keeps 40 bytes
+ * between them.  New C globals go in EWRAM_BSS (CLAUDE.md). */
+ASSERT(__bss_end__ <= 0x03007B84, "IWRAM .bss grew into the user stack: put new globals in EWRAM_BSS (gba_cart_my.ld, CLAUDE.md)")
