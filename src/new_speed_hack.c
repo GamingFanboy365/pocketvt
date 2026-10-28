@@ -824,11 +824,12 @@ bool quickhackfinder(const u8 *initpc, const u8 *lastbank, int hacknum)
  * the finder sampled last; each phase of the game left the other loop
  * spinning, 57% of the 6502 instructions of its slow stretch, and at CPU x3
  * a NES frame of spinning costs three GBA frames (25-50 fps).  B holds a
- * second loop whose branch is another opcode than A's: each opcode's hack
- * handler has its own patched branch length, so the two never share one.
- * dobranchhack and dobranchhackbne (6502.s) compare the pc with
- * speedhack_pcb after speedhack_pc and skip through slot 2
- * (dobranchhack2b).  When the finder moves A onto B's loop, B takes A's old
+ * second loop whose branch (or JMP) is another opcode than A's: each
+ * opcode's hack handler has its own patched branch length, so the two never
+ * share one.  dobranchhack and dobranchhackbne (6502.s) and op_vt_JMP_absy
+ * (6502_vt.s) compare the pc with speedhack_pcb after speedhack_pc and skip
+ * through slot 2 (dobranchhack2b).  Funny Coins' board loop ends in JMP
+ * $C21A while its other loops take A.  When the finder moves A onto B's loop, B takes A's old
  * loop.  B goes after 120 NES frames unused (the game's two phases last 10-20
  * frames each, and an 8-frame limit dropped B before its loop came back);
  * while A is in and B is not, the vblank looks for one every 16th frame. */
@@ -841,9 +842,10 @@ EWRAM_BSS const u8 *vt_hb_last_a;          /* A at the last check, and its slot'
 EWRAM_BSS speedhack_T vt_hb_last_par;      /* parameters then (the finder overwrites */
 EWRAM_BSS u16 vt_hb_last_incs[16];         /* the slot before set_cpu_hack runs) */
 
-static int vt_hb_type(const u8 *pc)        /* branch 0-7 the raw byte runs, or -1 */
+static int vt_hb_type(const u8 *pc)        /* branch 0-7 or JMP 8 the raw byte runs, or -1 */
 {
 	const u8 d = OP(*pc);
+	if (d == 0x4C) return 8;
 	return (d & 0x1F) == 0x10 ? (d - 0x10) >> 5 : -1;
 }
 
@@ -860,7 +862,7 @@ static void vt_hb_unpatch(const u8 *pb)
 {
 	const int n = vt_hb_type(pb);
 	if (n == 6) ((u8 *)(void *)_D0y)[12] = 3;
-	else if (n >= 0) op_table[*pb] = vt_sh_norm[n];
+	else if (n >= 0) op_table[*pb] = vt_sh_norm[n];     /* JMP: the cart's own (vto_jmp) */
 }
 
 static void vt_hb_apply(void)
@@ -869,7 +871,7 @@ static void vt_hb_apply(void)
 	const int n = vt_hb_type(pb);
 	if (n < 0) { vt_hb_forget(); return; }
 	op_table[*pb] = speedhackops[n];
-	((u8 *)speedhackops[n])[12] = (u8)(0x100 - pb[1]);   /* branch length, as set_cpu_hack */
+	if (n < 8) ((u8 *)speedhackops[n])[12] = (u8)(0x100 - pb[1]);   /* branch length, as set_cpu_hack */
 }
 
 /* a loop B may hold beside A (pa) */
@@ -891,7 +893,7 @@ static void vt_hb_set(const u8 *h, const speedhack_T *from, const u16 *incs)
 	b->hack_was_used = 0;
 	b->frames_hack_not_used = 0;
 	_speedhack_pcb2 = h;
-	_speedhack_pcb = h + 2;
+	_speedhack_pcb = h + (vt_hb_type(h) == 8 ? 1 : 2);   /* the pc its handler compares */
 	vt_hb_apply();
 }
 

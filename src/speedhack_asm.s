@@ -246,6 +246,23 @@ set_cpu_hack:
 	@ table's, so op_vt_JMP_abs survives), and the default BNE hack goes
 	@ to vt_sh_raw[6], the raw byte that decodes to $D0.
 	@ ------------------------------------------------------------------
+#if VT_MODE
+	@ s.98: on a VT cart an empty sprite-0 slot (1) leaves slot 0's hack in.
+	@ The frame end installs slot 1 whenever the frame had a sprite-0 hit,
+	@ and with nothing in it every hack came out: Funny Coins' board loop
+	@ (JMP $C21A) spun unhacked through its music start (10-40 fps).
+	cmp r0,#1
+	bne 1f
+	ldr r1,=speedhacks+16
+	ldr r1,[r1]
+	cmp r1,#0
+	bne 1f
+	ldr r1,=vt_active
+	ldrb r1,[r1]
+	cmp r1,#0
+	movne r0,#0
+1:
+#endif
 	strb_ r0,speedhacknumber
 
 	@if it matches target's speedhack_pc, abort early.  (TESTME)
@@ -450,7 +467,8 @@ dobranchhack2:
 	
 usespeedhack:
 	ldrb_ r2,speedhacknumber
-usespeedhack_r2:			@ s.98: dobranchhack2b comes in here, r2 = 2
+	.global usespeedhack_r2		@ s.98: dobranchhack2b and op_vt_JMP_absy (6502_vt.s)
+usespeedhack_r2:			@ come in here for slot 2, r2 = 2
 	ldr r12,=speedhacks
 	add r12,r12,r2,lsl#4
 	stmfd sp!,{r2,r12,lr}

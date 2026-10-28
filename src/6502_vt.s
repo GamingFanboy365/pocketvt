@@ -274,8 +274,17 @@ op_vt_JMP_absy:
     ldr_    r0, speedhack_pc
     cmp     m6502_pc, r0
     beq_long dobranchhackjmp
+    ldr_    r0, speedhack_pcb       @ s.98: the second hack (new_speed_hack.c)
+    cmp     m6502_pc, r0
+    beq     1f
     ldr     r0, =vt_jmp_norm        @ s.97: the cart's own JMP abs (_4C on
     ldr     pc, [r0]                @ a NES cart, vto_jmp on a VT one)
+1:  tst     cycles, #BRANCH         @ dobranchhackjmp's second chance, slot 2
+    orr     cycles, cycles, #BRANCH
+    beq     2f
+    mov     r2, #2
+    bl_long usespeedhack_r2
+2:  b_long  op_vt_JMP_abs
 
 op_vt_JMP_ind:
     ldr     r0, =vt
