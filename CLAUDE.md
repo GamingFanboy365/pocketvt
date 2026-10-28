@@ -94,13 +94,24 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   dumps, live PC/lastbank, single-step watchpoints, stack depth). README there.
   gbaplay drives the L+R menu (GBA-frame keys), carries SRAM across runs and
   dumps state at exact NES frames: the savestate replay test (s.95).
+- Speed A/B on a VT369 cart: key the input to NES frames (gbaplay KEYSN,
+  cycprof KEYSPROF) and check correctness on -DVT369_SND_OFF builds, whose
+  NES RAM and pictures must match byte for byte; with sound on the HLE runs
+  on GBA time and the game state drifts (s.96a). cycprof's OPT/LB line says
+  where the 6502 fetches its code from (VRAM 1 cycle a byte, cart ROM 4).
+  cycprof charged each step to the instruction before it until s.96: older
+  per-function numbers put a function's entry on the code ahead of it.
 - Diagnostic hooks used this project: DMA_LOG (mapVT.s video DMA), TLOG /
   NMIDBG style counters; s.87 adds -DVT_NO_SPEEDHACK, -DVT_DIAG_NOVSYNC
   (frame end never waits) and -DVT_TIMER_LOG (VT timer expiry/re-arm ring). Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.95)
-See MAINTAINERS_GUIDE.md s.95 (EZ-Flash Omega: doReset restores WAITCNT 0
+## Current state (after s.96)
+See MAINTAINERS_GUIDE.md s.96 (Jumper 53.6 -> 59.5 fps: its code moved into
+the VRAM PRG copy, "jmp *" loops skipped exactly, spriteinit from tables, an
+IWRAM overlay over dead mapper code for the opcode-table toggle, the VT369
+sound decode and the frame-end patch; op_table copied back at every cart
+load; nested sound fills queued; the IRQ stack at 0x03007F00), s.95 (EZ-Flash Omega: doReset restores WAITCNT 0
 before the flash-cart reset; savestates: buffers inside the heap, a VT-safe
 redecompress, the VTST block of VT machine state; the menu font on 8bpp
 VT369 pictures; the label "PocketVT 1.0"), s.94 (the UMC UM6578, NES 2.0 mapper 405, internal
@@ -139,8 +150,8 @@ states, sound) and s.77-78 (raster-split slots, speed).
   Lucky Lawn Mower VT369 (99.7%), Jewel Master (99.9%) and Fire Fighter VT369
   (96%; game-state drift) through the enhanced renderer, src/ppu_vt369.c.
   Zuma (VT369, 256.13; title 99.6%, gameplay 98% -- its ball colours are
-  random, like Jewel Master's jewels), Jumper (VT369 SMB hack, 99.9%, 43-60
-  fps), Sky Fighter (VT369, gameplay 96-98%, 60 fps), Funny Coins (VT369,
+  random, like Jewel Master's jewels), Jumper (VT369 SMB hack, 99.9%; 59.5
+  fps mean, 54 at a level reload, s.96), Sky Fighter (VT369, gameplay 96-98%, 60 fps), Funny Coins (VT369,
   title 100%, gameplay 98% to NES 1800, 60 fps; 1-line streaks at its
   raster-split edges) and Soccer 2009 (VT03 with a 256K CHR ROM, 256.0;
   menus 99.5%, matches 97-99% with exact colours), Star Ally UM6578 (UM6578,
@@ -182,7 +193,7 @@ states, sound) and s.77-78 (raster-split slots, speed).
   60 (titles too since s.92), Table Soccer VT03 60 (s.88), LLM VT09 60, LI/VG/Add 'em Up 60,
   Soccer 2009 menus 60 and matches 42-44 (CPU-bound: no idle time to skip, s.93);
   VT369 (all at CPU x3): Table Soccer, LLM, Zuma, Jewel Master, Sky Fighter
-  60, Fire Fighter 54-60 in gameplay, Jumper 43-60 (s.89).
+  60, Fire Fighter 54-60 in gameplay, Jumper 54-60 (s.96).
 - Frame pacing (s.87a): every GBA vblank is a credit, every NES frame spends
   one; the frame end waits only without credit (vt_vsync_ahead). Speed probes
   can show 61-62 while a slow stretch is made up; the average stays 60.
@@ -238,17 +249,41 @@ states, sound) and s.77-78 (raster-split slots, speed).
 - Hardware: build_pvt.sh cores now get a bootable header (tools/gbafix.py);
   every test ROM boots through the real BIOS (`compare_furb.py --bios
   reference/gba_bios.bin`, BIOS supplied by the user, gitignored).
+- IWRAM overlay (s.96): the IWRAM code of konami.o, map023771.o, map1.o,
+  map4.o and map9.o sits at __iwram_ovl_start-__iwram_ovl_end (1388 bytes);
+  on a VT cart loadcart.c (iwram_ovl_select) puts src/vt_ovl.s there (1224
+  bytes, position-independent ARM, a link ASSERT checks the fit) and sets
+  vt_ovl_swap / vt_ovl_dec48 / vt_ovl_fend / vt369_mixp; any other cart gets
+  the mapper code back. NULL pointers mean the C versions run. Nothing a VT
+  cart runs may live in those five objects' .iwram. -DVT369_DEC48_CHECK runs
+  the IWRAM and C decoders side by side.
+- loadcart.c copies op_table back from its load address for every cart
+  (s.96): a VT cart's encryption leaves it permuted. VT369 carts whose code
+  runs from one 32K of cart ROM get it copied into the VRAM PRG copy after 60
+  NES frames (vt_prg_hot_check); the 8bpp tile slots evict that copy only
+  when the 319 low slots are full.
+- r10 is globalptr for the interrupt handlers: never a scratch register in
+  code that runs with interrupts on (spriteinit, s.96d).
+- The IRQ stack starts at 0x03007F00 (s.96f): each nested interrupt takes 40
+  bytes (BIOS 24, interruptdispatcher.s 16); main nested four deep (160
+  bytes, all it had) when a game restarts from the ROM menu. spmin KEYSG=
+  measures it (mode 0x12).
 - The IWRAM user stack is ~150 bytes above .bss; ALL new C globals go in
   EWRAM_BSS (`__bss_end__` must stay <= 0x03007B84; 0x03007AA0 after s.93,
   which moved vt_bk_slot_get out of the IWRAM vt_bk_write_cell). Heavy VT C runs on
   the 3K EWRAM stack. Measure with tools/probes/spmin from power-on.
 
 ## Open work, in priority order
+0. s.96 ran on Jumper and a mapper-0 test ROM only (the test ROMs were not in
+   that session): the regression set above, compare_furb and the speeds of
+   every cart are owed (s.96h lists what reaches them).
 1. VT369 leftovers (s.82): 8bpp 16-row sprites through $201D bit 2 are done
    but untested, hi-res mode ($201C bit 2), CPU x3 in ROM handlers (s.88d).
-   Speed at x3: Fire Fighter 54-60 (remaining: sound HLE play48 ~25K, sprites
-   ~15K cycles a frame, s.89), Jumper's death sequence 43 (not re-measured
-   in s.89). Sound CPU: the $40AE per-channel rate
+   Speed at x3: Fire Fighter 54-60 (s.89, before the s.96 overlay; not
+   re-measured), Jumper's level reloads 54 (s.96g: tile-cache cell updates,
+   ~530K cycles in the first reload frame, Thumb from ROM; the overlay has
+   164 bytes free). Jumper waits on the sound CPU's tick counter $18F6, which
+   the HLE advances per 128-tick fill (s.96g). Sound CPU: the $40AE per-channel rate
    divider, and the programs no test cart uses (s.84e).
 2. Sound (s.79d): VT ADPCM $4120-$412F only mixes while NES DMC plays; the
    TK-8007 voice (Table Soccer) is not played; second APU $4020-$402F is
