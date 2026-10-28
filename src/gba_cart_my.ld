@@ -72,8 +72,17 @@ __text_start	=	ORIGIN(rom);
 __eheap_end	=	ORIGIN(ewram) + LENGTH(ewram);
 __iwram_start	=	ORIGIN(iwram);
 __iwram_top	=	ORIGIN(iwram) + LENGTH(iwram);;
-__sp_irq	=	__iwram_top - 0x200;
-__sp_usr	=	__sp_irq - 0x0a0;
+/* s.96: the IRQ stack starts at 0x03007F00 (it was 0x03007E00, with the
+ * user stack 0xA0 below it).  Each nested interrupt takes 40 bytes of it
+ * (24 the BIOS entry pushes, 16 interruptdispatcher.s), so 160 bytes held
+ * four.  Main's own core already nests four deep when Jumper starts again
+ * from the ROM menu after the L+R menu's Restart, and a fifth (the s.96
+ * devkitARM core) wrote over the 6502 loop's saved registers: a crash.
+ * Nothing used 0x03007E00-0x03007EFF; the BIOS supervisor stack starts at
+ * 0x03007FE0 (crt0 leaves it) and needs few bytes.  The user stack top is
+ * unchanged. */
+__sp_irq	=	__iwram_top - 0x100;
+__sp_usr	=	__iwram_top - 0x200 - 0x0a0;
 __irq_flags	=	0x03007ff8;
 
 SECTIONS
@@ -176,10 +185,22 @@ SECTIONS
 	.iwram ALIGN(4) : AT (__iwram_lma)
 	{
 		__iwram_start__ = ABSOLUTE(.) ;
-		*(.iwram)
+		*(EXCLUDE_FILE(*konami.o *map023771.o *map1.o *map4.o *map9.o) .iwram)
 		*iwram.*(.text)
 		*(SORT_BY_NAME(.iwram.*))
 		. = ALIGN(4);   /* REQUIRED. LD is flaky without it. */
+		/* s.96: these mappers' IWRAM code is dead while a VT cart runs.
+		 * loadcart.c (iwram_ovl_select) copies the VT overlay (vt_ovl.s)
+		 * over it for a VT cart and copies it back from its LMA for any
+		 * other cart. */
+		__iwram_ovl_start = ABSOLUTE(.);
+		*konami.o(.iwram)
+		*map023771.o(.iwram)
+		*map1.o(.iwram)
+		*map4.o(.iwram)
+		*map9.o(.iwram)
+		. = ALIGN(4);
+		__iwram_ovl_end = ABSOLUTE(.);
 		__iwram_end__ = ABSOLUTE(.) ;
 	} >iwram = 0xff
 
@@ -354,3 +375,6 @@ SECTIONS
   .ARM.attributes 0 : { KEEP (*(.ARM.attributes)) }
   /DISCARD/ : { *(.note.GNU-stack) }
 }
+
+/* s.96: the VT overlay must fit in the dead mapper code it replaces */
+ASSERT(vto_end - vto_blob <= __iwram_ovl_end - __iwram_ovl_start, "vt_ovl.s does not fit over the mapper IWRAM code (gba_cart_my.ld)")

@@ -5750,3 +5750,317 @@ Star Ally VT03 at 400 from 99.59% to 99.64%, Star Ally UM6578 at 700 from
 set has no new frames). Speeds are unchanged. The Docker core ends .bss at
 0x03007AA0 and .vram1 at 0x06003FF0, and the heap starts at 0x0200F960.
 Under the real BIOS, Star Ally VT03 and Fire Fighter score as in mGBA.
+
+## 96. Jumper at full speed: its code in VRAM, "jmp *", the IWRAM overlay
+
+The user reported lag in Jumper, the VT369 SMB hack. This session's container
+came up without the test ROMs and the user supplied Jumper alone, so
+everything here was measured on Jumper and on a mapper-0 test ROM written for
+the purpose (kept out of the tree with the other ROMs). No other cart ran;
+96h lists what reaches them.
+
+### 96a. Measuring
+
+A session keyed to NES frames (gbaplay KEYSN: Start at NES frame 320, then
+Right for 60 frames and Right+A for 15, over and over) plays the same game on
+any core but for one thing. The VT369 sound HLE runs on GBA time, and Jumper
+waits on the sound CPU's tick counter (96g), so two cores of different speed
+drift apart after about 1000 NES frames. Built with -DVT369_SND_OFF, two cores
+give byte-identical NES RAM and pictures (gbaplay FTDUMP at 11 NES frames up
+to 3500) when a change leaves the emulation alone; that was the correctness
+check for every step below. Speed is NES frames per GBA second over 70 s of
+the session (mean, minimum, seconds under 50 and under 55), and cycprof cycles
+per NES frame from a chosen NES frame.
+
+cycprof charged each step to the instruction before it. Before a step mGBA's
+r15 is the next instruction + 4 in ARM state, not + 8, so every function's
+first instruction, with its pipeline refill, was booked to the function ahead
+of it. It showed 137K cycles a frame in op_vt_ADX, an opcode Jumper never
+runs; they belonged to op_vt_JMP_abs. Totals were right. It takes - 4 / - 2
+now, and has new options (KEYSPROF, KEYSG, OPT/LB/CORE/HPC, the line that
+says where the 6502 fetched its code from; tools/probes/README.md).
+
+Main (1bfea0e): mean 53.6 NES fps, minimum 42, 10 seconds under 50 and 38
+under 55. From NES frame 2250 the session's slow stretch cost about 384K
+cycles a NES frame against the 281K a GBA frame has.
+
+### 96b. Jumper's code ran from cart ROM
+
+All of Jumper's 6502 code was fetched from cart ROM. It runs from one 32K
+block ($8000-$FFFF mapped contiguously) at 4 cycles a fetched byte (an N
+access at WAITCNT 0x4317), where VRAM takes 1. init_cache's VRAM copy of PRG
+(char blocks 2/3, s.77) holds the last 32K, which a OneBus cart only runs
+while it boots, and the first 8bpp tile allocation evicted it anyway:
+vt369_nslot_now asked vt369_high_slots_ok, which starts the eviction at once.
+
+vt_prg_hot_check (ppu_vt.c; VT369 carts; called from vt_palette_rebuild_gba
+at NES line 242) watches memmap_tbl[4..7]. When the four are equal (one
+contiguous 32K), point into cart ROM and stay so for 60 NES frames, the block
+is copied to 0x06008000 and the banks repointed: banks in VRAM go back to
+their twin (vt_prg_reloc), the block's banks go to VRAM, the speed-hack pcs
+follow (speedhacks[].hack_pc, _speedhack_pc and _speedhack_pc2, vt_isim_hack)
+and vt_prg_shadow becomes the block's cart-ROM home, so a later vt_prg_evict
+moves the 6502 there. timeout.s re-applies the banks as after an eviction.
+A copy costs about 55K cycles, so each further move waits twice as long, up
+to 16 times; none happens once the tile slots own the VRAM. ppu_vt369.c now
+asks for the eviction only when the 319 low 8bpp slots are full (Jumper shows
+at most 94 distinct tiles). The 6502 then fetched 99% of its code from VRAM,
+the slow stretch fell to about 279K cycles a NES frame, and the session went
+to mean 58.1, minimum 48, one second under 50. With sound off, identical to
+main.
+
+### 96c. A JMP to itself
+
+What was left were stalls of 7-8 GBA frames at Mario's deaths. In the first
+frame of a level reload the 6502 ran 28.7K instructions, 10.5K of them SMB's
+EndlessLoop (jmp * at $9F47) unhacked. speedhack_pc holds one hack, and at
+vblank it takes the sprite-0 wait (slot 1) when the frame had a sprite-0 hit;
+a reload turns rendering off, no hit comes, and the main loop's JMP ran about
+80 cycles a turn through op_vt_JMP_absy, op_vt_JMP_abs (ARM in ROM) and _4C.
+op_vt_JMP_abs now checks for a JMP to its own address and takes whole turns
+(3 cycles: 3 dots at CPU x3, 9 at x1) off the cycles left. _4C's own charge
+then ends the time slice with the count the turns one by one would leave, so
+the emulation is unchanged (identical with sound off). Minimum 53, no second
+under 50.
+
+### 96d. spriteinit
+
+check_canaries runs spriteinit every GBA vblank (SESSION 20), and its ramps,
+built a byte at a time by ARM loops in cart ROM, cost about 8K cycles each
+time on every cart. The three ramps it can build (unscaled; scaled from 0xF3;
+scaled from 0xEF, above SCALED) are .rept tables in io.s, copied 16 bytes a
+burst and then the tail: the same bytes at the same addresses, checked
+against the loops' output. The first version used r10 as a burst register.
+ui.c calls spriteinit with interrupts on, and the interrupt handlers take r10
+as globalptr, so a menu Restart crashed (found by 96f's switch test); the
+copy uses r4-r6. r10 must stay globalptr in anything that runs with
+interrupts on.
+
+### 96e. The IWRAM overlay
+
+Three hot loops still ran from ROM. Jumper's four $4169 toggles a NES frame
+copied 1K each (vt_optable_load, 14.4K cycles a frame); the VT369 sound
+decode (vt369_play48, ARM in ROM) took about 90 cycles a tick for each
+playing channel (27-44K a frame); vt369_frame_end took 4.9K. IWRAM is full,
+but the IWRAM code of konami.o, map023771.o, map1.o, map4.o and map9.o is
+dead on a VT cart: nothing in mapVT.s, the VT C code or mapUM.s reaches it,
+and timeout.s's HandlersTable only lists its addresses. gba_cart_my.ld now
+gathers it at the end of .iwram, __iwram_ovl_start to __iwram_ovl_end (1388
+bytes). loadcart.c's iwram_ovl_select, called right after read_rom_header
+with IME off, copies src/vt_ovl.s's blob over it for mapper 253 (419
+included), puts vt369_step in the blob's table space and sets four pointers
+(vt_ovl_swap, vt_ovl_dec48, vt_ovl_fend, vt369_mixp). For any other cart it
+copies the mapper code back from its load address and clears them. With the
+pointers NULL the C versions run: other carts, a multiboot build (whose
+range is empty) and the host test.
+
+The blob is position-independent ARM, 1224 bytes, and a link ASSERT checks
+that it fits. vto_swap exchanges op_table entries pair by pair. vto_dec48 runs
+a playing 48-nibble channel to the end of a half-frame (the step-table row
+changes at nibble 24), one loop per prediction mode. vto_fend patches the 240
+BG0CNT values two at a time. Then come 256 bytes for vt369_step and the
+fill's 128 mix words. In vt_regs.c a toggle now gives the two speed-hack
+slots their old state's handlers back and exchanges the encryption's raw-byte
+pairs in place: 64 for modes 13 and 15, 96 for 12, and a decode that is not
+an involution reloads the table as before. vt_op_dec became vt_op_dec_p, a
+pointer to the identity or to vt_op_dec_enc. vt369_play48 handles the frame
+headers and calls vt369_dec48 for each half-frame run. The header still reads
+the byte after the lead, at an $FF lead too: the host test caught the first
+version leaving the wrong frame byte in sound RAM. -DVT369_DEC48_CHECK runs
+the IWRAM and the C version side by side; over the session it counted 31384
+runs and 0 differences, with all four prediction modes in use. The host test
+(tools/probes/vt369snd_test.c) compares 18000 fills, 0 failing.
+
+Per NES frame at NES 2400: toggles 5.5K (from 14.4K), the sound decode 7.6K
+with its C wrapper (from about 27K), frame end 2.1K (from 4.9K). Session:
+mean 59.5, minimum 54, one second under 55 (8 before), on the build_pvt core
+and on the devkitARM core alike.
+
+### 96f. Three faults found by switching games
+
+A two-game play ROM (Jumper and the test ROM: reset, NMI on, rendering on,
+jmp *, and an NMI that does INC $00) was driven through the ROM menu and the
+L+R menu's Restart. Three faults showed, the first two older than s.96.
+
+op_table: a VT cart permutes it for its opcode encryption, and $4169 acts at
+once. Jumper turns encryption on around its OAM copy inside the NMI, so a
+cart started from the menu after Jumper had stopped there inherited the
+permuted table: the test ROM's INC zp ran as an illegal NOP and $00 never
+counted. Nothing rebuilt op_table at a cart load (cpuhack_reset redoes nine
+slots). loadcart.c's op_table_reset now copies it from its load address
+(6502.s, .data.100) for every cart, before mapVTinit patches in the VT
+opcodes.
+
+Nested sound fills: a fill re-enables the vblank IRQ (s.90), and a vblank
+handler that ran past the next timer tick started the deferred fill inside
+the interrupted one. Both mixed into the same words and the inner one zeroed
+them, so a 16 ms block was lost; the check build counted 5 in the session,
+all during level loads. vt369_snd_fill now queues a fill that comes while
+one runs and runs it as soon as that one ends.
+
+The IRQ stack: each nested interrupt takes 40 bytes of it (24 the BIOS entry
+pushes, 16 interruptdispatcher.s), and it had 160 bytes, from 0x03007E00
+down to the user stack at 0x03007D60. Main's own core nests four deep when
+Jumper starts again after Restart (spmin with KEYSG: 0x03007D60 exactly);
+the devkitARM build of the overlay commit nested five deep, wrote over the
+6502 loop's saved registers and crashed (waitformulti popped lr = 1).
+__sp_irq is 0x03007F00 now and __sp_usr unchanged: ten levels.
+0x03007E00-0x03007EFF was unused, and the BIOS supervisor stack, which crt0
+leaves at 0x03007FE0, reached 0x03007FD0. The same flow now bottoms out at
+0x03007E38 on the devkitARM core and 0x03007E60 on the build_pvt core. Both
+switch directions run on both cores, and the restored mapper code is
+byte-identical to the linked one.
+
+### 96g. What is left on Jumper
+
+A level reload still dips to about 54 fps for a second. NES frame 2564 of
+the session costs about 1.7M cycles. About 530K are tile-cache cell updates
+(vt369_cell_set and vt369_cell_tile, Thumb from ROM over EWRAM, 350-450
+cycles a cell, about 2100 cells for two nametables). The rest is per-GBA-frame
+work that goes on while the NES frame is stuck. The overlay has 164 bytes
+free. Jumper's loop at $604C waits for the sound CPU's tick counter ($48F6,
+$18F6 on the sound side), which the HLE advances about 5 at a time per
+128-tick fill instead of every 25.78 ticks: there the game waits on GBA
+time, which is also why sessions drift apart with sound on.
+
+### 96h. Not tested
+
+Only Jumper and the test ROM ran this session. These changes reach other
+carts. The hot block applies to VT369 carts whose code runs from one 32K of
+cart ROM. With the lazy eviction, an 8bpp cart that fills the low slots
+evicts at that moment, with at most a frame of stale cells, where before it
+evicted at its first allocation. The JMP check applies to every VT cart's JMP
+abs, and spriteinit to every cart. The overlay applies to VT carts: encrypted
+ones toggle in place, and VT369 carts decode sound and patch BG0CNT there.
+op_table_reset and the IRQ stack apply to every cart, and the fill queue to
+VT369. The EWRAM layout moved, which s.93 found can show Table Soccer
+VT369's stale tile. The regression set of CLAUDE.md is owed.
+
+## 97. Five carts against s.96: a JMP check in ROM, an NMI counter inside CHR_DECODE, stomped 4bpp pages
+
+The user supplied Aero Gyrodine, Hex City X, Lonely Island, Lucky Lawn Mower
+VT09 and Star Ally VT03 to check s.96 on. Each ran on main (1bfea0e) and on
+the new core, built with build_pvt.sh and with the devkitARM Docker image
+whose output is committed at the repo root (CI's binary for main and a local
+Docker build of main are byte-identical). Four checks: NES RAM and the
+picture at 15 NES frames (60 to 1400) with input keyed to NES frames (gbaplay
+KEYSN and FTDUMP: Start at 100, 300 and 500, Right held from 600 with A
+taps); compare_furb at 7 frames (150 to 1050, Start at 100, 300 and 500);
+NES frames per GBA second over 50 s of the same session; Jumper with
+-DVT369_SND_OFF against main at 11 NES frames. They found three faults, one
+from s.96 and two older ones that s.96 exposed.
+
+### 97a. The "jmp *" check cost every VT cart its JMPs
+
+Hex City X's speed showed one second at 55 fps where main held 60. cycprof
+ABS from NES frame 440: about 1000 JMP abs a NES frame. op_vt_JMP_abs (the
+VT09 encryption commit, ARM in cart ROM) and its tail cost 41.9K cycles a NES
+frame on main and 78K with s.96's self-JMP check (96c), against a 280K frame.
+The same code now also lives in the IWRAM overlay as vto_jmp (vt_ovl.s;
+iwram_ovl_select sets vt_ovl_jmp), and vt_patch_optable (6502_vt.s) puts it
+in op_table[$4C] when the overlay is in: 27K cycles a NES frame, 246K for
+the frame against main's 273K. _4C still makes the jump and charges it, so
+vt_cpu_x3_set keeps patching one cost immediate (it never sees the blob's
+copy). The ROM op_vt_JMP_abs stays for a build without the overlay
+(multiboot) and for the speed-hack paths that branch to it.
+
+op_vt_JMP_absy, the JMP speed hack (speedhackops[8], every cart since s.86),
+sent every JMP but the hacked one through the ROM wrapper, the VT commit
+check included, on NES carts too. It now jumps through vt_jmp_norm, the
+cart's own JMP abs: op_table_reset (loadcart.c) sets it to _4C for every
+cart and vt_patch_optable to the VT handler. vt_rebuild_optable's canonical
+snapshot is taken once per power-on, so it holds vto_jmp's address; only
+mapper 253 carts read it (cart.s clears vt_active at every load), and every
+mapper 253 cart gets the overlay at the same address before its first
+instruction. The blob is 1368 bytes, 20 free on the devkitARM link and 24 on
+build_pvt's. The two-game switch test of 96f ran again (Jumper then the test
+ROM, the reverse, Jumper then Hex City X): op_table[$4C] and vt_jmp_norm
+follow the cart, and the test ROM's NMI counter steps once a NES frame.
+
+### 97b. nmi_handler's debug counter wrote into CHR_DECODE
+
+With the JMP in IWRAM, Hex City X's planet (title and gameplay) showed 12
+pixels in green and red where main and Furbtendulator have blue. NES RAM was
+identical. The tiles at fault had wrong pixels 6-7 in rows whose plane byte
+was $0F, and CHR_DECODE's entry for $0F had a top byte (the nibbles of those
+two pixels) that changed with every NMI. nmi_handler (timeout.s) incremented
+a DEBUG byte at the fixed address 0x020007DF, the "NMIs per 60 frames" of
+s.72, and EWRAM .sbss had grown over it: on main's build_pvt core it was the
+top byte of CHR_DECODE[$13], after s.97's eight bytes of EWRAM_BSS
+(vt_ovl_jmp, vt_jmp_norm) that of [$0F], and on main's devkitARM core byte 47
+of vt_isim, the idle-loop finder's state. Every 2bpp tile render (PocketNES's
+CHR cache, render_tiles_2) of a row holding that byte drew its last two
+pixels from the NMI count. The counter is the symbol nmi_count now (.sbss in
+timeout.s), and the planet is identical to main's again. A fixed RAM address
+in code is a stomp waiting for the layout to move: "EWRAM layout alone
+re-exposes it" in open item 3 fits this, though Push the Ball and Table
+Soccer VT369 were not in the session to check.
+
+### 97c. 2bpp re-renders over the 4bpp pages (devkitARM only)
+
+On the devkitARM core Hex City X's ground showed blue stripes under the
+horizon for good from NES frame 107, where main has orange. Bisected with
+Docker builds of each s.96 commit to 147780e, spriteinit's tables (96d): the
+ramps are byte-identical, but check_canaries runs spriteinit at the start of
+every vblank, and 8K fewer cycles there moved the rest of the vblank. Four
+ground tiles (page 6, words 224-239 and 416-431) held the 2bpp render of
+their NES data (high planes dropped). After a CHR bank change vt_chr_sync
+marks every tile dirty and the 2bpp cache re-renders them over the next
+vblanks (consume_recent_tiles, after vt_chr4_rebuild_if_dirty's copy).
+vt_chr4_copy_to_vram finds a stomp only by four probe words per 2K page; on
+main the frame 107 stomp hit one and the page came back at frame 108, on the
+s.96 devkitARM core it hit none.
+
+render_recent_tiles (ppu.s, IWRAM) now ORs the 2K BG pages of each run into
+vt_bg2_stomp after the run is written (marked before it, a vblank in between
+could copy the pages back and clear the bits ahead of the stomp).
+vt_chr4_copy_to_vram copies a marked page whatever the probes say and clears
+the mask; vt_chr4_copy_to_vram_all clears it; and vt_16c_palette_fixup_body,
+which a top-level vblank runs last (after consume_recent_tiles and
+display_bg), calls vt_chr4_copy_to_vram when
+pages are marked and the 4bpp tiles own BG VRAM ($2010 & $06, no BKEXTEN, not
+VT369 enhanced), so a page the vblank's own 2bpp work stomped is back before
+it is shown. VT carts never take render_a_kilobyte (loadcart.c: bankable_vrom
+0, has_vram 1). It costs 64 bytes of IWRAM: __bss_end__ 0x03007AE0
+(build_pvt), 0x03007AD0 (devkitARM); spmin from power-on on Hex City X puts
+the user stack's lowest point at 0x03007BAC, and the menu Restart flow of 96f
+at 0x03007C24 (IRQ stack 0x03007E60), as in s.96.
+
+### 97d. Results
+
+NES RAM and pictures against main, on both toolchains: Aero Gyrodine, Hex
+City X, Lonely Island and Lucky Lawn Mower VT09 identical at all 15 frames.
+Star Ally VT03's RAM is identical on build_pvt; on devkitARM two bytes ($01E4
+on the stack page, $04FB) differ at NES frame 1000 and agree again by 1200,
+and main's own two toolchains differ in exactly those bytes there. Its
+pictures differ at one or two frames, the blink phase any change of cost
+moves (CLAUDE.md, regression step 2). Jumper with sound off is identical to
+main at all 11 frames.
+
+compare_furb means (struct): Aero 99.66, Hex 99.92, Lonely Island 97.65,
+LLM VT09 99.71 on all four cores; Star Ally 98.18 (main build_pvt), 98.29
+(new build_pvt), 98.27 (main devkitARM), 98.12 (new devkitARM), its frames
+taking one of two values with the blink. Lonely Island's exact5 is 45% on
+every core: Furbtendulator draws its whites #FFFFFF where the s.57 DACs give
+#E8E8E8.
+
+| NES fps (mean / min over 50 s) | main build_pvt | new build_pvt | main devkitARM | new devkitARM |
+|---|---|---|---|---|
+| Aero Gyrodine | 60.00 / 60 | 60.00 / 59 | 60.00 / 59 | 60.00 / 59 |
+| Hex City X | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 |
+| Lonely Island | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 |
+| Lucky Lawn Mower VT09 | 59.89 / 55 | 59.89 / 55 | 59.89 / 55 | 59.89 / 55 |
+| Star Ally VT03 | 58.13 / 49 | 58.65 / 52 | 58.13 / 49 | 58.65 / 51 |
+| Jumper (70 s, 96a) | 53.6 / 42 | 59.5 / 54 | 53.2 / 40 | 59.6 / 55 |
+
+### 97e. Not tested
+
+Scramble, VG Pocket, Time Pilot, Push the Ball, Add 'em Up, Table Soccer
+(VT03 and VT369), Jewel Master (VT03 and VT369), Lucky Lawn Mower VT369, Fire
+Fighter, Zuma, Sky Fighter, Funny Coins, Soccer 2009 and Star Ally UM6578
+were not in the session. vto_jmp runs every VT cart's JMP abs; vt_jmp_norm
+every cart's JMPs while a JMP speed hack is in; the nmi_count change moves
+EWRAM on every cart and ends the CHR_DECODE stomp everywhere; the page repair
+acts on VT carts in 16-colour mode without BKEXTEN (Aero, Hex, Add 'em Up,
+Push the Ball, Table Soccer VT03 among the test carts), and the marking runs
+on every VT cart's 2bpp renders.

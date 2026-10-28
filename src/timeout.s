@@ -498,8 +498,12 @@ vblank_handler_2:
 	b_long _GO
 
 nmi_handler:
-	@ DEBUG: increment byte at 0x020007DF (nmi_handler entry count)
-	ldr  r0,=0x020007DF
+	@ DEBUG: nmi_count counts nmi_handler entries (speed = NMIs per 60 frames).
+	@ s.97: it was the fixed address 0x020007DF, which EWRAM .sbss grew over:
+	@ every NMI bumped the top byte of one CHR_DECODE entry (byte $13 on the
+	@ s.95 core, $0F after eight more bytes of EWRAM_BSS), so a CHR row holding
+	@ that byte drew pixels 6-7 from the NMI count in every 2bpp tile render.
+	ldr  r0,=nmi_count
 	ldrb r12,[r0]
 	add  r12,r12,#1
 	strb r12,[r0]
@@ -1310,3 +1314,12 @@ _fetch_function: .word normal_fetch
 	.endif
 
 	@.end
+
+@ s.97: nmi_handler's debug counter (it was the fixed address 0x020007DF,
+@ inside CHR_DECODE); a probe reads the byte at the symbol.
+	.pushsection .sbss,"aw",%nobits
+	.align 2
+	.global nmi_count
+nmi_count:
+	.space 4
+	.popsection

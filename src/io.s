@@ -104,7 +104,7 @@ scaleloop:
 spriteinit:	@build yscale_lookup tbl (called by ui.c)
 @called by ui.c:  void spriteinit()
 @----------------------------------------------------------------------------
-	stmfd sp!,{r10,lr}
+	stmfd sp!,{r4-r6,r10,lr}
 	ldr r10,=GLOBAL_PTR_BASE
 	
 	@add the canary
@@ -114,31 +114,60 @@ spriteinit:	@build yscale_lookup tbl (called by ui.c)
 	
 	ldrb_ r0,emuflags+1
 	
+	@ s.96: check_canaries runs this every GBA vblank (SESSION 20), and the
+	@ byte-at-a-time ramps from ROM cost ~8K cycles each time.  The three
+	@ ramps it can make are tables below (yscale_un/lo/hi, the same bytes):
+	@ copied 16 bytes a burst, then the tail, so exactly the bytes the loops
+	@ wrote are written.  Unscaled: 335 bytes from LOOKUP-80, values -79 to
+	@ 255.  Scaled: 0.75 a line from 0xF3 (or 0xEF above SCALED) up to the
+	@ first 0xB4, at LOOKUP.
 	ldr r3,=YSCALE_LOOKUP
 	cmp r0,#SCALED
-	bhs si1
-
-	sub r3,r3,#80
-	mov r0,#-79
-si3:	strb r0,[r3],#1
-	add r0,r0,#1
-	cmp r0,#256
-	bne si3
-	ldmfd sp!,{r10,lr}
-	bx lr
-si1:
-	mov   r0,#0x00c00000		@0.75
-	mov   r1,#0xf3000000		@-16*0.75
-	movhi r1,#0xef000000		@-16*0.75 was 0xf5000000
-@	ldrhi r1,=0xeec00000		@-16*0.75 was 0xf5000000  ;FIXME: find good value for this
-si4:	mov r2,r1,lsr#24
-	strb r2,[r3],#1
-	add r1,r1,r0
-	cmp r2,#0xb4
+	sublo r3,r3,#80
+	ldrlo r1,=yscale_un
+	ldrlo r2,=335
+	ldreq r1,=yscale_lo
+	ldreq r2,=259
+	ldrhi r1,=yscale_hi
+	ldrhi r2,=264
+	@ (r10 stays globalptr: ui.c calls this with interrupts on, and the
+	@ handlers take r10 as it is)
+si1:	subs r2,r2,#16
+	ldmplia r1!,{r0,r4,r5,r6}
+	stmplia r3!,{r0,r4,r5,r6}
+	bgt si1
+	beq si3
+	add r2,r2,#16
+si4:	ldrb r0,[r1],#1
+	strb r0,[r3],#1
+	subs r2,r2,#1
 	bne si4
-	
-	ldmfd sp!,{r10,lr}
+si3:
+	ldmfd sp!,{r4-r6,r10,lr}
 	bx lr
+	.pool
+	.align 2
+yscale_un:			@ -79..255
+	.set yv,-79
+	.rept 335
+	.byte yv & 0xFF
+	.set yv,yv+1
+	.endr
+	.align 2
+yscale_lo:			@ floor(0xF3 + 0.75k) & 0xFF, to the first 0xB4
+	.set yv,0
+	.rept 259
+	.byte ((972 + 3*yv) >> 2) & 0xFF
+	.set yv,yv+1
+	.endr
+	.align 2
+yscale_hi:			@ floor(0xEF + 0.75k) & 0xFF, to the first 0xB4
+	.set yv,0
+	.rept 264
+	.byte ((956 + 3*yv) >> 2) & 0xFF
+	.set yv,yv+1
+	.endr
+	.align 2
 @----------------------------------------------------------------------------
 suspend:	@called from ui.c and 6502.s
 @-------------------------------------------------

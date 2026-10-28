@@ -78,6 +78,7 @@ EWRAM_BSS const u8 *vt369_misc;          /* 4K embedded ROM, CPU $1000-$1FFF (lo
 EWRAM_BSS s8  vt369_pcm[2][128 + VT369_PCM_GUARD] __attribute__((aligned(4)));
 EWRAM_BSS u8  vt369_pcm_next;             /* the block the next fill writes */
 EWRAM_BSS u8  vt369_fill_pending;         /* s.90: a fill waits for the vblank handler's end */
+EWRAM_BSS u8  vt369_filling;              /* s.96: a fill is running (vt369_snd_fill) */
 EWRAM_BSS u8  vt369_pcm_silent[2];        /* that block holds only zeroes */
 EWRAM_BSS u16 vt369_snd_n;                /* timer period in sound-CPU units */
 EWRAM_BSS u32 vt369_adpcm_frame[3][2];    /* 3-bit ADPCM: 64-bit frame */
@@ -96,7 +97,7 @@ static inline u32 vt369_prg_mask(void)
 }
 
 /* ---- decoders (ADPCM_VT369.cpp, ADPCM_VT1682.cpp) ---------------------- */
-static const s8 vt369_step[16][16] = {
+const s8 vt369_step[16][16] = {     /* s.96: loadcart.c copies it into the IWRAM overlay */
     {0,14,28,42,56,70,84,97,-111,-97,-84,-70,-56,-42,-28,-14},
     {0,13,26,39,52,65,78,91,-104,-91,-78,-65,-52,-39,-26,-13},
     {0,11,21,32,43,54,64,75,-86,-75,-64,-54,-43,-32,-21,-11},
@@ -324,6 +325,56 @@ next:
     return a;
 }
 
+/* s.96: k ticks (k >= 1) of a playing channel inside one half-frame (from
+ * pos to below 24, or from 24 to below 48): the inner loop of vt369_play48.
+ * Here in C, and as IWRAM ARM in vt_ovl.s (vto_dec48, the same words in the
+ * same order), which vt_ovl_dec48 points at once loadcart.c has installed
+ * the overlay: from cart ROM the loop cost ~90 cycles a tick a channel.  An
+ * even pos takes the next byte's low nibble, an odd one the high nibble of
+ * the byte in flight. */
+typedef struct {
+    const u8 *p;            /* next frame byte */
+    s32 *mix;
+    u32 frame, pos;
+    s32 last, out, vol;
+    u32 row, mode;          /* vt369_step row; prediction mode, lead >> 4 & 3 */
+} vt369_d48;
+_Static_assert(sizeof(void *) != 4 || sizeof(vt369_d48) == 36,
+               "vt369_d48 is read as 9 words by vto_dec48 (vt_ovl.s)");
+EWRAM_BSS void (*vt_ovl_dec48)(void *s, u32 k);
+#ifdef VT369_DEC48_CHECK
+EWRAM_BSS u32 vt369_dec48_runs, vt369_dec48_bad;
+EWRAM_BSS s32 vt369_dec48_mix[48];
+EWRAM_BSS u32 vt369_dec48_dump[48], vt369_dec48_in[9], vt369_dec48_modes[4];
+#endif
+
+static void vt369_dec48_c(vt369_d48 *s, u32 k)
+{
+    const u8 *p = s->p;
+    s32 *mix = s->mix;
+    u32 frame = s->frame, pos = s->pos;
+    s32 last = s->last, out = s->out;
+    const s32 vol = s->vol;
+    const s8 *const row = vt369_step[s->row];
+    const u32 mode = s->mode;
+    do {
+        if (!(pos & 1)) frame = *p++;
+        const s32 step = row[(pos & 1) ? frame >> 4 : frame & 15];
+        s32 o;
+        switch (mode) {
+            case 0:  o = step; break;
+            case 1:  o = step + out; break;
+            case 2:  o = step + out * 2 - last; break;
+            default: o = step + out - (last >> 1); break;
+        }
+        last = out;
+        out = (s8)o;
+        pos++;
+        *mix++ += out * vol;
+    } while (--k);
+    s->p = p; s->mix = mix; s->frame = frame; s->pos = pos; s->last = last; s->out = out;
+}
+
 /* s.86: the ticks after the first, for a playing PRG channel (no start or
  * stop can act there, see vt369_run_48).  Same result as the generic loop,
  * which the host test checks, but the frame's two step-table rows and its
@@ -345,13 +396,12 @@ static u32 vt369_play48(u32 ch, u32 lp, const vt369_prog *pg, const u8 *prg, u32
      * end of PRG goes to the generic loop */
     if ((w0 & pmask) + 25 > pmask + 1) return vt369_run_48_gen(ch, 1, 0, 0, lp, pg, prg, pmask, mix, n);
     const u8 *p0 = prg + (w0 & pmask), *p = p0;
-    const s8 *row = (pos < 24) ? vt369_step[lead & 15]
-                               : vt369_step[(lead - (lead >> 6 & 1) + ((lead >> 7 & 1) << 1)) & 15];
+    void (*const dec)(void *, u32) = vt_ovl_dec48;
     while (mix < end) {
         if (pos == 48) {                               /* frame header */
             u32 w = w0 + (u32)(p - p0);
             const u32 l = prg[w & pmask];
-            frame = prg[(w + 1) & pmask];
+            frame = prg[(w + 1) & pmask];              /* kept even at an $FF lead */
             lead = l;
             if (l == 0xFF) {
                 if (!lp) { a = 0; w0 = w; p0 = p; break; }   /* sample ends */
@@ -363,30 +413,53 @@ static u32 vt369_play48(u32 ch, u32 lp, const vt369_prog *pg, const u8 *prg, u32
                 if ((w & pmask) + 25 > pmask + 1) break;     /* rest: generic, below */
                 continue;
             }
-            w += 2;
-            if ((w & pmask) + 23 > pmask + 1) {         /* this frame wraps: */
-                pos = 48; w0 = w - 2; p0 = p;          /* the generic loop re-reads */
+            w += 1;                                    /* s.96: the run below loads byte 1 again */
+            if ((w & pmask) + 24 > pmask + 1) {         /* this frame wraps: */
+                pos = 48; w0 = w - 1; p0 = p;          /* the generic loop re-reads */
                 break;                                 /* its header from here */
             }
             w0 = w; p0 = p = prg + (w & pmask);
-            row = vt369_step[l & 15];
             pos = 0;
-        } else if (!(pos & 1)) {
-            frame = *p++;
         }
-        if (pos == 24) row = vt369_step[(lead - (lead >> 6 & 1) + ((lead >> 7 & 1) << 1)) & 15];
-        const s32 step = row[(pos & 1) ? frame >> 4 : frame & 15];
-        s32 o;
-        switch (lead >> 4 & 3) {
-            case 0:  o = step; break;
-            case 1:  o = step + out; break;
-            case 2:  o = step + out * 2 - last; break;
-            default: o = step + out - (last >> 1); break;
-        }
-        last = out;
-        out = (s8)o;
-        pos++;
-        *mix++ += out * vol;
+        /* to the half-frame's end (the row changes at 24) or the fill's */
+        u32 k = (pos < 24 ? 24 : 48) - pos;
+        if (k > (u32)(end - mix)) k = (u32)(end - mix);
+        vt369_d48 sd = { p, mix, frame, pos, last, out, vol,
+                         pos < 24 ? (lead & 15) : ((lead - (lead >> 6 & 1) + ((lead >> 7 & 1) << 1)) & 15),
+                         lead >> 4 & 3 };
+#ifdef VT369_DEC48_CHECK
+        /* check build (s.96): the IWRAM copy against the C, run for run */
+        if (dec) {
+            extern u32 vt369_dec48_runs, vt369_dec48_bad;
+            extern s32 vt369_dec48_mix[48];
+            vt369_d48 sc = sd;
+            {   extern u32 vt369_dec48_in[9]; const u32 *q = (const u32 *)&sd;
+                for (int i = 0; i < 9; i++) vt369_dec48_in[i] = q[i]; }
+            for (u32 i = 0; i < k; i++) vt369_dec48_mix[i] = mix[i];
+            sc.mix = vt369_dec48_mix;
+            vt369_dec48_c(&sc, k);
+            dec(&sd, k);
+            u32 bad = sc.p != sd.p || sc.frame != sd.frame || sc.pos != sd.pos || sc.last != sd.last
+                      || sc.out != sd.out || sd.mix != mix + k;
+            for (u32 i = 0; i < k; i++) bad |= vt369_dec48_mix[i] != mix[i];
+            vt369_dec48_runs++;
+            vt369_dec48_bad += bad;
+            { extern u32 vt369_dec48_modes[4]; vt369_dec48_modes[sd.mode & 3]++; }
+            {   /* the first mismatch: input, C result, IWRAM result, k, mix words */
+                extern u32 vt369_dec48_dump[48];
+                if (bad && !vt369_dec48_dump[0]) {
+                    u32 *o = vt369_dec48_dump;
+                    o[0] = 1; o[1] = k;
+                    const u32 *q = (const u32 *)&sc, *r = (const u32 *)&sd;
+                    for (int i = 0; i < 9; i++) { o[2 + i] = q[i]; o[11 + i] = r[i]; }
+                    for (u32 i = 0; i < k && i < 14; i++) { o[20 + i] = (u32)vt369_dec48_mix[i]; o[34 + i] = (u32)mix[i]; }
+                }
+            }
+        } else vt369_dec48_c(&sd, k);
+#else
+        if (dec) dec(&sd, k); else vt369_dec48_c(&sd, k);
+#endif
+        p = sd.p; mix = sd.mix; frame = sd.frame; pos = sd.pos; last = sd.last; out = sd.out;
     }
     const u32 w = w0 + (u32)(p - p0);
     d[0] = (u8)lead; d[1] = (u8)frame; d[3] = (u8)last; d[4] = (u8)out; d[5] = (u8)pos;
@@ -483,8 +556,10 @@ static void vt369_snd_timer(void)
 }
 
 /* EWRAM stack (vt369_snd_fill_stacked, mapVT.s), from vt_adpcm_mix_gba at
- * the end of timer1interrupt: the next 128 samples. */
+ * the end of timer1interrupt: the next 128 samples.  s.96: into the IWRAM
+ * overlay's 128 words (vt369_mixp, set by loadcart.c) when it is installed. */
 EWRAM_BSS s32 vt369_mix[128];
+EWRAM_BSS s32 *vt369_mixp;
 
 /* mix[] -> signed 8-bit FIFO samples; leaves mix[] zeroed for the next
  * fill. */
@@ -498,17 +573,36 @@ static void vt369_snd_convert(s32 *mix, s8 *out, s32 gain)
     }
 }
 
+/* s.96: a fill re-enables the vblank IRQ (vt_adpcm_mix_gba), and a vblank
+ * handler that ran past the next timer tick started the deferred fill
+ * (vt_16c_palette_fixup) inside the interrupted one: both mixed into the
+ * same words and the inner one zeroed them, so the outer block lost what it
+ * had (Jumper's level loads, ~5 blocks a minute).  Now a fill that comes
+ * while one runs waits, and runs as soon as that one ends. */
+static void vt369_snd_fill_one(void);
 void vt369_snd_fill(void)
+{
+    if (vt369_filling) { vt369_fill_pending = 1; return; }
+    vt369_filling = 1;
+    do {
+        vt369_fill_pending = 0;
+        vt369_snd_fill_one();
+    } while (vt369_fill_pending);
+    vt369_filling = 0;
+}
+
+static void vt369_snd_fill_one(void)
 {
     vt369_snd_timer();
     vt369_snd_dbg[0]++;
     SR(0x1FF5) = 0x01;                                    /* "initialised" */
     const u32 b = vt369_pcm_next;
     s8 *pcm = vt369_pcm[b];
-    const u32 played = vt369_render(vt369_mix, 128);      /* vt369_mix is zero here */
+    s32 *const mix = vt369_mixp ? vt369_mixp : vt369_mix;
+    const u32 played = vt369_render(mix, 128);            /* mix is zero here */
     vt369_snd_rate();                                     /* from the next overflow */
     if (played) {
-        vt369_snd_convert(vt369_mix, pcm,
+        vt369_snd_convert(mix, pcm,
                           vt369_reset_vector() == 0x0293 ? VT369_SND_GAIN3 : VT369_SND_GAIN48);
         const u32 g = (u8)pcm[127] * 0x01010101u;         /* the guard holds the last sample */
         u32 *o = (u32 *)&pcm[128];
@@ -586,11 +680,15 @@ void vt369_snd_reset(void)
     for (int i = 0; i < 4; i++) vt369_gpio_mask[i] = vt369_gpio_latch[i] = 0;
     vt1682_tab_init();
 #ifndef VT369_SND_HOSTTEST
-    for (int i = 0; i < 128; i++) vt369_mix[i] = 0;
+    {
+        s32 *const mix = vt369_mixp ? vt369_mixp : vt369_mix;
+        for (int i = 0; i < 128; i++) mix[i] = 0;
+    }
 #endif
     vt369_snd_on = 0;
     vt369_st_prev = 0;
     vt369_irq_acc = 0;
+    vt369_filling = 0;
     for (int i = 0; i < 0x800; i++) vt369_sram[i] = 0;
     vt369_snd_n = 0;
 }

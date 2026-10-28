@@ -1256,12 +1256,13 @@ vt369_ppu_R_reg:
 @ BNE or BEQ back to it, the branch taken) ends the time slice: the value
 @ can only change at a PPU event.  Jumper's NMI waits out vblank this way
 @ (sprite-0 flag clear, from line 246 to the pre-render line), which at CPU
-@ x3 was ~570 iterations a frame.  Opcodes decode through vt_op_dec.
+@ x3 was ~570 iterations a frame.  Opcodes decode through vt_op_dec_p.
 vt369_stat_R:
     stmfd   sp!, {lr}
     adr     lr, 1f
     ldr     pc, =PPU_R               @ r0 = $2002, side effects as usual
-1:  ldr     r2, =vt_op_dec
+1:  ldr     r2, =vt_op_dec_p
+    ldr     r2, [r2]
     ldrb    r1, [m6502_pc]
     ldrb    r1, [r2, r1]
     cmp     r1, #0x29                @ AND #imm

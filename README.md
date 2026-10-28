@@ -33,7 +33,7 @@ frames.
 | Star Ally, Lonely Island, Scramble | working (regression controls); 97-99% picture |
 | Jewel Master VT03 | working (Jungletac opcode encryption, 4bpp background with BKEXTEN, 16-colour sprites); title 99.9%, gameplay 98-99% picture |
 | Zuma (VT369) | working (Cube Tech opcode encryption, enhanced picture, sound CPU); title 99.6%, gameplay 98% picture (ball colours are random), 60 fps. On carts that run at the slow timing, the top row of balls no longer vanishes |
-| Jumper (VT369, a Super Mario Bros. hack) | working (CPU x3, 8bpp sprites, sprite-0 split, opcode encryption toggled four times a frame); 99.9% picture, 43-60 NES fps (lowest in the death sequence) |
+| Jumper (VT369, a Super Mario Bros. hack) | working (CPU x3, 8bpp sprites, sprite-0 split, opcode encryption toggled four times a frame); 99.9% picture, 60 NES fps in play (59.5 on average over a test run with many deaths), about 54 for a second while a level reloads |
 | Sky Fighter (VT369) | working (CPU x3, 16x16 sprites, 8bpp scrolling background); title 100%, gameplay 96-98% picture (enemy waves drift from the reference), 60 NES fps |
 | Lucky Lawn Mower (VT09) | working; 99.7% picture, colours match the reference exactly |
 | VG Pocket 50-in-1 (VT09) | all 50 games run; mean exact-colour match 98.3% across all 50 |

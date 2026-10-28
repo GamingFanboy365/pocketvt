@@ -196,7 +196,8 @@ get_instruction_number:
 	ldr r0,=vt_active
 	ldrb r0,[r0]
 	cmp r0,#0
-	ldrne r2,=vt_op_dec
+	ldrne r2,=vt_op_dec_p
+	ldrne r2,[r2]
 	ldrneb r2,[r2,r1]
 #endif
 	cmp r2,#0x4C
@@ -221,7 +222,7 @@ set_cpu_hack:
 	@ only submapper 15's bit5<->6 swap and refused every other row).
 	@ op_table[raw] holds the handler for the opcode raw DECODES to, so a
 	@ hack goes in at the raw byte found in PRG and its type comes from
-	@ the decoded opcode (vt_op_dec, filled by vt_rebuild_optable).  The
+	@ the decoded opcode (vt_op_dec_p, set by vt_rebuild_optable).  The
 	@ handler a removed hack gives back is vt_sh_norm[n] (the canonical
 	@ table's, so op_vt_JMP_abs survives), and the default BNE hack goes
 	@ to vt_sh_raw[6], the raw byte that decodes to $D0.
@@ -332,7 +333,8 @@ dobnehack:
 	ldr r12,=vt_active
 	ldrb r12,[r12]
 	cmp r12,#0
-	ldrne r12,=vt_op_dec
+	ldrne r12,=vt_op_dec_p
+	ldrne r12,[r12]
 	ldrneb r0,[r12,r0]
 #endif
 	@is it a DEX CA \ DEY 88 \ INX E8 \ INY C8?

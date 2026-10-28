@@ -334,9 +334,11 @@ static inline u16 vt03_composite_to_gba(u8 lo, u8 hi)
 }
 
 void vt_mapped_rgb_fixup(void);
+void vt_prg_hot_check(void);
 __attribute__((target("arm")))
 void vt_palette_rebuild_gba(void)
 {
+    if (vt_console == 0x0A) vt_prg_hot_check();     /* s.96: VT369 */
     if (vt369_enh) { vt369_frame_end(); return; }   /* s.82 */
     /* s21b62: newframe_nes_vblank (NES line 242) calls this first; the frame's
      * catch-ups have already filled bg0cntbuff to line 240 and the buffer swap
@@ -1240,11 +1242,20 @@ static void vt_chr4_assemble(void)
 // are identical and they never need copying.  Steady state: 8 word compares
 // instead of 4096 word copies.
 extern volatile u8 vt_blk_lent;
+/* s.97: the 2K BG pages PocketNES's 2bpp tile renderer (render_recent_tiles,
+ * ppu.s) wrote since the last copy, bit p = page p.  The probes below see a
+ * stomp only when it hits one of their four words: after a CHR bank change
+ * the 2bpp cache re-renders every tile, and Hex City X's devkitARM core kept
+ * four 2bpp ground tiles for good once the order of the vblank's work moved
+ * (guide s.97).  Marked pages are copied whatever the probes say. */
+EWRAM_BSS u8 vt_bg2_stomp;
 __attribute__((target("arm"), noinline))
 static void vt_chr4_copy_to_vram(void)
 {
     if (vt_bkexten_live) return;   // BG char VRAM is slot-managed (session 18)
     const u32 skip = (u32)vt_blk_lent - 1u;   // a half lent to split slot 2 (s.79); ~0 = none
+    const u32 stomp = vt_bg2_stomp;
+    vt_bg2_stomp = 0;
     for (int p = 0; p < 8; p++) {
         if ((u32)(p >> 2) == skip) continue;
         const u32 *s = (const u32*)(vt_chr4_buf + (u32)p * 2048u);
@@ -1261,7 +1272,7 @@ static void vt_chr4_copy_to_vram(void)
         // page of blank tiles can't produce a false match on a single zero.
         u16 sig = vt_chr4_sigoff[p];
         u32 i0 = (sig == 0xFFFF) ? 0u : sig;
-        if (d[i0] == s[i0] && d[129] == s[129] &&
+        if (!((stomp >> p) & 1) && d[i0] == s[i0] && d[129] == s[129] &&
             d[257] == s[257] && d[385] == s[385])
             continue;                           // still our 4bpp content
 
@@ -1280,6 +1291,7 @@ static void vt_chr4_copy_to_vram_all(void)
     if (vt_bkexten_live) return;   // BG char VRAM is slot-managed (session 18)
     const u32 *s = (const u32*)vt_chr4_buf;
     const u32 skip = (u32)vt_blk_lent - 1u;   // a half lent to split slot 2 (s.79); ~0 = none
+    vt_bg2_stomp = 0;                         // s.97: every page is copied
     for (int tile = 0; tile < 512; tile++, s += 8) {
         if ((u32)(tile >> 8) == skip) continue;
         u32 addr = 0x06000000u + (u32)tile * 32u;
@@ -2281,6 +2293,10 @@ static void vt_16c_palette_fixup_body(void)
      * The game is paused; nothing here is due before redecompress. */
     if (ewram_owner_is_sram) return;
     if (vt369_enh) { vt369_vblank(); return; }   /* s.82 */
+    /* s.97: consume_recent_tiles ran after this vblank's 4bpp copy
+     * (vt_chr4_rebuild_if_dirty); put back the BG pages it wrote before
+     * they are shown, under the copy's own conditions. */
+    if (vt_bg2_stomp && !vt_bkexten_live && (vt_reg_2010 & 0x06)) vt_chr4_copy_to_vram();
 #ifdef VT_AUTOPLAY
     // Debug-only self-playing script.  Drives the user's reported route into
     // the side-scrolling stage: hold Up ~3.5s, Right ~1s, Up ~1s.  Never
@@ -2877,16 +2893,85 @@ int vt369_high_slots_ok(void)
     return !vt_prg_evict_pending;
 }
 
+/* s.96: the same answer without asking for the move.  ppu_vt369.c asks
+ * (vt369_high_slots_ok) only once the low slots are full, so a VT369 game
+ * whose screens fit in them keeps its PRG copy in VRAM: Jumper shows at
+ * most 94 distinct tiles against 319 low 8bpp slots. */
+int vt369_high_slots_live(void) { return vt_prg_evicted && !vt_prg_evict_pending; }
+
+/* s.96: the VRAM PRG copy follows the 6502 on VT369 carts.  init_cache puts
+ * the last 32K of PRG in char blocks 2/3, which a OneBus cart runs only while
+ * it boots; Jumper then runs from one 32K block of cart ROM for good, where
+ * every opcode and operand byte costs 4 cycles against VRAM's 1 (~50K cycles
+ * a NES frame).  When $8000-$FFFF has mapped the same contiguous 32K of cart
+ * ROM for VT_PRG_HOT_FRAMES NES frames, the block is copied over the VRAM
+ * copy: banks in VRAM go to their twin (vt_prg_reloc), the block's banks to
+ * VRAM, and the block's cart-ROM home becomes the twin for a later
+ * vt_prg_evict.  Called at NES line 242 (vt_palette_rebuild_gba), where the
+ * 6502 is stopped; timeout.s re-applies the banks as newframe_nes_vblank
+ * returns, as after an eviction.  Never once the slots own the VRAM. */
+#define VT_PRG_HOT_FRAMES 60
+EWRAM_BSS const u8 *vt_prg_hot_cand;    /* cart-ROM start of the candidate block */
+EWRAM_BSS u16 vt_prg_hot_age;           /* NES frames it has stayed mapped */
+EWRAM_BSS u32 vt_prg_hot_moves;         /* blocks moved in since the cart started */
+extern const u8 *vt_isim_hack[4];       /* new_speed_hack.c */
+
+static const u8 *vt_prg_reloc_hot(const u8 *x, const u8 *p)
+{
+    x = vt_prg_reloc(x);
+    if ((u32)(x - p) < 0x8000u) x = (const u8 *)0x06008000u + (x - p);
+    return x;
+}
+
+void vt_prg_hot_check(void)
+{
+    if (vt_prg_evicted || vt_prg_evict_pending || !vt_prg_shadow) return;
+    u8 *const *mm = (u8 *const *)memmap_tbl;
+    u8 *const m = mm[4];
+    const u8 *const p = m + 0x8000;
+    if (mm[5] != m || mm[6] != m || mm[7] != m || (u32)p < 0x08000000u) { vt_prg_hot_age = 0; return; }
+    if (p != vt_prg_hot_cand) { vt_prg_hot_cand = p; vt_prg_hot_age = 0; return; }
+    /* each move costs a 32K copy (~55K cycles): a game that keeps changing
+     * blocks waits twice as long for each next move, up to 16 times */
+    const u32 need = VT_PRG_HOT_FRAMES << (vt_prg_hot_moves < 4 ? vt_prg_hot_moves : 4);
+    if (++vt_prg_hot_age < need) return;
+    vt_prg_hot_age = 0;
+    if ((u32)mm[3] + 0x6000u - 0x06008000u < 0x8000u) return;   /* $6000 runs from the VRAM copy */
+    memcpy32((void *)0x06008000, p, 0x8000);
+    const u16 ime = REG_IME;
+    REG_IME = 0;
+    if (!vt_prg_evicted) {                  /* the vblank IRQ may have evicted meanwhile */
+        const int n = rompages * PRG_16;
+        for (int b = 0; b < n; b++)
+            instant_prg_banks[b] = (u8 *)vt_prg_reloc_hot(instant_prg_banks[b], p);
+        for (int i = 0; i < 4; i++) {
+            speedhacks[i].hack_pc = vt_prg_reloc_hot(speedhacks[i].hack_pc, p);
+            vt_isim_hack[i] = vt_prg_reloc_hot(vt_isim_hack[i], p);
+        }
+        _speedhack_pc  = vt_prg_reloc_hot(_speedhack_pc, p);
+        _speedhack_pc2 = vt_prg_reloc_hot(_speedhack_pc2, p);
+        vt_prg_shadow = (u8 *)p;
+        vt_prg_evict_pending = 1;
+        vt_prg_hot_moves++;
+    }
+    REG_IME = ime;
+}
+
 void vt_split_reset(void)
 {
     vt_split_valid[0] = vt_split_valid[1] = vt_split_valid[2] = 0;
     vt_blk_lent = 0;
     vt_prg_evicted = 0;
     vt_prg_evict_pending = 0;
+    vt_prg_hot_cand = 0;
+    vt_prg_hot_age = 0;
+    vt_prg_hot_moves = 0;
     vt_tag_buf[0] = vt_tag_buf[1] = 0;      /* first use scans all 240 lines */
 }
 #else
 int vt369_high_slots_ok(void) { return 0; }
+int vt369_high_slots_live(void) { return 0; }
+void vt_prg_hot_check(void) {}
 #endif
 
 /* The slot (0-2) holding bank set k, building it on a miss; -1 if every

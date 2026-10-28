@@ -230,6 +230,10 @@ SECTIONS
 		*iwram.*(.text)
 		*(SORT_BY_NAME(.iwram.*))
 		. = ALIGN(4);   /* REQUIRED. LD is flaky without it. */
+		/* s.96: no VT overlay in a multiboot build (gba_cart_my.ld has one):
+		 * an empty range, so iwram_ovl_select (loadcart.c) never installs it */
+		__iwram_ovl_start = ABSOLUTE(.);
+		__iwram_ovl_end = ABSOLUTE(.);
 		__iwram_end__ = ABSOLUTE(.) ;
 	} >iwram = 0xff
 
