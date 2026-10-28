@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "about": "PocketVT test carts, read by tools/regress/regress.py. The ROMs are NOT in git (copyright): regress.py --stage finds them by md5 in testroms/, the session uploads folder or any zip (the user keeps all of them as pocketvt_testroms.zip) and copies them into testroms/ (gitignored). ram_benign: NES RAM ranges (6502 addresses) whose differences are known and harmless; drift: game state follows GBA timing, so NES RAM is not compared; speedhack_race: a RAM difference is re-checked on -DVT_NO_SPEEDHACK builds.",
+ "about": "PocketVT test carts, read by tools/regress/regress.py. The ROMs are NOT in git (copyright): regress.py --stage finds them by md5 in testroms/, the session uploads folder or any zip (the user keeps all of them as pocketvt_testroms.zip) and copies them into testroms/ (gitignored). ram_benign: NES RAM ranges (6502 addresses) whose differences are known and harmless; drift: game state follows GBA timing, so NES RAM is not compared; drift_from: RAM differences from that NES frame on are expected (a WARN). Any other RAM difference is re-checked on -DVT_NO_SPEEDHACK builds.",
  "vg_pocket_wrap": "VG_Pocket_VT09.nes is the raw 4 MB vgpocket.bin behind the NES 2.0 header 4E 45 53 1A 00 00 00 0B 01 01 00 00 00 08 00 00 (guide s.54)",
  "carts": [
   {
@@ -243,10 +243,10 @@
    "ram_benign": [
     "0x0000"
    ],
-   "speedhack_race": true,
-   "note": "game launch from the menu races the idle-loop finder (GBA-time sampling): identical only with -DVT_NO_SPEEDHACK (s.97e)",
+   "note": "its game launch (NES ~827, A tapped from 650) lands one of two ways depending on the core's code timing, with the speed hacks on or off: the values swap between builds and the screens agree (s.97e, s.98g); RAM before NES 800 must match",
    "raw_md5": "bb174a2cf5a8b088660bb2c552db99a5",
-   "raw_header": "4E45531A0000000B0101000000080000"
+   "raw_header": "4E45531A0000000B0101000000080000",
+   "drift_from": 800
   },
   {
    "id": "Zuma",

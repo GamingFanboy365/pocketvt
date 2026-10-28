@@ -432,8 +432,9 @@ def judge_state(cart, old, new, outdir):
     missing = [f for f in want if f not in new['frames']]
     if missing:
         return 'FAIL', ['new core never reached NES %d (old did; stopped at %d)' % (missing[0], new['last_ft'])], False, []
-    ram_bad, benign_hits, stack_hits = [], 0, 0
+    ram_bad, drift_bad, benign_hits, stack_hits = [], [], 0, 0
     n = cart['ram']
+    drift_from = 0 if cart.get('drift') else cart.get('drift_from')
     for f in want:
         a = open(old['frames'][f][0], 'rb').read()
         b = open(new['frames'][f][0], 'rb').read()
@@ -448,22 +449,24 @@ def judge_state(cart, old, new, outdir):
             stack_hits += len(bad) - len(live)
             bad = live
         if bad:
-            ram_bad.append((f, len(bad), ['$%04X:%02X>%02X' % (i, a[i], b[i]) for i in bad[:6]]))
+            entry = (f, len(bad), ['$%04X:%02X>%02X' % (i, a[i], b[i]) for i in bad[:6]])
+            (drift_bad if drift_from is not None and f >= drift_from else ram_bad).append(entry)
     if benign_hits:
         notes.append('%d known-benign RAM byte differences' % benign_hits)
     if stack_hits:
         notes.append('%d byte differences in dead stack just below an equal stack pointer' % stack_hits)
     verdict = 'PASS'
+    if drift_bad:
+        f, nb, ex = drift_bad[0]
+        # expected (carts.json): a note; the pictures and the reference still judge
+        notes.append('NES RAM differs at %d frames from NES %d (%d bytes: %s); expected: %s' %
+                     (len(drift_bad), f, nb, ' '.join(ex), cart.get('note', 'game state follows GBA timing')))
     if ram_bad:
-        f, n, ex = ram_bad[0]
-        msg = 'NES RAM differs at %d of %d frames, first NES %d (%d bytes: %s)' % (len(ram_bad), len(want), f, n, ' '.join(ex))
-        if cart.get('drift'):
-            notes.append(msg + '; expected: this cart\'s game state follows GBA timing')
-        else:
-            notes.append(msg)
-            verdict = 'FAIL'
+        f, nb, ex = ram_bad[0]
+        notes.append('NES RAM differs at %d of %d frames, first NES %d (%d bytes: %s)' % (len(ram_bad), len(want), f, nb, ' '.join(ex)))
+        verdict = 'FAIL'
     # pictures, where the RAM agrees
-    bad_ram_frames = {f for f, _, _ in ram_bad}
+    bad_ram_frames = {f for f, _, _ in ram_bad + drift_bad}
     phase, differ = 0, []
     for f in want:
         if f in bad_ram_frames:

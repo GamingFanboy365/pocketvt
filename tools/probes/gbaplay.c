@@ -3,7 +3,9 @@
  *   KEYS="first-last:mask,..."  GBA keys by GBA frame (A 1, B 2, Select 4, Start 8, Right 16,
  *                               Left 32, Up 64, Down 128, R 256, L 512)
  *   KEYSN="first-last:mask,..." (with FT) the same keyed to NES frames (frametotal): the game
- *                               then plays the same on a faster or slower core (speed A/B)
+ *                               then plays the same on a faster or slower core (speed A/B); near
+ *                               a change the GBA frame is single-stepped and re-keyed at each NES
+ *                               frame, so a GBA frame that runs two NES frames cannot delay it
  *   SHOTS="f,f,..." OUT=prefix  writes prefix_fNNNNN.ppm (240x160) after those GBA frames
  *   PEEK="addr[:n],..."         at every shot prints words (or n bytes) at those addresses
  *   FT=<frametotal addr>        prints frametotal with every shot (NES frames run so far)
@@ -41,6 +43,17 @@ static struct mLogger q = { .log = nolog };
 static int in_list(const char *s, int f) {
 	if (!s) return 0;
 	while (*s) { char *e; long v = strtol(s, &e, 0); if (e == s) break; if (v == f) return 1; s = e; if (*s == ',') s++; }
+	return 0;
+}
+/* 1 when a KEYSN span starts or ends within NES frames (ft, ft+3]: that GBA
+ * frame is single-stepped and re-keyed at each NES frame, so the change lands
+ * on its NES frame however the frames fall in GBA frames (s.98) */
+static int key_edge_near(const char *ks, unsigned ft) {
+	if (!ks) return 0;
+	while (*ks) { unsigned f0, f1, m; int used;
+		if (sscanf(ks, "%u-%u:%u%n", &f0, &f1, &m, &used) != 3) break;
+		if ((f0 > ft && f0 <= ft + 3) || (f1 + 1 > ft && f1 + 1 <= ft + 3)) return 1;
+		ks += used; if (*ks == ',') ks++; }
 	return 0;
 }
 static unsigned keys_at(const char *ks, unsigned f) {
@@ -83,8 +96,9 @@ int main(int argc, char **argv) {
 	int arrivals[64] = {0};
 	long stopft = getenv("STOPFT") ? atol(getenv("STOPFT")) : -1;
 	for (const char *p = watch; p && *p && nw < 16; ) { char *e; wa[nw++] = strtoul(p, &e, 16) & ~1u; p = e; if (*p == ',') p++; }
+	const char *ksn = getenv("KEYSN");
 	for (int f = 1; f <= n; f++) {
-		c->setKeys(c, keys_at(ks, f) | (fta ? keys_at(getenv("KEYSN"), c->busRead32(c, fta)) : 0));
+		c->setKeys(c, keys_at(ks, f) | (fta ? keys_at(ksn, c->busRead32(c, fta)) : 0));
 		/* FTDUMP: the state is dumped at the instruction that moves frametotal (single-
 		 * stepping this GBA frame), so both passes are sampled at the same point of the
 		 * NES frame; a GBA frame boundary falls anywhere in it, and a raster-split game's
@@ -99,6 +113,7 @@ int main(int argc, char **argv) {
 				unsigned ft = c->busRead32(c, fta);
 				if (ft == ft0) continue;
 				ft0 = ft;
+				c->setKeys(c, keys_at(ks, f) | keys_at(ksn, ft));
 				if (dumped_k >= 0 || !in_list(ftdump, (int)ft)) continue;
 				int slot = 0; for (const char *p = ftdump; *p; slot++) { char *e; long v = strtol(p, &e, 0); if (e == p || v == (long)ft) break; p = e; if (*p == ',') p++; }
 				dumped_k = slot < 64 ? arrivals[slot]++ : 0; dumped_ft = ft;
@@ -122,6 +137,14 @@ int main(int argc, char **argv) {
 					printf("frame %d: pc reached %08X  WAITCNT=%04X IME=%u lr=%08X r0=%08X r1=%08X\n", f, pc,
 					       c->busRead16(c, 0x04000204), c->busRead16(c, 0x04000208), cpu->gprs[14], cpu->gprs[0], cpu->gprs[1]);
 				}
+			}
+		} else if (fta && ksn && key_edge_near(ksn, c->busRead32(c, fta))) {
+			uint32_t fc = c->frameCounter(c);
+			unsigned ft0k = c->busRead32(c, fta);
+			for (long k = 0; c->frameCounter(c) == fc && k < 4000000; k++) {
+				c->step(c);
+				unsigned ft = c->busRead32(c, fta);
+				if (ft != ft0k) { ft0k = ft; c->setKeys(c, keys_at(ks, f) | keys_at(ksn, ft)); }
 			}
 		} else c->runFrame(c);
 		if (dumped_k >= 0) {
