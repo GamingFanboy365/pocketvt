@@ -16,7 +16,7 @@ S(){ arm-none-eabi-nm pocketvt.elf | awk -v s=$1 '$3==s{print $1}'; }
 | Probe | Question it answers |
 |-------|---------------------|
 | `speed` | NES frames emulated per GBA second (`frametotal` deltas). The same number as NMIs per 60 frames for a running game. |
-| `fhash` / `fdump` | A hash of framebuffer + palette RAM per GBA frame, for the frame-SET regression test. `fdump` also writes chosen frames as raw RGBX. |
+| `fhash` / `fdump` | A hash of framebuffer + palette RAM per GBA frame, for the frame-SET regression test. `fdump` also writes chosen frames as raw RGBX. `KEYS="first-last:mask,..."` presses keys by GBA frame (fhash). A core of different speed shows new frames here without being wrong (guide s.97): check RAM and pictures keyed to NES frames with gbaplay FTDUMP. |
 | `vram_dump` | VRAM, EWRAM and IWRAM after N GBA frames: what is actually in a VRAM block, and where the PRG copies live. |
 | `ramat` | NES RAM and VRAM when `frametotal` first reaches each listed NES frame. Diffing two cores this way shows where their game state diverges. |
 | `pcprobe` | The 6502 PC saved at each NES frame start (`_m6502_pc` - `_lastbank`). |

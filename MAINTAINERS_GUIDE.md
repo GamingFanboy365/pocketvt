@@ -5935,3 +5935,132 @@ ones toggle in place, and VT369 carts decode sound and patch BG0CNT there.
 op_table_reset and the IRQ stack apply to every cart, and the fill queue to
 VT369. The EWRAM layout moved, which s.93 found can show Table Soccer
 VT369's stale tile. The regression set of CLAUDE.md is owed.
+
+## 97. Five carts against s.96: a JMP check in ROM, an NMI counter inside CHR_DECODE, stomped 4bpp pages
+
+The user supplied Aero Gyrodine, Hex City X, Lonely Island, Lucky Lawn Mower
+VT09 and Star Ally VT03 to check s.96 on. Each ran on main (1bfea0e) and on
+the new core, built with build_pvt.sh and with the devkitARM Docker image
+whose output is committed at the repo root (CI's binary for main and a local
+Docker build of main are byte-identical). Four checks: NES RAM and the
+picture at 15 NES frames (60 to 1400) with input keyed to NES frames (gbaplay
+KEYSN and FTDUMP: Start at 100, 300 and 500, Right held from 600 with A
+taps); compare_furb at 7 frames (150 to 1050, Start at 100, 300 and 500);
+NES frames per GBA second over 50 s of the same session; Jumper with
+-DVT369_SND_OFF against main at 11 NES frames. They found three faults, one
+from s.96 and two older ones that s.96 exposed.
+
+### 97a. The "jmp *" check cost every VT cart its JMPs
+
+Hex City X's speed showed one second at 55 fps where main held 60. cycprof
+ABS from NES frame 440: about 1000 JMP abs a NES frame. op_vt_JMP_abs (the
+VT09 encryption commit, ARM in cart ROM) and its tail cost 41.9K cycles a NES
+frame on main and 78K with s.96's self-JMP check (96c), against a 280K frame.
+The same code now also lives in the IWRAM overlay as vto_jmp (vt_ovl.s;
+iwram_ovl_select sets vt_ovl_jmp), and vt_patch_optable (6502_vt.s) puts it
+in op_table[$4C] when the overlay is in: 27K cycles a NES frame, 246K for
+the frame against main's 273K. _4C still makes the jump and charges it, so
+vt_cpu_x3_set keeps patching one cost immediate (it never sees the blob's
+copy). The ROM op_vt_JMP_abs stays for a build without the overlay
+(multiboot) and for the speed-hack paths that branch to it.
+
+op_vt_JMP_absy, the JMP speed hack (speedhackops[8], every cart since s.86),
+sent every JMP but the hacked one through the ROM wrapper, the VT commit
+check included, on NES carts too. It now jumps through vt_jmp_norm, the
+cart's own JMP abs: op_table_reset (loadcart.c) sets it to _4C for every
+cart and vt_patch_optable to the VT handler. vt_rebuild_optable's canonical
+snapshot is taken once per power-on, so it holds vto_jmp's address; only
+mapper 253 carts read it (cart.s clears vt_active at every load), and every
+mapper 253 cart gets the overlay at the same address before its first
+instruction. The blob is 1368 bytes, 20 free on the devkitARM link and 24 on
+build_pvt's. The two-game switch test of 96f ran again (Jumper then the test
+ROM, the reverse, Jumper then Hex City X): op_table[$4C] and vt_jmp_norm
+follow the cart, and the test ROM's NMI counter steps once a NES frame.
+
+### 97b. nmi_handler's debug counter wrote into CHR_DECODE
+
+With the JMP in IWRAM, Hex City X's planet (title and gameplay) showed 12
+pixels in green and red where main and Furbtendulator have blue. NES RAM was
+identical. The tiles at fault had wrong pixels 6-7 in rows whose plane byte
+was $0F, and CHR_DECODE's entry for $0F had a top byte (the nibbles of those
+two pixels) that changed with every NMI. nmi_handler (timeout.s) incremented
+a DEBUG byte at the fixed address 0x020007DF, the "NMIs per 60 frames" of
+s.72, and EWRAM .sbss had grown over it: on main's build_pvt core it was the
+top byte of CHR_DECODE[$13], after s.97's eight bytes of EWRAM_BSS
+(vt_ovl_jmp, vt_jmp_norm) that of [$0F], and on main's devkitARM core byte 47
+of vt_isim, the idle-loop finder's state. Every 2bpp tile render (PocketNES's
+CHR cache, render_tiles_2) of a row holding that byte drew its last two
+pixels from the NMI count. The counter is the symbol nmi_count now (.sbss in
+timeout.s), and the planet is identical to main's again. A fixed RAM address
+in code is a stomp waiting for the layout to move: "EWRAM layout alone
+re-exposes it" in open item 3 fits this, though Push the Ball and Table
+Soccer VT369 were not in the session to check.
+
+### 97c. 2bpp re-renders over the 4bpp pages (devkitARM only)
+
+On the devkitARM core Hex City X's ground showed blue stripes under the
+horizon for good from NES frame 107, where main has orange. Bisected with
+Docker builds of each s.96 commit to 147780e, spriteinit's tables (96d): the
+ramps are byte-identical, but check_canaries runs spriteinit at the start of
+every vblank, and 8K fewer cycles there moved the rest of the vblank. Four
+ground tiles (page 6, words 224-239 and 416-431) held the 2bpp render of
+their NES data (high planes dropped). After a CHR bank change vt_chr_sync
+marks every tile dirty and the 2bpp cache re-renders them over the next
+vblanks (consume_recent_tiles, after vt_chr4_rebuild_if_dirty's copy).
+vt_chr4_copy_to_vram finds a stomp only by four probe words per 2K page; on
+main the frame 107 stomp hit one and the page came back at frame 108, on the
+s.96 devkitARM core it hit none.
+
+render_recent_tiles (ppu.s, IWRAM) now ORs the 2K BG pages of each run into
+vt_bg2_stomp after the run is written (marked before it, a vblank in between
+could copy the pages back and clear the bits ahead of the stomp).
+vt_chr4_copy_to_vram copies a marked page whatever the probes say and clears
+the mask; vt_chr4_copy_to_vram_all clears it; and vt_16c_palette_fixup_body,
+which a top-level vblank runs last (after consume_recent_tiles and
+display_bg), calls vt_chr4_copy_to_vram when
+pages are marked and the 4bpp tiles own BG VRAM ($2010 & $06, no BKEXTEN, not
+VT369 enhanced), so a page the vblank's own 2bpp work stomped is back before
+it is shown. VT carts never take render_a_kilobyte (loadcart.c: bankable_vrom
+0, has_vram 1). It costs 64 bytes of IWRAM: __bss_end__ 0x03007AE0
+(build_pvt), 0x03007AD0 (devkitARM); spmin from power-on on Hex City X puts
+the user stack's lowest point at 0x03007BAC, and the menu Restart flow of 96f
+at 0x03007C24 (IRQ stack 0x03007E60), as in s.96.
+
+### 97d. Results
+
+NES RAM and pictures against main, on both toolchains: Aero Gyrodine, Hex
+City X, Lonely Island and Lucky Lawn Mower VT09 identical at all 15 frames.
+Star Ally VT03's RAM is identical on build_pvt; on devkitARM two bytes ($01E4
+on the stack page, $04FB) differ at NES frame 1000 and agree again by 1200,
+and main's own two toolchains differ in exactly those bytes there. Its
+pictures differ at one or two frames, the blink phase any change of cost
+moves (CLAUDE.md, regression step 2). Jumper with sound off is identical to
+main at all 11 frames.
+
+compare_furb means (struct): Aero 99.66, Hex 99.92, Lonely Island 97.65,
+LLM VT09 99.71 on all four cores; Star Ally 98.18 (main build_pvt), 98.29
+(new build_pvt), 98.27 (main devkitARM), 98.12 (new devkitARM), its frames
+taking one of two values with the blink. Lonely Island's exact5 is 45% on
+every core: Furbtendulator draws its whites #FFFFFF where the s.57 DACs give
+#E8E8E8.
+
+| NES fps (mean / min over 50 s) | main build_pvt | new build_pvt | main devkitARM | new devkitARM |
+|---|---|---|---|---|
+| Aero Gyrodine | 60.00 / 60 | 60.00 / 59 | 60.00 / 59 | 60.00 / 59 |
+| Hex City X | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 |
+| Lonely Island | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 |
+| Lucky Lawn Mower VT09 | 59.89 / 55 | 59.89 / 55 | 59.89 / 55 | 59.89 / 55 |
+| Star Ally VT03 | 58.13 / 49 | 58.65 / 52 | 58.13 / 49 | 58.65 / 51 |
+| Jumper (70 s, 96a) | 53.6 / 42 | 59.5 / 54 | 53.2 / 40 | 59.6 / 55 |
+
+### 97e. Not tested
+
+Scramble, VG Pocket, Time Pilot, Push the Ball, Add 'em Up, Table Soccer
+(VT03 and VT369), Jewel Master (VT03 and VT369), Lucky Lawn Mower VT369, Fire
+Fighter, Zuma, Sky Fighter, Funny Coins, Soccer 2009 and Star Ally UM6578
+were not in the session. vto_jmp runs every VT cart's JMP abs; vt_jmp_norm
+every cart's JMPs while a JMP speed hack is in; the nmi_count change moves
+EWRAM on every cart and ends the CHR_DECODE stomp everywhere; the page repair
+acts on VT carts in 16-colour mode without BKEXTEN (Aero, Hex, Add 'em Up,
+Push the Ball, Table Soccer VT03 among the test carts), and the marking runs
+on every VT cart's 2bpp renders.

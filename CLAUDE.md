@@ -76,7 +76,9 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
    (struct is keyed in 5-bit RGB since s.93; re-score the old core with the
    same tool, older numbers are not comparable.)
 5. **Emulation speed = NMIs per 60 frames.** nmi_handler (timeout.s) increments
-   a debug byte at 0x020007DF; read it before/after 60 runFrame calls.
+   the byte at `nmi_count` (read its address from the ELF; until s.97 it was
+   the fixed 0x020007DF, which wrote into CHR_DECODE); read it before/after 60
+   runFrame calls.
 
 ## Diagnostic habits that paid off
 - Read symbols fresh after every link (`arm-none-eabi-nm pocketvt.elf`); never
@@ -106,8 +108,13 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   (frame end never waits) and -DVT_TIMER_LOG (VT timer expiry/re-arm ring). Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.96)
-See MAINTAINERS_GUIDE.md s.96 (Jumper 53.6 -> 59.5 fps: its code moved into
+## Current state (after s.97)
+See MAINTAINERS_GUIDE.md s.97 (five carts checked against s.96 on both
+toolchains: the VT JMP wrapper runs from the IWRAM overlay (vto_jmp) and a JMP
+speed hack passes other JMPs to vt_jmp_norm; nmi_handler's debug counter is
+the symbol nmi_count, no longer a fixed address inside CHR_DECODE; the 2bpp
+renderer marks the BG pages it writes (vt_bg2_stomp) and the 4bpp copy puts
+them back in the same vblank), s.96 (Jumper 53.6 -> 59.5 fps: its code moved into
 the VRAM PRG copy, "jmp *" loops skipped exactly, spriteinit from tables, an
 IWRAM overlay over dead mapper code for the opcode-table toggle, the VT369
 sound decode and the frame-end patch; op_table copied back at every cart
@@ -251,12 +258,24 @@ states, sound) and s.77-78 (raster-split slots, speed).
   reference/gba_bios.bin`, BIOS supplied by the user, gitignored).
 - IWRAM overlay (s.96): the IWRAM code of konami.o, map023771.o, map1.o,
   map4.o and map9.o sits at __iwram_ovl_start-__iwram_ovl_end (1388 bytes);
-  on a VT cart loadcart.c (iwram_ovl_select) puts src/vt_ovl.s there (1224
-  bytes, position-independent ARM, a link ASSERT checks the fit) and sets
-  vt_ovl_swap / vt_ovl_dec48 / vt_ovl_fend / vt369_mixp; any other cart gets
-  the mapper code back. NULL pointers mean the C versions run. Nothing a VT
-  cart runs may live in those five objects' .iwram. -DVT369_DEC48_CHECK runs
-  the IWRAM and C decoders side by side.
+  on a VT cart loadcart.c (iwram_ovl_select) puts src/vt_ovl.s there (1368
+  bytes since s.97, 20 free on the devkitARM link; position-independent ARM,
+  a link ASSERT checks the fit) and sets vt_ovl_swap / vt_ovl_dec48 /
+  vt_ovl_fend / vt369_mixp / vt_ovl_jmp; any other cart gets the mapper code
+  back. NULL pointers mean the C versions run. Nothing a VT cart runs may live
+  in those five objects' .iwram. -DVT369_DEC48_CHECK runs the IWRAM and C
+  decoders side by side.
+- JMP abs (s.97): vt_patch_optable puts vto_jmp (the overlay's copy of
+  op_vt_JMP_abs: VT09 commit + "jmp *" skip, then _4C) in op_table[$4C] and in
+  vt_jmp_norm; op_table_reset sets vt_jmp_norm to _4C for every other cart.
+  op_vt_JMP_absy (a JMP speed hack) sends the JMPs it does not hack there.
+  Anything that installs another JMP handler must keep vt_jmp_norm in step.
+- No fixed RAM addresses in code (s.97): the NMI counter at 0x020007DF sat in
+  CHR_DECODE (or vt_isim, depending on the link) for its whole life.
+- 4bpp BG pages (s.97): render_recent_tiles ORs the 2K pages each run wrote
+  into vt_bg2_stomp; vt_chr4_copy_to_vram copies marked pages whatever its
+  four probe words say, and vt_16c_palette_fixup_body repeats it at the end
+  of a top-level vblank. VT carts never take render_a_kilobyte.
 - loadcart.c copies op_table back from its load address for every cart
   (s.96): a VT cart's encryption leaves it permuted. VT369 carts whose code
   runs from one 32K of cart ROM get it copied into the VRAM PRG copy after 60
@@ -269,20 +288,23 @@ states, sound) and s.77-78 (raster-split slots, speed).
   bytes, all it had) when a game restarts from the ROM menu. spmin KEYSG=
   measures it (mode 0x12).
 - The IWRAM user stack is ~150 bytes above .bss; ALL new C globals go in
-  EWRAM_BSS (`__bss_end__` must stay <= 0x03007B84; 0x03007AA0 after s.93,
-  which moved vt_bk_slot_get out of the IWRAM vt_bk_write_cell). Heavy VT C runs on
+  EWRAM_BSS (`__bss_end__` must stay <= 0x03007B84; 0x03007AE0 build_pvt /
+  0x03007AD0 devkitARM after s.97's 64 bytes of render_recent_tiles; the user
+  stack's lowest point measured 0x03007BAC on Hex City X from power-on and
+  0x03007C24 through a menu Restart). Heavy VT C runs on
   the 3K EWRAM stack. Measure with tools/probes/spmin from power-on.
 
 ## Open work, in priority order
-0. s.96 ran on Jumper and a mapper-0 test ROM only (the test ROMs were not in
-   that session): the regression set above, compare_furb and the speeds of
-   every cart are owed (s.96h lists what reaches them).
+0. s.97 checked s.96 on Aero Gyrodine, Hex City X, Lonely Island, LLM VT09,
+   Star Ally VT03 and Jumper, on both toolchains (identical to main, speeds at
+   or above main's). Every other cart is owed the regression set, compare_furb
+   and its speed (s.97e lists what reaches them).
 1. VT369 leftovers (s.82): 8bpp 16-row sprites through $201D bit 2 are done
    but untested, hi-res mode ($201C bit 2), CPU x3 in ROM handlers (s.88d).
    Speed at x3: Fire Fighter 54-60 (s.89, before the s.96 overlay; not
    re-measured), Jumper's level reloads 54 (s.96g: tile-cache cell updates,
    ~530K cycles in the first reload frame, Thumb from ROM; the overlay has
-   164 bytes free). Jumper waits on the sound CPU's tick counter $18F6, which
+   20 bytes free since s.97). Jumper waits on the sound CPU's tick counter $18F6, which
    the HLE advances per 128-tick fill (s.96g). Sound CPU: the $40AE per-channel rate
    divider, and the programs no test cart uses (s.84e).
 2. Sound (s.79d): VT ADPCM $4120-$412F only mixes while NES DMC plays; the
@@ -294,8 +316,11 @@ states, sound) and s.77-78 (raster-split slots, speed).
    the video DMA loop made Table Soccer VT369 lose two bracket corners (s.93);
    EWRAM layout alone (s.93 core + 1600 B of EWRAM_BSS) re-exposes it, and
    s.94 leaves one stale tile on Table Soccer VT369's knockout screen (s.95:
-   the select screen's Brazil label, 98.56% -> 98.54%). Lead:
-   vt_chr4_copy_to_vram probes only 4 words per 2K page for stomps (s.94). The VG band of
+   the select screen's Brazil label, 98.56% -> 98.54%). s.97 found two
+   causes and fixed both, unverified on those carts (not in the session):
+   the NMI counter's fixed address wrote into CHR_DECODE (which entry
+   depends on the layout), and 2bpp re-renders of 4bpp pages that the
+   4-word probe of vt_chr4_copy_to_vram missed (now marked). The VG band of
    missing tiles was a BKEXTEN slot stomp, fixed by the slot checksums (s.85c);
    the VG games at 96-98% (3/4, 3/5, 4/1, 4/2) still have a small residue.
 4. Table Soccer formation screen: two 6-line strips need a sixth char block.
