@@ -5993,8 +5993,8 @@ CHR cache, render_tiles_2) of a row holding that byte drew its last two
 pixels from the NMI count. The counter is the symbol nmi_count now (.sbss in
 timeout.s), and the planet is identical to main's again. A fixed RAM address
 in code is a stomp waiting for the layout to move: "EWRAM layout alone
-re-exposes it" in open item 3 fits this, though Push the Ball and Table
-Soccer VT369 were not in the session to check.
+re-exposes it" in open item 3 fits this (Table Soccer VT369's stale tile is
+gone, 97e).
 
 ### 97c. 2bpp re-renders over the 4bpp pages (devkitARM only)
 
@@ -6053,12 +6053,121 @@ every core: Furbtendulator draws its whites #FFFFFF where the s.57 DACs give
 | Star Ally VT03 | 58.13 / 49 | 58.65 / 52 | 58.13 / 49 | 58.65 / 51 |
 | Jumper (70 s, 96a) | 53.6 / 42 | 59.5 / 54 | 53.2 / 40 | 59.6 / 55 |
 
-### 97e. Not tested
+### 97e. Five more carts: the Brazil tile, and the speed hacks on GBA time
 
-Scramble, VG Pocket, Time Pilot, Push the Ball, Add 'em Up, Table Soccer
-(VT03 and VT369), Jewel Master (VT03 and VT369), Lucky Lawn Mower VT369, Fire
-Fighter, Zuma, Sky Fighter, Funny Coins, Soccer 2009 and Star Ally UM6578
-were not in the session. vto_jmp runs every VT cart's JMP abs; vt_jmp_norm
+The user then supplied Push the Ball, Star Ally UM6578, Table Soccer VT03,
+Table Soccer VT369 and the raw 4 MB VG Pocket dump (wrapped as in s.54:
+4E 45 53 1A 00 00 00 0B 01 01 00 00 00 08 00 00, VT09). The same four
+checks ran, plus compare_furb at the regression frames of earlier sessions
+(NES 150, 400 and 700, Start at 320).
+
+Table Soccer VT369 is open item 3's cart: s.94 and s.95 left the "R" of
+"BRA" on its knockout screen stale (18 pixels, 98.56% then 98.54%). It is
+whole on the new core: 98.59% at 150, 400 and 700 on both toolchains,
+against main's 98.54% (build_pvt) and 98.22% (devkitARM, whose whole label
+row was broken, 139 pixels). Every pixel main drew right the new core draws
+right. With -DVT369_SND_OFF its NES RAM and pictures are identical to main's
+at all 15 frames; with sound on, 1-4 RAM bytes differ (the HLE on GBA time,
+s.96a) and the pictures by exactly the label's pixels. Push the Ball (97.49%
+at 150, the value before its stale column appeared in s.87) and Table Soccer
+VT03 are identical to main on both toolchains, RAM and pictures.
+
+Star Ally UM6578's RAM differs from main's from NES frame 60, but main's own
+build_pvt and devkitARM cores differ as much from each other (33-375 bytes),
+and each core repeats itself exactly: its game state follows GBA timing
+(s.94). compare_furb means 99.42/99.43 (build_pvt main/new) and 99.26/99.41
+(devkitARM). Speed over 70 s: 58.36 to 59.05 and 58.58 to 58.97 mean; every
+core dips in the same heavy scene near NES frame 2800 (worst seconds 49 and
+50, 50 and 51, 47 and 50, 45 and 51).
+
+VG Pocket's menu is 100% on every core, and "Get It Right" (Right held, A
+tapped from NES 600) 98.73-98.75% on every core from NES 950 to 1400. The new
+core's RAM leaves main's at the game's launch (NES 827) and stays about 20
+bytes apart (counters such as $501-$503 one step apart), though the screens
+agree. -DVT_NO_JMPSKIP (new, a diagnostic: no "jmp *" skip in either JMP
+wrapper) changes nothing there. build_pvt cores of each s.96 commit flip back
+and forth: 089c637 differs, 2cdbaf0 and 147780e match main, 182895f on
+differ. With -DVT_NO_SPEEDHACK main and the new core agree (all 15 frames;
+$0000 once, a temporary the dump catches at different points). The
+idle-loop finder samples the 6502 where the GBA vblank interrupts it, and a
+hack charges whole loop turns, so where and when a hack goes in moves NES
+timing by a few cycles; the game's launch races that. Main's two toolchains
+happen to land the same way. It is not new and not a fault of these
+commits, but it means NES-keyed RAM identity holds on a cart that installs
+hacks during a race only by luck; check with -DVT_NO_SPEEDHACK before
+calling a difference a regression.
+
+| NES fps, mean / min over 50 s | main build_pvt | new build_pvt | main devkitARM | new devkitARM |
+|---|---|---|---|---|
+| Push the Ball | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 |
+| Table Soccer VT03 | 59.59 / 40 | 59.61 / 41 | 59.57 / 40 | 59.59 / 41 |
+| Table Soccer VT369 | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 | 60.00 / 60 |
+| VG Pocket VT09 | 59.04 / 48 | 59.15 / 48 | 59.11 / 49 | 59.02 / 48 |
+
+### 97f. Eight more carts after the merge; Funny Coins' stuck finder
+
+After PR #20 was merged the user supplied Fire Fighter, Jewel Master VT369,
+Funny Coins, Lucky Lawn Mower VT369, Zuma (the VT369 carts), Time Pilot,
+Soccer 2009 and Jewel Master VT03. Pre-PR main (1bfea0e) against the merged
+core, on both toolchains; `make VT=VT369_SND_OFF` builds the devkitARM core
+without the sound HLE (the define only reaches vt369_snd.c, which is all it
+needs), so NES RAM identity holds on the shipped toolchain too.
+
+With the sound HLE off, NES RAM and pictures are identical to main at all 15
+frames on both toolchains for Fire Fighter, Funny Coins, LLM VT369, Zuma,
+Soccer 2009 and Jewel Master VT03. Jewel Master VT369's pictures are
+identical, and four stack bytes ($1EB-$1EE) take one of two states where the
+NMI lands in its idle loop, as they do between main's own two toolchains.
+Time Pilot differs in single zero-page temporaries ($00/$02/$03) and one
+transition frame, also seen between main's toolchains. compare_furb, sound
+on, at NES 150/400/700 (Start at 320) and from 150 to 1050 (Start at 100,
+300, 500): identical on all four cores for all eight. Speeds over 50 s: Fire
+Fighter 59.0-59.2 to 60.00, Jewel Master VT369 59.93 to 60.00, the others
+unchanged (Zuma and Soccer 2009's menus 60, LLM VT369 59.70, Time Pilot
+59.7-59.8, Jewel Master VT03 59.91).
+
+Funny Coins is not a regression but a fault worth chasing. With the HLE on,
+every core slows to 9-40 fps for about 10 s once the board's music starts
+(with it off, every core holds 60: the slowdown is the HLE's work). Most
+runs then return to 60, but some stay at about 15 fps for good: in the
+standard session the build_pvt core of the merge, in sessions with the input
+moved by a few frames main's build_pvt core (15.1), main's devkitARM core
+(36.8, 42.5) and the merged devkitARM core (23.6). In a stuck run the 6502
+spends 1.19M cycles a NES frame (main's 275K) in the board's idle loop at
+$C21A-$C252 (JSR $CB25, LDA $35, then compares of $41-$3E against a table
+at $C298 indexed by $36*4, JMP $C21A), about 6500 turns a NES frame: the
+hack main installs on the JMP at $C252 is missing, and vt_isim_fails climbs
+(3, 4, 5), so find_idle_loop fails on every attempt and, after three, tries
+only every 32nd call. Its samples are not phase-locked (26 calls land on 13
+different pcs of the loop), so the simulation itself gives up somewhere;
+where is not yet known. Candidates: a start on a branch whose flags were set
+before the sample (the flags start unknown), and A/X/Y from vt_isim_regs on
+a path that did not store them.
+
+### 97g. The last four: Sky Fighter (two dumps), Add 'em Up, Scramble
+
+The user's Sky Fighter came as two different dumps: the 512K VT369 cart of
+the test set (submapper 13) and a 128K VT09 version (console type 8, kept as
+testroms/Sky_Fighter_VT09.nes), new to the set. With the sound HLE off, NES
+RAM is identical to main at all 15 frames on both toolchains for all four.
+Sky Fighter and Add 'em Up's pictures are identical too. Sky Fighter VT09's
+pictures at NES 400 and 450 are main's pictures of NES 401 and 451, and
+Scramble's at 520 main's of 521: the faster core has the next frame up when
+the dump instruction runs. Around NES 1400 Scramble's pictures equal main's
+frame for frame except four (two are pictures main shows at 1409, the
+terrain edge in another phase). compare_furb is identical on all four cores
+except Sky Fighter VT09 at 450 (99.67 to 99.39, the shifted frame) and
+Scramble at 700 and 750 (+-0.02). Speeds: Sky Fighter VT09 60.00, Add 'em Up
+59.7, Scramble 59.04 to 59.20.
+
+Sky Fighter (VT369) in this session (Right held, A tapped from NES 600)
+swings between 13 and 61 fps from NES ~1500 on every core with the sound HLE
+on and holds 60.00 with it off: 48.9 (main) to 51.0 mean, worst second 13 to
+24. Per NES frame at 1700, vt369_dma_4014 takes about 95K cycles on both
+cores and the sound decode 27K on main against 2.7K in the overlay. The
+earlier 60 fps figure came from other scenes; this is not new.
+
+Every test cart has now run against s.96/s.97 (s.97a-g). vto_jmp runs every VT cart's JMP abs; vt_jmp_norm
 every cart's JMPs while a JMP speed hack is in; the nmi_count change moves
 EWRAM on every cart and ends the CHR_DECODE stomp everywhere; the page repair
 acts on VT carts in 16-colour mode without BKEXTEN (Aero, Hex, Add 'em Up,

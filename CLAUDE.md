@@ -105,7 +105,11 @@ Controls: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower (VT09), VG Pocket
   per-function numbers put a function's entry on the code ahead of it.
 - Diagnostic hooks used this project: DMA_LOG (mapVT.s video DMA), TLOG /
   NMIDBG style counters; s.87 adds -DVT_NO_SPEEDHACK, -DVT_DIAG_NOVSYNC
-  (frame end never waits) and -DVT_TIMER_LOG (VT timer expiry/re-arm ring). Always build them into a SEPARATE build dir and
+  (frame end never waits) and -DVT_TIMER_LOG (VT timer expiry/re-arm ring);
+  s.97 adds -DVT_NO_JMPSKIP (no "jmp *" skip in either JMP wrapper).
+  The idle-loop finder samples the 6502 on GBA time, so a cart that installs
+  hacks during a race (VG Pocket's game launch) can differ in NES RAM between
+  two correct cores: confirm with -DVT_NO_SPEEDHACK builds (s.97e). Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
 ## Current state (after s.97)
@@ -114,7 +118,8 @@ toolchains: the VT JMP wrapper runs from the IWRAM overlay (vto_jmp) and a JMP
 speed hack passes other JMPs to vt_jmp_norm; nmi_handler's debug counter is
 the symbol nmi_count, no longer a fixed address inside CHR_DECODE; the 2bpp
 renderer marks the BG pages it writes (vt_bg2_stomp) and the 4bpp copy puts
-them back in the same vblank), s.96 (Jumper 53.6 -> 59.5 fps: its code moved into
+them back in the same vblank, which also ends Table Soccer VT369's stale
+"BRA" tile; every test cart checked, s.97e-g), s.96 (Jumper 53.6 -> 59.5 fps: its code moved into
 the VRAM PRG copy, "jmp *" loops skipped exactly, spriteinit from tables, an
 IWRAM overlay over dead mapper code for the opcode-table toggle, the VT369
 sound decode and the frame-end patch; op_table copied back at every cart
@@ -295,10 +300,15 @@ states, sound) and s.77-78 (raster-split slots, speed).
   the 3K EWRAM stack. Measure with tools/probes/spmin from power-on.
 
 ## Open work, in priority order
-0. s.97 checked s.96 on Aero Gyrodine, Hex City X, Lonely Island, LLM VT09,
-   Star Ally VT03 and Jumper, on both toolchains (identical to main, speeds at
-   or above main's). Every other cart is owed the regression set, compare_furb
-   and its speed (s.97e lists what reaches them).
+0. s.97 checked s.96 on every test cart (and a new VT09 Sky Fighter dump),
+   on both toolchains: game state identical to main (sound HLE off for
+   VT369), pictures equal or better, speeds at or above main's (s.97d-g).
+   Funny Coins (pre-existing, s.97f): after the board's music starts, some
+   runs on any core stay at ~15 fps because find_idle_loop keeps failing on
+   the idle loop at $C21A-$C252 (main hacks the JMP at $C252); find out
+   where the simulation gives up. Sky Fighter VT369 (pre-existing, s.97g):
+   with sound on its later gameplay swings between 13 and 61 fps on every
+   core; vt369_dma_4014 costs ~95K cycles a NES frame there.
 1. VT369 leftovers (s.82): 8bpp 16-row sprites through $201D bit 2 are done
    but untested, hi-res mode ($201C bit 2), CPU x3 in ROM handlers (s.88d).
    Speed at x3: Fire Fighter 54-60 (s.89, before the s.96 overlay; not
@@ -317,10 +327,11 @@ states, sound) and s.77-78 (raster-split slots, speed).
    EWRAM layout alone (s.93 core + 1600 B of EWRAM_BSS) re-exposes it, and
    s.94 leaves one stale tile on Table Soccer VT369's knockout screen (s.95:
    the select screen's Brazil label, 98.56% -> 98.54%). s.97 found two
-   causes and fixed both, unverified on those carts (not in the session):
-   the NMI counter's fixed address wrote into CHR_DECODE (which entry
-   depends on the layout), and 2bpp re-renders of 4bpp pages that the
-   4-word probe of vt_chr4_copy_to_vram missed (now marked). The VG band of
+   causes and fixed both: the NMI counter's fixed address wrote into
+   CHR_DECODE (which entry depends on the layout), and 2bpp re-renders of
+   4bpp pages that the 4-word probe of vt_chr4_copy_to_vram missed (now
+   marked). Table Soccer VT369's "BRA" is whole again (98.59% on both
+   toolchains, s.97e); Push the Ball is at 97.49%. The VG band of
    missing tiles was a BKEXTEN slot stomp, fixed by the slot checksums (s.85c);
    the VG games at 96-98% (3/4, 3/5, 4/1, 4/2) still have a small residue.
 4. Table Soccer formation screen: two 6-line strips need a sixth char block.
