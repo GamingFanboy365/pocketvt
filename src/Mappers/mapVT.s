@@ -634,6 +634,21 @@ write_vt4xxx:
     tst     r1, #0x01
     beq     .Lvt_w_4014_sprite       @ bit0=0 -> stock sprite DMA
 
+    @ s.99g: in band map mode a video DMA into the nametables only has to
+    @ land in NT RAM (ppu_vt369.c vt_bm_dma_4014; 0 = not handled, e.g. a
+    @ palette target: the paths below run as before).  The frame saved
+    @ r3/r12/lr above, so the C call may clobber them.
+    ldr     r2, =vt_bm_live
+    ldrb    r2, [r2]
+    cmp     r2, #0
+    beq     8f
+    stmfd   sp!, {r0, r1}
+    bl      vt_bm_dma_4014
+    cmp     r0, #0
+    ldmfd   sp!, {r0, r1}
+    bne     .Lvt_write_done
+8:
+
     @ --- Video DMA path ($4034 bit 0 = 1, target = $2007) -----------
     @
     @ Layout:
@@ -1003,7 +1018,16 @@ write_vt_rom:
 1:
     stmfd   sp!, {r3, r12, lr}
     stmfd   sp!, {r0}
-    
+
+    @ s.99: the exact 6502 time of this write, as .Lvt41xx records it: the
+    @ timer registers at $C000-$E001 reach vt_timer_install_now from here
+    ldr_    r1, cycles_to_run
+    sub     r1, r1, cycles, asr #CYC_SHIFT
+    ldr_    r2, timestamp
+    add     r1, r1, r2
+    ldr     r2, =vt_w41_now
+    str     r1, [r2]
+
     mov     r1, r0              @ r1 = val (C arg 2)
     mov     r0, addy            @ r0 = addr (C arg 1)
     bl      vt_mmc3_forward

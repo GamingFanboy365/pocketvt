@@ -716,7 +716,11 @@ static int is_turn(int head, int level, int back)
 	}
 }
 
-EWRAM_BSS u8 vt_isim_skip, vt_isim_fails;
+/* s.99d: the back-off is kept per slot (0 vblank, 1 sprite-0, 2 B).  One shared
+ * pair let the sprite-0 slot's failed samples on Funny Coins' title (its empty
+ * slot asks every 8th frame with a hit) push the vblank slot to every 32nd
+ * call, so the board loop that follows went unhacked for ~70 NES frames. */
+EWRAM_BSS u8 vt_isim_skip[4], vt_isim_fails[4];
 EWRAM_BSS const u8 *vt_isim_hack[4];      /* the hack_pc this finder installed, per slot */
 static bool find_idle_loop_run(const u8 *initpc, const u8 *lastbank, int hacknum);
 static bool find_idle_loop(const u8 *initpc, const u8 *lastbank, int hacknum)
@@ -725,14 +729,22 @@ static bool find_idle_loop(const u8 *initpc, const u8 *lastbank, int hacknum)
 	 * games whose sprite-0 hack slot keeps coming free (Sky Fighter) the
 	 * finder runs every other frame, and the simulation is the dearest part
 	 * of it.  An idle title still gets its hack within about half a second. */
-	if (++vt_isim_skip < 4u << (vt_isim_fails < 3 ? vt_isim_fails : 3))   /* skipped: keep a hack of ours */
+	u8 *skip = &vt_isim_skip[hacknum & 3], *fails = &vt_isim_fails[hacknum & 3];
+	/* s.99d: a slot that still holds a hack was called because the hack went
+	 * unused for 8 frames: the game has left that loop.  Search at once when
+	 * the slot's last search found its loop; a skipped call kept the stale
+	 * hack for up to 3 more calls (24 frames) while the new loop spun.  That
+	 * search does not count as a failure: one sample can land in an interrupt
+	 * handler, and the slot then goes on at every 4th call. */
+	const bool stale = speedhacks[hacknum].hack_pc && !*fails;
+	if (!stale && ++*skip < 4u << (*fails < 3 ? *fails : 3))   /* skipped: keep a hack of ours */
 		return speedhacks[hacknum].hack_pc && speedhacks[hacknum].hack_pc == vt_isim_hack[hacknum];
-	vt_isim_skip = 0;
+	*skip = 0;
 	if (!find_idle_loop_run(initpc, lastbank, hacknum)) {
-		if (vt_isim_fails < 255) vt_isim_fails++;
+		if (!stale && *fails < 255) ++*fails;
 		return false;
 	}
-	vt_isim_fails = 0;
+	*fails = 0;
 	return true;
 }
 

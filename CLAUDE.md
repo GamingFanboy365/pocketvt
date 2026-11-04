@@ -64,20 +64,22 @@ it injected 0 games.
 ## Regression procedure (do this for ANY change)
 **Run `python3 tools/regress/regress.py` before every push** (s.98,
 tools/regress/README.md). It builds the old core (origin/main) and the new one
-(your working tree) on build_pvt.sh AND the devkitARM image, plays all 23 test
+(your working tree) on build_pvt.sh AND the devkitARM image, plays all 27 test
 carts on both and writes `regress_out/<time>/report.md`: PASS/WARN/FAIL per
 cart and toolchain, exit 1 on any FAIL. ~10 min with cached cores;
 `--quick` (8 carts, build_pvt, no reference) for iteration, `--carts A,B`,
 `--old <ref>`. A FAIL blocks the push; every WARN gets a sentence in the guide
 section of the change. Paste the report's table into the PR.
-- **ROMs**: never in git (CI fails on one). The user keeps all 23 as ONE file,
+- **ROMs**: never in git (CI fails on one). The user keeps all 27 as ONE file,
   `pocketvt_testroms.zip`: ask for that single upload; the runner finds the
   carts by md5 in testroms/, ~/.claude/uploads or `--bundle` and stages them.
   tools/regress/carts.json is the manifest (md5s, benign RAM bytes, drift).
 - What it checks: state (NES RAM + picture at 15 NES frames, input keyed to NES
   frames, -DVT369_SND_OFF on VT369; a RAM difference is re-run with
   -DVT_NO_SPEEDHACK; dead stack below an equal SP is benign), ref (compare_furb
-  struct at the guide's frames, must not drop), speed (50 s, sound on).
+  struct at the guide's frames, must not drop; a drop of more than 0.5 at one
+  frame is scored again over NES t-8..t+8 and is a WARN when the means agree,
+  s.99e), speed (50 s, sound on).
 - CI (`checks` job in build.yml) runs what needs no ROM: no ROMs in git, no
   fixed EWRAM/IWRAM addresses in code (tools/ci/lint_ram_addresses.py), the
   .bss budget assert, the VT369 sound host test, the smoke ROMs
@@ -121,8 +123,22 @@ section of the change. Paste the report's table into the PR.
   two correct cores: confirm with -DVT_NO_SPEEDHACK builds (s.97e). Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.98)
-See MAINTAINERS_GUIDE.md s.98 (tools/regress runs every test cart against
+## Current state (after s.99)
+See MAINTAINERS_GUIDE.md s.99 (four CUBE Tech carts reported faulty, Football
+Training VT03/VT369, Let's Count, Speed Type: band map mode gives every BG map
+row its own 32 tiles when a frame has more bank bands than the 3 split slots
+(vt_bm_*, ppu_vt.c); the VT timer's rephase counts from the exact write to
+the next clock + N, and a VT369 with $411C bit 7/5 clocks 289 dots after
+PocketNES's MMC3 point (vt_timer_clk0, sound.s), which also ends Funny Coins'
+one-line streaks; PIX16 sprites 4 px left of where they were and PIX16EN
+taken per NES line (vt_spr_line_mode); the idle-loop finder's back-off per
+slot and an immediate search when a hack goes stale; gbaplay dumps every
+NES-frame arrival; regress.py scores a one-frame ref drop over a window;
+s.99g: Football Training 36 -> 51-52 fps and Let's Count 60, by a video DMA
+into the nametables straight to NT RAM in band map mode (vt_bm_dma_4014), the
+4bpp CHR rebuilt only for pages whose source changed (vt_chr4_stale) and
+cart ROM read a word at a time),
+s.98 (tools/regress runs every test cart against
 the old core in one command, and CI's `checks` job runs the ROM-free checks:
 smoke ROMs, RAM-address lint, .bss assert, diagnostic builds; find_idle_loop
 starts from the 6502's real flags, ending Funny Coins' stuck 15 fps; the VT369
@@ -172,19 +188,21 @@ s.81 (VT369 $6000 ROM, 15-bit palette), s.80 (VT369 CPU side), s.79 (Table Socce
 states, sound) and s.77-78 (raster-split slots, speed).
 - Working: Star Ally, Lonely Island, Scramble, Lucky Lawn Mower VT09, VG Pocket
   (all 50; colours now Furbtendulator's), Push the Ball, Time Pilot, Add 'em Up,
-  Aero Gyrodine, Hex City X, Table Soccer VT03 (mapper 419; menus/match 96-99%),
+  Aero Gyrodine, Hex City X, Table Soccer VT03 (mapper 419; menus 97.8%, match 99.7%),
   Jewel Master VT03 (256.15, BKEXTEN + 16-colour sprites; title 99.9%),
-  Table Soccer VT369 (non-enhanced renderer; select screen 99.9%, match 96.7%),
+  Table Soccer VT369 (non-enhanced renderer; select screen 99.2%),
   Lucky Lawn Mower VT369 (99.7%), Jewel Master (99.9%) and Fire Fighter VT369
   (96%; game-state drift) through the enhanced renderer, src/ppu_vt369.c.
   Zuma (VT369, 256.13; title 99.6%, gameplay 98% -- its ball colours are
   random, like Jewel Master's jewels), Jumper (VT369 SMB hack, 99.9%; 59.5
   fps mean, 54 at a level reload, s.96), Sky Fighter (VT369, gameplay 96-98%, 60 fps), Funny Coins (VT369,
-  title 100%, gameplay 98% to NES 1800, 60 fps; 1-line streaks at its
-  raster-split edges) and Soccer 2009 (VT03 with a 256K CHR ROM, 256.0;
+  title 100%, board 99.3-99.4%, 57-58 fps mean) and Soccer 2009 (VT03 with a 256K CHR ROM, 256.0;
   menus 99.5%, matches 97-99% with exact colours), Star Ally UM6578 (UM6578,
   405; title 100%, gameplay 98-99% where the game state has not drifted,
-  54-61 fps).
+  54-61 fps). s.99: Football Training VT03 (419, 98.4-99.6%, 52 fps),
+  Football Training VT369 (99.3-99.7%, 51 fps), Let's Count (98.4-99.4%, 60
+  fps) and Speed Type (99.3-99.9%, 59.3 fps), all 256.13 VT369 but the first,
+  all through band map mode.
 - CPU x3 ($411C bit 7, every VT369 test cart sets it): vt_cpu_x3_set
   rewrites every `cyc`-recorded cost immediate in RAM (section vt_cycpatch,
   6502mac.h) between 3 and 1 dots a cycle. New cycle charges in RAM code
@@ -211,9 +229,30 @@ states, sound) and s.77-78 (raster-split slots, speed).
   against furb_cli --dump-palette). The 64 standard colours are the s.57 DACs.
 - Raster-split slots: 3 (block 2, block 3, and the primary's unused pattern
   half when free), tallest bands first, 4bpp and 2bpp, MMC3 CHR writes mark
-  bands too. `-DVT_SPLIT_SLOTS=0` turns them off.
-- VT timer: N+1 lines free-running, N+2 after an in-picture rephase, N from
-  vblank (`VT_TIMER_NPLUS1`); split lines match Furbtendulator exactly.
+  bands too. `-DVT_SPLIT_SLOTS=0` turns them off (and band map mode).
+- Band map mode (s.99a): more bank sets in a frame than the slots hold ->
+  char base 2 for every line, blocks 2-3 = 32 row buffers of 32 tiles, each map
+  row on screen (blocks 12/13) owns one, decoded with its band's banks (a vote
+  over the frame's scrollbuff/bg0cntbuff lines); per-cell redecode from a
+  row snapshot; back to the slots after 60 calm frames (VT_BM_CALM).
+  vt_bm_live is the byte after vt_bkexten_live (vt_bg_owner[2]); ppu.s's two
+  map writers read both with one ldrh. `-DVT_BM_LOG` logs the decisions.
+  A video DMA into the nametables goes straight to NT RAM while it is live
+  (vt_bm_dma_4014, ppu_vt369.c, called from mapVT.s's $4014 path; s.99g).
+- 4bpp primary CHR (s.99g): vt_chr4_assemble(pages) re-decodes only the pages
+  vt_chr4_stale() names (bank byte offset, CHR base, mask, $2010 bit 6 against
+  the last build); anything else that changes how a page decodes must clear
+  vt_chr4_built_ok. Everything after a build (2bpp window copy, 512 dirty
+  tiles, whole-buffer VRAM copy) is as before: cheaper versions put 2bpp
+  renders on screen (Aero Gyrodine). Under BKEXTEN the old byte loops and the
+  full assembly stay (Jewel Master VT03's pause screen garbled with them
+  faster: a timing race, open item 3).
+- VT timer: N+1 lines free-running; an in-picture rephase ($4102) reloads at
+  the first clock after the write's exact time (vt_w41_now) and fires N
+  clocks later; N from vblank (`VT_TIMER_NPLUS1`). Clocks sit at
+  vt_timer_clk0 (sound.s): PocketNES's MMC3 point (dot 292 of the line before)
+  on VT03, 289 dots later on a VT369 with $411C bit 7 or 5 (s.99b). Split
+  lines match Furbtendulator exactly on every test cart.
 - WAITCNT = 0x4317 (`VT_FAST_WAITCNT`): 3/1 + prefetch, set by vt_waitcnt_probe
   (gba_crt0_my.s, EWRAM) only if the cart reads back the same at that timing
   (s.91); measure speeds on the normal path (vt_waitcnt_mode 1). Speed (NES fps):
@@ -223,7 +262,9 @@ states, sound) and s.77-78 (raster-split slots, speed).
   VT369 (all at CPU x3): Table Soccer, LLM, Zuma, Jewel Master 60, Sky
   Fighter 60 (58.7 mean over the s.97 session: a 3 s dip while its second loop
   is found, s.98), Funny Coins 57-58 mean (music-start dip 3-5 s, s.98f), Fire
-  Fighter 54-60 in gameplay, Jumper 54-60 (s.96).
+  Fighter 54-60 in gameplay, Jumper 54-60 (s.96); s.99: Speed Type 59.3,
+  Let's Count 60, Football Training VT369 51 and VT03 52 (gameplay 45-56,
+  menus 60; 31-33 on main, s.99g).
 - Frame pacing (s.87a): every GBA vblank is a credit, every NES frame spends
   one; the frame end waits only without credit (vt_vsync_ahead). Speed probes
   can show 61-62 while a slow stretch is made up; the average stays 60.
@@ -324,19 +365,31 @@ states, sound) and s.77-78 (raster-split slots, speed).
   measures it (mode 0x12).
 - The IWRAM user stack is ~150 bytes above .bss; ALL new C globals go in
   EWRAM_BSS (`__bss_end__` must stay <= 0x03007B84, which the linker now
-  asserts; 0x03007B08 build_pvt / 0x03007AF8 devkitARM after s.98's second
-  hack slot; the user stack's lowest point measured 0x03007BA4 on Funny Coins
-  in the sound HLE, on main too, 0x03007BAC on Hex City X from power-on and
-  0x03007C24 through a menu Restart). Heavy VT C runs on
+  asserts; 0x03007B18 on both toolchains after s.99's PIX16-by-line; the
+  user stack's lowest point measured 0x03007B9C on Funny Coins in the sound
+  HLE (vt_adpcm_mix_gba, s.99f; 0x03007BA4 in s.98), 0x03007BAC on Hex City X
+  from power-on and 0x03007C24 through a menu Restart). Heavy VT C runs on
   the 3K EWRAM stack. Measure with tools/probes/spmin from power-on.
 
 ## Open work, in priority order
-0. s.98 fixed both s.97 faults (Funny Coins' stuck finder, Sky Fighter's
-   slow stretch) and added tools/regress + CI's ROM-free checks. Left:
-   Funny Coins with the input moved 3 frames drops to 0-16 fps for some
-   seconds in a loop at $CF27-$CF3A that reads the joypad ~2600 times a NES
-   frame and touches VT369 registers and CHR banks (no finder hacks I/O
-   reads); its music-start dip is 3-5 s. Sky Fighter dips for ~3 s where its
+0. s.99 fixed the four carts reported faulty (band map mode, the VT timer,
+   PIX16 by line) and the finder's shared back-off. Left from it: band map
+   mode holds 32 row buffers, so a horizontally scrolled screen whose rows
+   show in both screen blocks keeps stale rows past 32 (vt_bm_stat[3]; no
+   test cart does it); SPEXTEN sprites keep the per-frame PIX16 choice; a
+   VT369 without $411C bit 7/5 and bit 5's 24-cycle IRQ delay are not
+   modelled in vt_timer_clk0 (no test cart). The finder samples the 6502 only
+   at a vblank or a sprite-0 hit, so a cart whose samples keep landing in an
+   interrupt handler finds its loop late (s.99d). Football Training runs
+   51-52 fps (gameplay 45-56, s.99g); left in its frame: band map mode's frame
+   end ~36K cycles of per-row bookkeeping, vt_build_16color_palette every
+   vblank ~8K (a skip needs every other GBA palette writer to invalidate it),
+   mapper 419's joypad/register handlers ~17K on the VT03 cart, and the
+   2bpp re-render + 16K VRAM copy after each sprite bank switch. From s.98: Funny Coins with the input moved
+   3 frames slows in a loop at $CF27-$CF3A that reads the joypad ~2600 times
+   a NES frame and touches VT369 registers and CHR banks (no finder hacks I/O
+   reads; 52 fps mean in that session, 50 on main); its music-start dip is
+   3-5 s. Sky Fighter dips for ~3 s where its
    heavy section starts, until slot B finds the second loop (the search runs
    every 16th frame and through find_idle_loop's rate limit). A VT03 smoke ROM
    with an 8K CHR-ROM maps $A000-$FFFF to banks 2/2/3 at power-on and crashes
@@ -368,8 +421,14 @@ states, sound) and s.77-78 (raster-split slots, speed).
    toolchains, s.97e); Push the Ball is at 97.49%. The VG band of
    missing tiles was a BKEXTEN slot stomp, fixed by the slot checksums (s.85c);
    the VG games at 96-98% (3/4, 3/5, 4/1, 4/2) still have a small residue.
+   s.99g: whether the 4bpp copies and BKEXTEN repairs win against the 2bpp
+   re-renders after a bank switch depends on timing: copying fewer pages put
+   2bpp tiles on Aero Gyrodine's HUD (one build layout passed, another
+   failed), and a faster CHR flush or assembler garbled Jewel Master VT03's
+   pause screen for ~30 frames. Exact stomp tracking would make both safe.
 4. Table Soccer formation screen: two 6-line strips need a sixth char block.
-5. Funny Coins: 1-line streaks at the board's raster-split edges (s.92).
+5. (Funny Coins' 1-line streaks at its raster-split edges: fixed in s.99b,
+   the VT369 timer clock.)
 6. Soccer 2009 matches at 42-44 fps: the 6502 core alone is ~272K of the 281K
    cycles a frame; left over: sprite slot update ~15K, palette rebuild ~14K.
 7. Star Ally UM6578: savestates refused (its 53K block leaves the heap too
@@ -394,7 +453,8 @@ LOCAL ONLY, gitignored, never commit (the user supplies them as test.zip):
   Pilot; supplied later: Aero Gyrodine, Hex City X, VG Pocket VT09, Lucky Lawn
   Mower VT369, Table Soccer VT369, Fire Fighter VT369, Jewel Master VT369,
   Star Ally, Lonely Island, LLM VT09, Jewel Master VT03, Funny Coins, Soccer
-  2009, Star Ally UM6578 (UM6578 docs in reference/um6578/).
+  2009, Star Ally UM6578 (UM6578 docs in reference/um6578/); s.99: Football
+  Training VT03 and VT369, Let's Count, Speed Type.
 
 In git:
 - DATASHEET_DIGEST*.md: VT02/VT03 datasheet notes. Bit numbering there is

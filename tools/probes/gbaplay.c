@@ -104,7 +104,9 @@ int main(int argc, char **argv) {
 		 * NES frame; a GBA frame boundary falls anywhere in it, and a raster-split game's
 		 * registers change within the frame.  The picture follows at the frame's end.
 		 * Up to 3 NES frames ahead: frame pacing can run two in one GBA frame. */
-		int dumped_k = -1; unsigned dumped_ft = 0;
+		/* every arrival in this GBA frame is dumped (s.99e: two NES frames can end in
+		 * one GBA frame, and keeping only the first lost the second's dump) */
+		int nd = 0, dk[4]; unsigned dft[4];
 		unsigned ft0 = (fta && ftdump) ? c->busRead32(c, fta) : 0;
 		if (fta && ftdump && (in_list(ftdump, (int)ft0 + 1) || in_list(ftdump, (int)ft0 + 2) || in_list(ftdump, (int)ft0 + 3))) {
 			uint32_t fc = c->frameCounter(c);
@@ -114,9 +116,10 @@ int main(int argc, char **argv) {
 				if (ft == ft0) continue;
 				ft0 = ft;
 				c->setKeys(c, keys_at(ks, f) | keys_at(ksn, ft));
-				if (dumped_k >= 0 || !in_list(ftdump, (int)ft)) continue;
+				if (nd >= 4 || !in_list(ftdump, (int)ft)) continue;
 				int slot = 0; for (const char *p = ftdump; *p; slot++) { char *e; long v = strtol(p, &e, 0); if (e == p || v == (long)ft) break; p = e; if (*p == ',') p++; }
-				dumped_k = slot < 64 ? arrivals[slot]++ : 0; dumped_ft = ft;
+				const int dumped_k = slot < 64 ? arrivals[slot]++ : 0;
+				dk[nd] = dumped_k; dft[nd] = ft; nd++;
 				char name[512]; snprintf(name, sizeof name, "%s_ft%u_%d.bin", out, ft, dumped_k);
 				FILE *o = fopen(name, "wb");
 				for (const char *p = dumps; p && *p; ) { char *e; unsigned a = strtoul(p, &e, 16), n = 4; p = e;
@@ -147,8 +150,8 @@ int main(int argc, char **argv) {
 				if (ft != ft0k) { ft0k = ft; c->setKeys(c, keys_at(ks, f) | keys_at(ksn, ft)); }
 			}
 		} else c->runFrame(c);
-		if (dumped_k >= 0) {
-			char name[512]; snprintf(name, sizeof name, "%s_ft%u_%d.ppm", out, dumped_ft, dumped_k);
+		for (int d = 0; d < nd; d++) {	/* the frame's picture, for each NES frame dumped in it */
+			char name[512]; snprintf(name, sizeof name, "%s_ft%u_%d.ppm", out, dft[d], dk[d]);
 			FILE *o = fopen(name, "wb"); fprintf(o, "P6\n%u %u\n255\n", w, h);
 			for (unsigned y = 0; y < h; y++) for (unsigned x = 0; x < w; x++) {
 				uint32_t px = buf[y * w + x]; unsigned char rgb[3] = { px & 0xFF, (px >> 8) & 0xFF, (px >> 16) & 0xFF };

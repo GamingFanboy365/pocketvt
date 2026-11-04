@@ -32,7 +32,13 @@ picture change is a WARN with an old | new | difference PNG next to it.
 **ref** runs compare_furb against Furbtendulator at NES 150/400/700 (Start at
 320, the frames the guide quotes) and on the state session's input at
 200/450/700/1000/1400; struct may not drop. A picture change together with a
-struct drop is a FAIL. **speed** measures NES frames per GBA second over
+struct drop at the same frame is a FAIL. A drop of more than 0.5 at one frame
+is scored again over NES t-8 to t+8 (every second frame) on both cores; when
+the new mean is within 0.1 of the old, it is a WARN marked "animation or
+display phase" (Star Ally VT03's sprites at NES 1000, s.99e). A cart marked
+`ref_drift_from` in carts.json (Jumper) takes a drop in the play session from
+that frame on as a WARN: with sound on its game state follows GBA timing,
+while the sound-off state check stays exact (s.99e). **speed** measures NES frames per GBA second over
 50 s with sound on; the mean may not drop, and no cart may stall.
 
 Cores are cached in `~/.cache/pocketvt-regress` by source tree, toolchain and
