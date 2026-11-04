@@ -51,6 +51,7 @@ EWRAM_BSS u8 vt_reg_2010 = 0;
 
 // BKEXTEN module (defined later in this file, session 18)
 extern u8 vt_bkexten_live;
+extern u8 vt_bm_live;              /* s.99: band map mode (vt_bm_frame) */
 extern u8 vt_bk_pending_whole;
 extern u32 vt_bk_dbg[8];
 void vt_bk_banks_recheck(void);
@@ -1459,8 +1460,100 @@ EWRAM_BSS u8 vt_dbg_pad_or;
 // vt_prg_evict_obj); the 4KB PIX16 slots stay at four.  Soccer 2009 shows
 // eight (page, EVA) pairs every frame: with four, one page was reassembled
 // every frame and the score and marker drew another page's tiles.
-EWRAM_BSS u8 vt_spr16_active;          // read by update_sprites in ppu.s
-EWRAM_BSS u8 vt_pix16_active;          // read by update_sprites in ppu.s (s20b4)
+EWRAM_BSS u8 vt_spr16_active;          // the redirect mode (gates vt_obj4_overlay)
+EWRAM_BSS u8 vt_pix16_active;          // s20b4
+/* s.99: update_sprites reads the mode per sprite, by OAM Y: bits 0-1 the
+ * redirect mode (what it read from vt_spr16_active), bit 2 PIX16EN.  Filled
+ * by vt_spr_eva_update; zero (stock sprites) for every other cart. */
+EWRAM_BSS u8 vt_spr_line_mode[256] __attribute__((aligned(4)));
+/* s.99: PIX16EN by line.  vt_2010_mark (ppu.s vt_band_hook, after a $2010
+ * write) notes each change of $2010 bit 0 inside the picture; the frame end
+ * (vt_px_frame_end) publishes the frame's lines as a bitmap, double-buffered
+ * for the vblank's vt_spr_eva_update.  Kind: 0 none, 1 every line, 2 mixed. */
+#define VT_PX_MAX 8
+EWRAM_BSS u8  vt_px_n, vt_px_start, vt_px_last;
+EWRAM_BSS u8  vt_px_line[VT_PX_MAX], vt_px_on[VT_PX_MAX];
+EWRAM_BSS u32 vt_px_mask[2][8];
+EWRAM_BSS u8  vt_px_kind[2];
+EWRAM_BSS volatile u8 vt_px_pub;
+
+void vt_2010_mark(u32 line)
+{
+    const u8 on = vt_reg_2010 & 1u;
+    if (line >= 240) { vt_px_start = vt_px_last = on; return; }   /* vblank: the next frame's line 0 */
+    if (on == vt_px_last) return;
+    vt_px_last = on;
+    if (vt_px_n < VT_PX_MAX) { vt_px_line[vt_px_n] = (u8)line; vt_px_on[vt_px_n] = on; vt_px_n++; }
+}
+
+/* Lines [from, to) of bitmap m set to on, a word at a time. */
+static void vt_px_fill(u32 *m, u32 from, u32 to, u32 on)
+{
+    while (from < to) {
+        const u32 b = from & 31u, n = (to - from < 32u - b) ? to - from : 32u - b;
+        const u32 bits = (n == 32u ? 0xFFFFFFFFu : ((1u << n) - 1u)) << b;
+        if (on) m[from >> 5] |= bits; else m[from >> 5] &= ~bits;
+        from += n;
+    }
+}
+
+/* NES line 242: publish this frame's PIX16EN lines, start the next frame. */
+static void vt_px_frame_end(void)
+{
+    const u32 w = vt_px_pub ^ 1u;
+    u32 *m = vt_px_mask[w];
+    u32 on = vt_px_start, from = 0, any = 0, all = 1;
+    if (!vt_px_n) {                /* no change inside the picture: one value */
+        for (u32 k = 0; k < 8; k++) m[k] = on ? 0xFFFFFFFFu : 0u;
+        any = all = on;
+    } else
+    for (u32 i = 0; i <= vt_px_n; i++) {
+        const u32 to = i < vt_px_n ? vt_px_line[i] : 240u;
+        if (to > from) { vt_px_fill(m, from, to, on); any |= on; all &= on; }
+        if (i < vt_px_n) { on = vt_px_on[i]; from = to; }
+    }
+    vt_px_kind[w] = (u8)(!any ? 0 : all ? 1 : 2);
+    vt_px_pub = (u8)w;
+    vt_px_start = vt_px_last = vt_reg_2010 & 1u;
+    vt_px_n = 0;
+}
+
+/* vt_spr_line_mode, rewritten only when it changes: one value for every
+ * line, or (mixed) redirect + PIX16 on the lines of mask m.  A sprite's
+ * first line is its OAM Y + 1. */
+EWRAM_BSS u8  vt_spr_mode_mixed;
+EWRAM_BSS u32 vt_spr_mode_val, vt_spr_mode_mask[8];
+static void vt_spr_mode_fill(u32 v)
+{
+    if (!vt_spr_mode_mixed && vt_spr_mode_val == v) return;
+    vt_spr_mode_mixed = 0;
+    vt_spr_mode_val = v;
+    memset32(vt_spr_line_mode, v * 0x01010101u, sizeof vt_spr_line_mode);
+}
+static void vt_spr_mode_lines(const u32 *m)
+{
+    if (vt_spr_mode_mixed) {
+        u32 k = 0;
+        while (k < 8 && vt_spr_mode_mask[k] == m[k]) k++;
+        if (k == 8) return;
+    }
+    vt_spr_mode_mixed = 1;
+    for (u32 k = 0; k < 8; k++) vt_spr_mode_mask[k] = m[k];
+    for (u32 y = 0; y < 240; y++) {
+        const u32 l = y + 1u;
+        vt_spr_line_mode[y] = (u8)((l < 240u && ((m[l >> 5] >> (l & 31)) & 1u)) ? 5u : 0u);
+    }
+}
+
+/* A new cart: stock sprites until its first frame says otherwise. */
+static void vt_spr_mode_reset(void)
+{
+    vt_spr_mode_mixed = 0;
+    vt_spr_mode_val = 0;
+    memset32(vt_spr_line_mode, 0, sizeof vt_spr_line_mode);
+    vt_px_n = vt_px_start = vt_px_last = 0;
+    vt_px_kind[0] = vt_px_kind[1] = 0;
+}
 
 #define VT_EVA_SLOTS 8
 EWRAM_BSS static u16 vt_eva_key[VT_EVA_SLOTS];   // (page<<3)|eva, +1;  0 = empty
@@ -1707,7 +1800,13 @@ static void vt_assemble_page_pix16_plain(u32 dest, u32 bank)
 // slot-packed index).
 // ===========================================================================
 EWRAM_BSS u8 vt_reg_2011;
-EWRAM_BSS u8 vt_bkexten_live;
+/* s.99: vt_bkexten_live and vt_bm_live (band map mode, below) share one
+ * halfword.  ppu.s's two map writers (consume_bg_cache, display_whole_map)
+ * read it with one ldrh and hand the map to C when either is set; every
+ * other test reads the byte it means. */
+EWRAM_BSS u8 vt_bg_owner[2] __attribute__((aligned(2)));
+asm(".global vt_bkexten_live\n.set vt_bkexten_live, vt_bg_owner\n"
+    ".global vt_bm_live\n.set vt_bm_live, vt_bg_owner + 1");
 
 extern const u32 vt_bk_consts[4];   // ppu.s: BG_CACHE, NES_VRAM2, NES_VRAM4, AGB_BG
 extern u8 _bg_cache_full;           // ppu.s storage
@@ -2000,6 +2099,7 @@ __attribute__((target("arm")))
 void vt_bk_consume(u32 cur, u32 lim)
 {
     if (vt369_enh) return;         /* s.82: vt369_bg_update diffs the nametables */
+    if (!vt_bkexten_live) return;  /* s.99: band map mode: the frame end compares each row with its snapshot */
     volatile u16 *ime = (volatile u16*)0x04000208;   // see session-19 note
     u16 saved = *ime; *ime = 0;
     vt_bk_dbg[2] += 0x10000;   // high half: consume-entry count
@@ -2167,22 +2267,36 @@ static void vt_spr_eva_update(void)
      * Soccer 2009 ($2010 = $9E: COLCOMP, BKEXTEN, SPEXTEN, SP16EN, BK16EN) lost
      * every player and the score to it.  No other test cart sets COLCOMP with
      * SPEXTEN. */
-    const int spext = (vt_reg_2010 & 0x08) != 0;
-    const int plain16 = !spext && (vt_reg_2010 & 0x05) == 0x05;
+    /* s.99: PIX16EN as the frame had it, line by line (vt_px_frame_end),
+     * not $2010 at whatever line this vblank fell on.  Let's Count sets it
+     * for lines 80-111 only, where its sums are: one mode a frame drew the
+     * sums or the HUD digits wrong.  Mixed, the sprites on PIX16EN lines take
+     * the plain16 slots and the others the stock path with its overlay;
+     * vt_spr_line_mode tells update_sprites which is which.  Extension
+     * sprites keep the live value, as before. */
+    const u32 pub = vt_px_pub;
+    const u8 pkind = vt_px_kind[pub];
+    const u32 *pmask = vt_px_mask[pub];
+    u8 r2010 = vt_reg_2010;
+    const int spext = (r2010 & 0x08) != 0;
+    if (!spext) r2010 = (u8)((r2010 & ~1u) | (pkind ? 1u : 0u));
+    const int mixed = !spext && pkind == 2;
+    const int plain16 = !spext && (r2010 & 0x05) == 0x05;
     if (!vt_active || (!spext && !plain16)) {
         vt_spr16_active = 0;
         vt_pix16_active = 0;
+        vt_spr_mode_fill(0);
         return;
     }
-    int sp16 = (vt_reg_2010 & 0x04) != 0;
+    int sp16 = (r2010 & 0x04) != 0;
 
     const u8 *oam = (const u8 *)_dmanesoambuff;
-    if (!oam) { vt_spr16_active = 0; vt_pix16_active = 0; return; }
+    if (!oam) { vt_spr16_active = 0; vt_pix16_active = 0; vt_spr_mode_fill(0); return; }
 
     // PIX16EN ($2010 bit 0): 16-pixel-wide 2bpp halves.  Slots switch to the
     // 4KB pair-format; invalidate all assembled slots on any format flip so
     // stale 2KB-format data is never displayed through the doubled index.
-    int pix16 = sp16 && (vt_reg_2010 & 0x01);
+    int pix16 = sp16 && (r2010 & 0x01);
     {
         // Slot contents differ per format (2bpp / 4bpp / pix16 pair-format),
         // so invalidate every slot on ANY format flip, not just a pix16 flip.
@@ -2200,6 +2314,7 @@ static void vt_spr_eva_update(void)
     for (int i = 0; i < 256; i += 4) {
         u8 y = oam[i];
         if (y >= 0xEF) continue;             // hidden
+        if (mixed && !((pmask[(y + 1u) >> 5] >> ((y + 1u) & 31)) & 1u)) continue;   /* s.99: a stock sprite */
         u8 tile = oam[i + 1];
         u8 eva  = spext ? (u8)((oam[i + 2] >> 2) & 7) : 0;
         // SESSION 21b6: eva==0 sprites are redirected too.  s21b3 left them on
@@ -2259,8 +2374,10 @@ static void vt_spr_eva_update(void)
         } else
         spr_cache_map[64u + (page << 3) + eva] = (u8)(pix16 ? slot * 2 : slot);
     }
-    vt_spr16_active = 1;                    // redirect every sprite (see above)
+    vt_spr16_active = mixed ? 0 : 1;        // redirect every sprite (see above); mixed, the overlay serves the rest
     vt_pix16_active = (u8)pix16;
+    if (mixed) vt_spr_mode_lines(pmask);
+    else vt_spr_mode_fill(1u | (pix16 ? 4u : 0u));
 }
 
 __attribute__((target("arm")))
@@ -2657,7 +2774,7 @@ void vt_ppu_reg_write(u8 page, u8 offset, u8 val)
  *                         two-entry LRU cache (assembled only on a miss), and
  *                         its lines in bg0cntbuff get that character base.
  * ========================================================================== */
-#define VT_MAXB 6
+#define VT_MAXB 32                    /* s.99: Let's Count has 14; 8-line bands could give 30 */
 typedef struct { u8 line; u8 reg[6]; u8 pad; } VtBand;
 EWRAM_BSS VtBand vt_band[VT_MAXB];
 EWRAM_BSS u8  vt_nband;
@@ -2845,6 +2962,7 @@ int vt369_obj_ok(void) { return vt_prg_evict_obj(); }
 void vt_prg_obj_reset(void)
 {
     vt_prg_obj_evicted = 0;
+    vt_spr_mode_reset();           /* s.99: loadcart.c calls this for every cart */
 }
 
 #if VT_SPLIT_SLOTS
@@ -2963,8 +3081,10 @@ void vt_prg_hot_check(void)
     REG_IME = ime;
 }
 
+static void vt_bm_reset(void);
 void vt_split_reset(void)
 {
+    vt_bm_reset();                         /* s.99 */
     vt_split_valid[0] = vt_split_valid[1] = vt_split_valid[2] = 0;
     vt_blk_lent = 0;
     vt_prg_evicted = 0;
@@ -3054,6 +3174,7 @@ static inline __attribute__((always_inline)) u32 vt_line_orig2(u32 v)   /* origi
     const u32 m = ((v >> 6) & 0x00010001u) * 0x000Cu;         /* tagged halves */
     return (v & 0x000C000Cu & ~m) | ((v >> 2) & m);
 }
+__attribute__((target("arm"), noinline))
 static void vt_lines_restore(u16 *b, int lo, int hi)
 {
     if (lo >= hi) return;
@@ -3062,6 +3183,7 @@ static void vt_lines_restore(u16 *b, int lo, int hi)
     for (int n = (hi - lo) >> 1; n > 0; n--, w++) { u32 v = *w; *w = (v & ~0x007C007Cu) | vt_line_orig2(v); }
     if ((hi - lo) & 1) { u32 v = b[hi - 1]; b[hi - 1] = (u16)((v & ~0x007Cu) | vt_line_orig2(v)); }
 }
+__attribute__((target("arm"), noinline))
 static void vt_lines_tag(u16 *b, int lo, int hi, u32 cbase)
 {
     if (lo >= hi) return;
@@ -3070,6 +3192,336 @@ static void vt_lines_tag(u16 *b, int lo, int hi, u32 cbase)
     u32 *w = (u32 *)(b + lo);
     for (int n = (hi - lo) >> 1; n > 0; n--, w++) { u32 v = *w; *w = (v & ~0x007C007Cu) | (vt_line_orig2(v) << 2) | s2; }
     if ((hi - lo) & 1) { u32 v = b[hi - 1]; b[hi - 1] = (u16)((v & ~0x007Cu) | (vt_line_orig2(v) << 2) | s1); }
+}
+#endif
+
+#if VT_SPLIT_SLOTS
+/* ==========================================================================
+ * s.99: BAND MAP MODE -- any number of raster bands, through row buffers
+ * --------------------------------------------------------------------------
+ * CUBE Tech's Let's Count, Speed Type and Football Training (VT369 and VT03)
+ * draw pictures of almost all unique tiles and switch $2016/$2017 from the
+ * timer IRQ at 5-14 tile-row boundaries a frame, each band with its own 4K
+ * of tiles: 19-48 distinct 1K banks and up to 950 distinct tiles on one
+ * screen.  The slots above hold three 256-tile tables at most.
+ *
+ * When a frame has more bank sets than the slots can take, every BG line
+ * goes to char base 2: blocks 2-3 (after the PRG copy's eviction, as for the
+ * slots) become 32 row buffers of 32 tiles, and each map row on screen owns
+ * one.  Its cells point at their own tiles there, decoded with the banks of
+ * the band that shows the row.  A row goes to the band that covers most of
+ * its lines (a weighted majority vote over runs of lines with the same
+ * scroll and BG0CNT, from scrollbuff and bg0cntbuff), so a band edge a line
+ * or two off still picks the right banks.  Each row keeps the name and
+ * attribute bytes and the banks its buffer was decoded from: a still row
+ * costs ten word compares a frame, and a changed one decodes only the cells
+ * whose name byte changed (Football Training's title redraws its ball, ~100
+ * cells in 11 rows, every few frames).  A first version shared tiles
+ * between cells through a 1024-entry hash; that title (950 tiles) refilled
+ * and flushed it every 8 frames, at 24 fps.
+ *
+ * The plain map writers are off meanwhile (vt_bm_live, read with
+ * vt_bkexten_live as one halfword by ppu.s); the frame-end compares see
+ * every nametable change however it was written.  The mode stays on until
+ * VT_BM_CALM frames in a row would have fitted the slots, then writes the
+ * plain map back.  Only screen blocks 12/13 (physical nametables 0/1):
+ * VT carts are never four-screen, and the blocks above hold the scanline
+ * effect buffers (loadcart.c).  A row that shows in two screen blocks at
+ * once (horizontal scroll) takes two buffers; past 32 rows the rest keep
+ * what they had (vt_bm_stat[3]).
+ * ========================================================================== */
+#define VT_BM_BUFS 32                     /* 32 x 32 tiles = blocks 2-3 */
+#define VT_BM_ROWS 64                     /* screen blocks 12/13 x 32 map rows */
+#define VT_BM_CALM 60
+EWRAM_BSS u8  vt_bm_rowbuf[VT_BM_ROWS];   /* buffer + 1 each map row owns, 0 = none */
+EWRAM_BSS u8  vt_bm_bufrow[VT_BM_BUFS];   /* row + 1 owning each buffer, 0 = free */
+EWRAM_BSS u8  vt_bm_bufage[VT_BM_BUFS];   /* stamp of the frame that last showed it */
+EWRAM_BSS u8  vt_bm_rowok[VT_BM_ROWS];    /* the row's buffer holds the decode below */
+EWRAM_BSS u32 vt_bm_rowdec[VT_BM_ROWS];   /* banks it was decoded with */
+EWRAM_BSS u32 vt_bm_rownt[VT_BM_ROWS][8]; /* its name bytes then */
+EWRAM_BSS u32 vt_bm_rowat[VT_BM_ROWS][2]; /* the attribute bytes over it then */
+EWRAM_BSS u32 vt_bm_rowkey[VT_BM_ROWS];   /* this frame: the banks of the band showing it */
+EWRAM_BSS u8  vt_bm_rowstamp[VT_BM_ROWS];
+EWRAM_BSS u8  vt_bm_rowvote[VT_BM_ROWS];
+EWRAM_BSS u8  vt_bm_stamp;
+EWRAM_BSS u8  vt_bm_calm;
+EWRAM_BSS u32 vt_bm_mode;                 /* vt_split_mode_word() the buffers were decoded in */
+EWRAM_BSS u32 vt_bm_stat[4];              /* diagnostic: frames, rows rebuilt, tiles decoded, rows with no buffer */
+#ifdef VT_BM_LOG
+EWRAM_BSS u8 vt_bm_log_n, vt_bm_log_line[VT_MAXB];
+EWRAM_BSS u32 vt_bm_log_key[VT_MAXB];
+#endif
+
+static const u8 *vt_bm_nt(u32 k) { return (const u8 *)vt_bk_consts[1] + k * 0x400u; }
+
+static void vt_bm_clear(void)
+{
+    for (u32 r = 0; r < VT_BM_ROWS; r++) { vt_bm_rowbuf[r] = 0; vt_bm_rowok[r] = 0; }
+    for (u32 b = 0; b < VT_BM_BUFS; b++) vt_bm_bufrow[b] = 0;
+}
+
+/* Map row `row` of screen block 12 + k onto row buffer b: every cell's map
+ * entry, and the tiles of the cells in mask decoded from the banks packed in
+ * key (one byte per 64-tile page), as vt_chr4/2_assemble_page_vram decode a
+ * page. */
+__attribute__((target("arm"), noinline))
+static void vt_bm_row(u32 k, u32 row, u32 key, u32 b, u32 mask)
+{
+    const u8 *nt = vt_bm_nt(k);
+    volatile u16 *map = (volatile u16 *)vt_bk_consts[3] + k * 0x400u + row * 32u;
+    const u8 *ab = nt + 0x3C0u + (row >> 2) * 8u;
+    const u32 ash = (row & 2u) << 1;
+    for (u32 c = 0; c < 32; c++)
+        map[c] = (u16)((b * 32u + c) | (((ab[c >> 2] >> (ash | (c & 2u))) & 3u) << 12));
+    if (!mask) return;
+    if (!vt_spread_ready) vt_spread_init();
+    const u32 cm = vt_chr_mask_get(); const u8 *cbase = vt_chr_base();
+    const u32 bpp4 = (vt_reg_2010 & 0x02) != 0, wide16 = (vt_reg_2010 & 0x40) != 0;
+    const u32 o1 = wide16 ? 16u : 8u, o2 = wide16 ? 1u : 16u;
+    const u32 o3 = wide16 ? 17u : 24u, rs = wide16 ? 2u : 1u;
+    u32 src[4];
+    for (u32 p = 0; p < 4; p++) {
+        const u32 bank = (key >> (p * 8u)) & 0xFFu;
+        src[p] = bpp4 ? (vt_chr_bank_byte_offset_n(bank, 1) >> 10) * 2048u : vt_chr_bank_byte_offset(bank);
+    }
+    volatile u32 *dst = (volatile u32 *)(0x06008000u + b * 1024u);
+    for (u32 c = 0; c < 32; c++, dst += 8) {
+        if (!(mask & (1u << c))) continue;
+        const u32 n = nt[row * 32u + c];
+        if (bpp4) {
+            const u32 s0 = src[n >> 6] + (n & 63u) * 32u;
+            for (u32 r = 0; r < 8; r++) {
+                const u32 lo2 = s0 + r * rs;
+                dst[r] = vt_spread[cbase[lo2 & cm]]
+                       | (vt_spread[cbase[(lo2 + o1) & cm]] << 1)
+                       | (vt_spread[cbase[(lo2 + o2) & cm]] << 2)
+                       | (vt_spread[cbase[(lo2 + o3) & cm]] << 3);
+            }
+        } else {
+            const u32 s0 = src[n >> 6] + (n & 63u) * 16u;
+            for (u32 r = 0; r < 8; r++)
+                dst[r] = vt_spread[cbase[(s0 + r) & cm]] | (vt_spread[cbase[(s0 + r + 8) & cm]] << 1);
+        }
+        vt_bm_stat[2]++;
+    }
+    vt_bm_stat[1]++;
+}
+
+/* Back to the plain map (tile number | attribute << 12, as update_whole_map
+ * writes it) in both screen blocks -- rows never shown during the mode
+ * missed their nametable writes too -- and every line of the current
+ * bg0cntbuff back on its own char base. */
+static void vt_bm_leave(u16 *cur)
+{
+    for (u32 k = 0; k < 2; k++) {
+        const u8 *nt = vt_bm_nt(k);
+        volatile u16 *map = (volatile u16 *)vt_bk_consts[3] + k * 0x400u;
+        for (u32 row = 0; row < 30; row++) {
+            const u8 *ab = nt + 0x3C0u + (row >> 2) * 8u;
+            const u32 ash = (row & 2u) << 1;
+            for (u32 c = 0; c < 32; c++)
+                map[row * 32u + c] = (u16)(nt[row * 32u + c] | (((ab[c >> 2] >> (ash | (c & 2u))) & 3u) << 12));
+        }
+    }
+    vt_lines_restore(cur, 0, 240);
+    vt_bm_clear();
+    vt_bm_live = 0;                /* blocks 2/3 go back to the slots, which are all invalid */
+}
+
+/* A new cart or a loaded state: the map is plain again (loadcart). */
+static void vt_bm_reset(void)
+{
+    vt_bm_clear();
+    vt_bm_live = 0;
+    vt_bm_calm = 0;
+}
+
+/* Distinct non-primary bank sets this frame, counted up to 4. */
+static u32 vt_bm_sets(int n, int half, const u32 pk[4])
+{
+    const u32 p = pk[0] | pk[1] << 8 | pk[2] << 16 | pk[3] << 24;
+    u32 keys[4], nk = 0;
+    for (int i = 0; i < n - 1 && nk < 4; i++) {
+        u32 k[4]; vt_band_key(vt_band[i].reg, half, k);
+        const u32 x = k[0] | k[1] << 8 | k[2] << 16 | k[3] << 24;
+        if (x == p) continue;
+        u32 j = 0;
+        while (j < nk && keys[j] != x) j++;
+        if (j == nk) keys[nk++] = x;
+    }
+    return nk;
+}
+
+/* w lines of map row r vote for key (a weighted Boyer-Moore majority). */
+static inline int vt_bm_vote(u32 r, u32 key, u32 w, u8 st)
+{
+    if (vt_bm_rowstamp[r] != st) { vt_bm_rowstamp[r] = st; vt_bm_rowkey[r] = key; vt_bm_rowvote[r] = (u8)w; return 1; }
+    if (vt_bm_rowkey[r] == key) vt_bm_rowvote[r] = (u8)(vt_bm_rowvote[r] + w);
+    else if (vt_bm_rowvote[r] >= w) vt_bm_rowvote[r] = (u8)(vt_bm_rowvote[r] - w);
+    else { vt_bm_rowkey[r] = key; vt_bm_rowvote[r] = (u8)(w - vt_bm_rowvote[r]); }
+    return 0;
+}
+
+/* How many of the n words at p, from the first, equal v (ARM: one ldm per
+ * four lines; the line scan below reads all of scrollbuff and bg0cntbuff
+ * every frame). */
+__attribute__((target("arm"), noinline))
+static u32 vt_bm_same(const u32 *p, u32 n, u32 v)
+{
+    u32 i = 0;
+    for (; i + 4u <= n; i += 4u, p += 4) {
+        const u32 a = p[0], b = p[1], c = p[2], d = p[3];
+        if ((a ^ v) | (b ^ v) | (c ^ v) | (d ^ v)) break;
+    }
+    for (; i < n && *p == v; i++, p++) ;
+    return i;
+}
+
+/* The words of a row's 8 name words that differ from its copy, as a bit
+ * each, 0 when all equal: most frames find none, so test them all at once
+ * first (Let's Count rewrites its nametables every frame, unchanged). */
+__attribute__((target("arm"), noinline))
+static u32 vt_bm_cmp8(const u32 *a, const u32 *b)
+{
+    const u32 a0 = a[0], a1 = a[1], a2 = a[2], a3 = a[3], a4 = a[4], a5 = a[5], a6 = a[6], a7 = a[7];
+    if (!((a0 ^ b[0]) | (a1 ^ b[1]) | (a2 ^ b[2]) | (a3 ^ b[3]) |
+          (a4 ^ b[4]) | (a5 ^ b[5]) | (a6 ^ b[6]) | (a7 ^ b[7]))) return 0;
+    u32 m = 0;
+    for (u32 w = 0; w < 8; w++) if (a[w] != b[w]) m |= 1u << w;
+    return m;
+}
+
+/* One frame in band map mode: claim the rows each band shows, give each a
+ * buffer, rebuild what changed, put every line on char base 2.  0 when
+ * blocks 2/3 cannot be had (no PRG twin): the slots carry on. */
+static int vt_bm_frame(u16 *buf, int n, int half)
+{
+    if (!vt_prg_evict()) return 0;
+    if (!vt_bm_live) {
+        vt_split_valid[0] = vt_split_valid[1] = vt_split_valid[2] = 0;
+        vt_blk_lent = 0;
+        vt_bm_clear();
+        vt_bm_live = 1;
+    }
+    const u32 mode = vt_split_mode_word();
+    if (mode != vt_bm_mode) {
+        vt_bm_mode = mode;
+        for (u32 r = 0; r < VT_BM_ROWS; r++) vt_bm_rowok[r] = 0;
+    }
+    vt_bk_pending_whole = 0;       /* ppu.s's whole-map request: the compares cover it */
+    vt_bm_stat[0]++;
+    u32 bk[VT_MAXB];
+    for (int i = 0; i < n; i++) {
+        u32 k[4]; vt_band_key(vt_band[i].reg, half, k);
+        bk[i] = k[0] | k[1] << 8 | k[2] << 16 | k[3] << 24;
+    }
+#ifdef VT_BM_LOG
+    {   /* DIAGNOSTIC: the last band-mode frame's bands (first line, banks) */
+        vt_bm_log_n = (u8)n;
+        for (int i = 0; i < n; i++) { vt_bm_log_line[i] = vt_band[i].line; vt_bm_log_key[i] = bk[i]; }
+    }
+#endif
+    u8 st = (u8)(vt_bm_stamp + 1u);
+    if (!st) st = 1;
+    vt_bm_stamp = st;
+    /* The map rows each band shows.  scrollbuff has BG0VOFS (Y - line) in
+     * its high half and BG0HOFS (X + 8, the first column shown) in its low 9
+     * bits; bg0cntbuff the screen base and size (cart.s m0000-m0123).  Lines
+     * with the same pair in one band form a run, which crosses a map row
+     * every 8 lines. */
+    const u32 *sb = (const u32 *)_scrollbuff;
+    u8 rl[VT_BM_ROWS];             /* the rows on screen, in claim order */
+    u32 nrl = 0;
+    /* one: every line has the same BG0CNT (still screens), checked two lines a word */
+    const u32 cnt0 = buf[0];
+    const u32 one = !((u32)buf & 3u) && vt_bm_same((const u32 *)buf, 120, cnt0 | cnt0 << 16) == 120;
+    int bi = 0;
+    for (u32 l = 0; l < 240; ) {
+        while (bi + 1 < n && vt_band[bi + 1].line <= l) bi++;
+        const u32 lim = (bi + 1 < n && vt_band[bi + 1].line < 240) ? vt_band[bi + 1].line : 240u;
+        const u32 cnt = buf[l], v = sb[l];
+        u32 e = l + 1u + vt_bm_same(sb + l + 1, lim - l - 1u, v);
+        if (!one) for (u32 f = l + 1u; f < e; f++) if (buf[f] != cnt) { e = f; break; }
+        const u32 size = cnt >> 14, sbase = (cnt >> 8) & 31u;
+        if (sbase < 12u || sbase > 13u) { l = e; continue; }
+        const u32 ym = (size & 2u) ? 511u : 255u, x0 = v & ((size & 1u) ? 511u : 255u);
+        const u32 hb = (size & 1u) ? (x0 >> 8) & 1u : 0u;
+        const u32 two = (size & 1u) && (x0 & 255u) + 239u >= 256u;
+        while (l < e) {
+            const u32 ty = (l + (v >> 16)) & ym, trow = ty >> 3, row = trow & 31u;
+            u32 nx = l + 8u - (ty & 7u);
+            if (nx > e) nx = e;
+            if (row < 30u) {
+                u32 kb = sbase - 12u;
+                if (size & 2u) kb += (trow >> 5) * ((size & 1u) ? 2u : 1u);
+                for (u32 j = 0; j <= two; j++) {
+                    const u32 b = kb + (hb ^ j);
+                    if (b <= 1u && vt_bm_vote(b * 32u + row, bk[bi], nx - l, st)) rl[nrl++] = (u8)(b * 32u + row);
+                }
+            }
+            l = nx;
+        }
+    }
+    /* Buffers: rows on screen keep theirs; the others take a free one or the
+     * one shown longest ago. */
+    for (u32 i = 0; i < nrl; i++)
+        if (vt_bm_rowbuf[rl[i]]) vt_bm_bufage[vt_bm_rowbuf[rl[i]] - 1u] = st;
+    for (u32 i = 0; i < nrl; i++) {
+        const u32 r = rl[i];
+        if (vt_bm_rowbuf[r]) continue;
+        int best = -1;
+        for (u32 b = 0; b < VT_BM_BUFS; b++) {
+            if (!vt_bm_bufrow[b]) { best = (int)b; break; }
+            if (vt_bm_bufage[b] == st) continue;
+            if (best < 0 || (u8)(st - vt_bm_bufage[b]) > (u8)(st - vt_bm_bufage[best])) best = (int)b;
+        }
+        if (best < 0) { vt_bm_stat[3]++; continue; }
+        if (vt_bm_bufrow[best]) {          /* its old row loses it: rebuilt when shown again */
+            const u32 o = vt_bm_bufrow[best] - 1u;
+            vt_bm_rowbuf[o] = 0; vt_bm_rowok[o] = 0;
+        }
+        vt_bm_bufrow[best] = (u8)(r + 1u);
+        vt_bm_rowbuf[r] = (u8)(best + 1);
+        vt_bm_rowok[r] = 0;
+        vt_bm_bufage[best] = st;
+    }
+    /* Rebuild what changed: every cell for new banks or a new buffer, else
+     * the cells whose name byte changed (and the entries, for attributes).
+     * Compared every frame: Let's Count rewrites ~4000 nametable bytes a
+     * frame, so marking writeBG's writes (as VT369 enhanced mode does) cost
+     * 42K cycles a frame and still marked nearly every row. */
+    for (u32 i = 0; i < nrl; i++) {
+        const u32 r = rl[i];
+        if (!vt_bm_rowbuf[r]) continue;
+        const u32 y = r & 31u, key = vt_bm_rowkey[r], k = r >> 5;
+        const int same = vt_bm_rowok[r] && vt_bm_rowdec[r] == key;
+        const u8 *nt = vt_bm_nt(k);
+        const u32 *ntw = (const u32 *)(nt + y * 32u), *atw = (const u32 *)(nt + 0x3C0u + (y >> 2) * 8u);
+        u32 *rn = vt_bm_rownt[r], *ra = vt_bm_rowat[r];
+        u32 mask = 0xFFFFFFFFu;
+        if (same) {
+            mask = 0;
+            for (u32 dw = vt_bm_cmp8(ntw, rn); dw; dw &= dw - 1u) {
+                const u32 w = (u32)__builtin_ctz(dw), x = ntw[w] ^ rn[w];
+                for (u32 j = 0; j < 4; j++)
+                    if (x & (0xFFu << (j * 8u))) mask |= 1u << (w * 4u + j);
+            }
+            if (!mask && atw[0] == ra[0] && atw[1] == ra[1]) continue;
+        }
+        vt_bm_row(r >> 5, y, key, vt_bm_rowbuf[r] - 1u, mask);
+        for (u32 w = 0; w < 8; w++) rn[w] = ntw[w];
+        ra[0] = atw[0]; ra[1] = atw[1];
+        vt_bm_rowdec[r] = key;
+        vt_bm_rowok[r] = 1;
+    }
+    if (one) {                     /* every line alike: tag one value, store it 240 times */
+        const u32 o = (cnt0 & 0x40u) ? (cnt0 >> 4) & 3u : (cnt0 >> 2) & 3u;
+        const u32 t = (cnt0 & ~0x007Cu) | (o << 4) | 0x48u;
+        if (((u32)buf & 3u) == 0) memset32(buf, t | t << 16, 240 * 2);
+        else for (u32 l = 0; l < 240; l++) buf[l] = (u16)t;
+    } else
+        vt_lines_tag(buf, 0, 240, 2);
+    return 1;
 }
 #endif
 
@@ -3091,7 +3543,9 @@ void vt_bands_frame_end(void)
         side = vt_tag_buf[0] ? 1 : 0;
         vt_tag_buf[side] = cur; vt_tag_lo[side] = 0; vt_tag_hi[side] = 240;
     }
-    vt_lines_restore(cur, vt_tag_lo[side], vt_tag_hi[side]);
+    /* s.99: band map mode re-tags every line itself (vt_lines_tag keeps a
+     * tagged line's original base), and vt_bm_leave restores them all */
+    if (!vt_bm_live) vt_lines_restore(cur, vt_tag_lo[side], vt_tag_hi[side]);
     int tag_lo = 240, tag_hi = 0;
 #endif
     const int n = vt_nband;
@@ -3113,6 +3567,20 @@ void vt_bands_frame_end(void)
         u16 *buf = (u16 *)_bg0cntbuff;
         vt_split_used = 0; vt_split_stamp++;
         int nslot = vt_blk_lent ? 3 : 2;
+#if VT_SPLIT_SLOTS
+        {   /* s.99: more bank sets than the slots take (two, three when the
+             * primary's other half can be lent): band map mode */
+            const u32 ns = vt_bm_sets(n, half, pk);
+            const int want = ns > 3u || (ns == 3u && !((vt_reg_2010 & 0x02) &&
+                                         (vt_blk_lent || vt_blk_free(buf, (u32)(half ^ 1)))));
+            if (want) vt_bm_calm = 0;
+            else if (vt_bm_live && ++vt_bm_calm >= VT_BM_CALM) vt_bm_leave(buf);
+            if ((want || vt_bm_live) && vt_bm_frame(buf, n, half)) {
+                tag_lo = 0; tag_hi = 240;
+                goto bands_done;
+            }
+        }
+#endif
         /* Tallest bands first: with more bands than slots (Table Soccer's
          * formation screen has six, s.79) the slots go to the bands that
          * cover the most lines, and only the thin strips fall back to the
@@ -3164,7 +3632,16 @@ void vt_bands_frame_end(void)
         if (vt_split_frame) vt_chr_sync_from_prg();   /* back to the live registers */
         vt_split_frame = 0;
         vt_split_used = 0;
+#if VT_SPLIT_SLOTS
+        if (vt_bm_live) {          /* s.99: one band, until the mode calms down */
+            if (!ok || ++vt_bm_calm >= VT_BM_CALM) vt_bm_leave((u16 *)_bg0cntbuff);
+            else if (vt_bm_frame((u16 *)_bg0cntbuff, n, (_ppuctrl0 & 0x10) ? 1 : 0)) { tag_lo = 0; tag_hi = 240; }
+        }
+#endif
     }
+#if VT_SPLIT_SLOTS
+bands_done:
+#endif
     if (vt_blk_lent && !(vt_split_used & 4)) {
         /* Hand the half back; vt_chr4_copy_to_vram's stomp check restores
          * its 4bpp pages on the next rebuild. */
@@ -3176,6 +3653,7 @@ void vt_bands_frame_end(void)
 #endif
     vt_band[0].line = 0; vt_regs_copy(vt_band[0].reg, vt_chr_reg);
     vt_nband = 1; vt_band_fresh = 1;
+    vt_px_frame_end();             /* s.99 */
 }
 
 #if VT_MODE

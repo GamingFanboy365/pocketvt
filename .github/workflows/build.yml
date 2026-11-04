@@ -113,7 +113,8 @@ jobs:
       - name: Diagnostic defines still build
         run: |
           printf '%s\n' VT369_SND_OFF VT_NO_SPEEDHACK VT_NO_JMPSKIP VT_DIAG_NOVSYNC VT_TIMER_LOG \
-            BK_STOMP_PROBE FORCE_BK_REPAIR VALUE_SENTINEL DMA_LOG VT369_DEC48_CHECK VT_SPLIT_SLOTS=0 > diag.txt
+            BK_STOMP_PROBE FORCE_BK_REPAIR VALUE_SENTINEL DMA_LOG VT369_DEC48_CHECK VT_SPLIT_SLOTS=0 \
+            VT_BM_LOG > diag.txt
           xargs -P 4 -I{} sh -c 'n=$(echo {} | tr = _); EXTRA_CFLAGS="-D{}" LIBGBA=../libgba-master \
             BUILD=../diag_$n bash build_pvt.sh > diag_$n.log 2>&1 || { tail -30 diag_$n.log; echo "::error::-D{} does not build"; exit 255; }' < diag.txt
 

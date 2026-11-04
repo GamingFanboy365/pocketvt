@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "about": "PocketVT test carts, read by tools/regress/regress.py. The ROMs are NOT in git (copyright): regress.py --stage finds them by md5 in testroms/, the session uploads folder or any zip (the user keeps all of them as pocketvt_testroms.zip) and copies them into testroms/ (gitignored). ram_benign: NES RAM ranges (6502 addresses) whose differences are known and harmless; drift: game state follows GBA timing, so NES RAM is not compared; drift_from: RAM differences from that NES frame on are expected (a WARN). Any other RAM difference is re-checked on -DVT_NO_SPEEDHACK builds.",
+ "about": "PocketVT test carts, read by tools/regress/regress.py. The ROMs are NOT in git (copyright): regress.py --stage finds them by md5 in testroms/, the session uploads folder or any zip (the user keeps all of them as pocketvt_testroms.zip) and copies them into testroms/ (gitignored). ram_benign: NES RAM ranges (6502 addresses) whose differences are known and harmless; drift: game state follows GBA timing, so NES RAM is not compared; drift_from: RAM differences from that NES frame on are expected (a WARN). ref_drift_from: from that NES frame on, a struct drop in the play reference session is a WARN (sound-on game state follows GBA timing). Any other RAM difference is re-checked on -DVT_NO_SPEEDHACK builds.",
  "vg_pocket_wrap": "VG_Pocket_VT09.nes is the raw 4 MB vgpocket.bin behind the NES 2.0 header 4E 45 53 1A 00 00 00 0B 01 01 00 00 00 08 00 00 (guide s.54)",
  "carts": [
   {
@@ -34,6 +34,28 @@
    "ram": 4096
   },
   {
+   "id": "Football_Training_VT03",
+   "file": "Football_Training_VT03.nes",
+   "md5": "66624844897b0f65090be572c14dc91a",
+   "size": 262160,
+   "mapper": "419.0",
+   "console": "VT03",
+   "sound_hle": false,
+   "ram": 2048,
+   "note": "five BG bank bands a frame (timer IRQ, 1x-CPU handler): band map mode (s.99a); PIX16EN menu text (s.99c)"
+  },
+  {
+   "id": "Football_Training_VT369",
+   "file": "Football_Training_VT369.nes",
+   "md5": "6051c194cae2aed6642cc7004ebb36e2",
+   "size": 524304,
+   "mapper": "256.13",
+   "console": "VT369",
+   "sound_hle": true,
+   "ram": 4096,
+   "note": "six BG bank bands a frame: band map mode (s.99a)"
+  },
+  {
    "id": "Funny_Coins",
    "file": "Funny_Coins.nes",
    "md5": "0bdef57f26b52974899f0129a2065530",
@@ -42,7 +64,7 @@
    "console": "VT369",
    "sound_hle": true,
    "ram": 4096,
-   "note": "sound-on runs can stay at ~15 fps when find_idle_loop keeps failing (s.97f)"
+   "note": "sound-on runs can stay at ~15 fps when find_idle_loop keeps failing (s.97f); its music start depends on where the finder's samples land (per-slot back-off, s.99d)"
   },
   {
    "id": "Hex_City_X",
@@ -86,7 +108,20 @@
    "mapper": "256.13",
    "console": "VT369",
    "sound_hle": true,
-   "ram": 4096
+   "ram": 4096,
+   "ref_drift_from": 700,
+   "note": "with sound on its play session's state follows GBA timing (it waits on the sound HLE's tick counter $18F6, s.96g): from NES 700 the player stands a few pixels apart and NES 1000 lands in one of two states, 98.42% or 99.93% struct, swapped by unrelated changes (s.98g +1.51, s.99e -1.51); the sound-off state check stays exact"
+  },
+  {
+   "id": "Lets_Count",
+   "file": "Lets_Count.nes",
+   "md5": "c8e84d80511c8c5766180da8f3adb31d",
+   "size": 262160,
+   "mapper": "256.13",
+   "console": "VT369",
+   "sound_hle": true,
+   "ram": 4096,
+   "note": "fourteen BG bank bands a frame, PIX16EN for lines 80-111 only (its sums): band map mode and sprite mode by line (s.99a, s.99c)"
   },
   {
    "id": "Lonely_Island",
@@ -169,6 +204,17 @@
    "console": "VT03",
    "sound_hle": false,
    "ram": 2048
+  },
+  {
+   "id": "Speed_Type",
+   "file": "Speed_Type.nes",
+   "md5": "1fc1a1e93b022ad40ec422ce209d0e98",
+   "size": 262160,
+   "mapper": "256.13",
+   "console": "VT369",
+   "sound_hle": true,
+   "ram": 4096,
+   "note": "seven BG bank bands a frame: band map mode (s.99a)"
   },
   {
    "id": "Star_Ally_UM6578",

@@ -372,8 +372,9 @@ def run_speed(args, core, cart, rom, outdir):
                 final=fts[-1] if fts else 0, per_second=per, last_pc=pcs[-1] if pcs else None)
 
 
-def run_ref(args, core, cart, rom, outdir, session):
+def run_ref(args, core, cart, rom, outdir, session, frames=None):
     at, inp = REF_SESSIONS[session]
+    at = [str(f) for f in frames] if frames else at
     inp = inp or furb_input(STATE_SPANS)
     cmd = [sys.executable, os.path.join(REPO, 'tools', 'compare_furb.py'), rom, '--at', ','.join(at), '--input', inp,
            '--core', os.path.join(core, 'pocketvt.gba'), '--elf', os.path.join(core, 'pocketvt.elf'),
@@ -504,9 +505,38 @@ def judge_speed(cart, old, new):
     return 'PASS', notes
 
 
-def judge_ref(cart, old, new):
-    """-> (verdict, notes, largest struct drop)"""
-    notes, verdict, worst = [], 'PASS', 0.0
+# A drop of more than 0.5 at one frame is scored again over the frames
+# around it (s.99e): Star Ally VT03 at NES 1000 dropped 1.17 because its
+# sprites stood on another animation frame there, while over NES 960-1040 the
+# two cores' means were 98.17 and 98.18 and the frames took turns.  Only a
+# drop that holds over the window counts.
+PHASE_WINDOW = range(-8, 9, 2)
+
+
+def ref_window(args, old_core, new_core, cart, rom, base, sess, t):
+    """-> (old mean, new mean) of struct over the frames around t, or None"""
+    frames = [t + d for d in PHASE_WINDOW if t + d > 0]
+    o = run_ref(args, old_core, cart, rom, os.path.join(base, 'ref_old_%s_w%d' % (sess, t)), sess, frames)
+    n = run_ref(args, new_core, cart, rom, os.path.join(base, 'ref_new_%s_w%d' % (sess, t)), sess, frames)
+    if 'error' in o or 'error' in n:
+        return None
+    ks = [k for k in o if k in n]
+    if not ks:
+        return None
+    return (sum(o[k]['struct'] for k in ks) / len(ks), sum(n[k]['struct'] for k in ks) / len(ks))
+
+
+def judge_ref(cart, old, new, windows=None):
+    """-> (verdict, notes, {(session, frame): struct change}).  windows:
+    {(session, frame): (old mean, new mean)} from ref_window for the frames
+    that dropped; such a frame's change is its window's."""
+    notes, verdict, drops = [], 'PASS', {}
+    windows = windows or {}
+    # ref_drift_from: from that NES frame on, the play session's game state
+    # follows GBA timing with sound on (the VT369 sound HLE runs on GBA
+    # timers), while the sound-off state check stays exact: a drop there is a
+    # WARN, explained by the cart's note (Jumper, s.96g, s.99e)
+    rdf = cart.get('ref_drift_from')
     for sess in REF_SESSIONS:
         o, n = old.get(sess, {}), new.get(sess, {})
         if 'error' in n or 'error' in o:
@@ -517,13 +547,23 @@ def judge_ref(cart, old, new):
                 continue
             ds, de = n[t]['struct'] - o[t]['struct'], n[t]['exact5'] - o[t]['exact5']
             parts.append('%s %.2f%s' % (t, n[t]['struct'], '' if abs(ds) < 0.005 else ' (%+.2f)' % ds))
-            worst = min(worst, ds)
+            w = windows.get((sess, int(t)))
+            if ds < -0.5 and w and w[1] >= w[0] - 0.1:
+                parts[-1] += ' [NES %d-%d mean %.2f -> %.2f: animation or display phase]' % (
+                    max(1, int(t) + PHASE_WINDOW[0]), int(t) + PHASE_WINDOW[-1], w[0], w[1])
+                drops[(sess, int(t))] = w[1] - w[0]
+                verdict = max(verdict, 'WARN', key=ORDER.get)
+                continue
+            drops[(sess, int(t))] = ds
+            drifting = cart.get('drift') or (sess == 'play' and rdf is not None and int(t) >= rdf)
             if ds < -0.5:
-                verdict = max(verdict, 'WARN' if cart.get('drift') else 'FAIL', key=ORDER.get)
+                verdict = max(verdict, 'WARN' if drifting else 'FAIL', key=ORDER.get)
             elif ds < -0.05 or de < -1.0:
                 verdict = max(verdict, 'WARN', key=ORDER.get)
         notes.append('%s: %s' % (sess, ', '.join(parts)))
-    return verdict, notes, worst
+    if rdf is not None and verdict == 'WARN' and cart.get('note'):
+        notes.append('expected from play frame %d: %s' % (rdf, cart['note']))
+    return verdict, notes, drops
 
 
 # ------------------------------------------------------------------ main
@@ -710,13 +750,30 @@ def main():
         if 'ref' in checks:
             o = {s: run_ref(args, core_of(old_t, tc, ()), cart, rom, os.path.join(base, 'ref_old_' + s), s) for s in REF_SESSIONS}
             n = {s: run_ref(args, core_of(new_t, tc, ()), cart, rom, os.path.join(base, 'ref_new_' + s), s) for s in REF_SESSIONS}
-            v, notes, worst = judge_ref(cart, o, n)
+            windows = {}
+            for sess in REF_SESSIONS:
+                for t, e in n.get(sess, {}).items():
+                    if not isinstance(e, dict) or not isinstance(o.get(sess, {}).get(t), dict):
+                        continue
+                    rdf = cart.get('ref_drift_from')
+                    if cart.get('drift') or (sess == 'play' and rdf is not None and int(t) >= rdf):
+                        continue            # a WARN already: the game state drifts there
+                    if e['struct'] - o[sess][t]['struct'] < -0.5:
+                        w = ref_window(args, core_of(old_t, tc, ()), core_of(new_t, tc, ()), cart, rom, base, sess, int(t))
+                        if w:
+                            windows[(sess, int(t))] = w
+            v, notes, drops = judge_ref(cart, o, n, windows)
             # A picture that changed with the same game state, and a reference score
-            # that dropped anywhere: two signs of one rendering fault.
-            if v == 'WARN' and 'state' in res['checks'] and pic_diff and worst < -0.05:
+            # that dropped at that frame: two signs of one rendering fault.  The play
+            # session's frames are state frames (same input); s.99e tied the two to
+            # one frame: Star Ally VT03's intended change at NES 60 and a 0.06 wobble
+            # at play 700 had made a FAIL.
+            hit = sorted(f for (sess, f), d in drops.items() if sess == 'play' and d < -0.05 and f in (pic_diff or ()))
+            if v == 'WARN' and 'state' in res['checks'] and hit:
                 v = 'FAIL'
-                notes.append('pictures changed at NES %s with identical RAM, and struct dropped by %.2f: '
-                             'a rendering change for the worse' % (', '.join(map(str, pic_diff[:6])), -worst))
+                notes.append('pictures changed at NES %s with identical RAM, and struct dropped there (%s): '
+                             'a rendering change for the worse' % (', '.join(map(str, hit[:6])),
+                                                                 ', '.join('%.2f' % drops[('play', f)] for f in hit[:6])))
             res['checks']['ref'] = dict(verdict=v, notes=notes, old=o, new=n)
         res['verdict'] = max((c['verdict'] for c in res['checks'].values()), key=ORDER.get, default='PASS')
         log('%-4s %-26s %-6s %s' % (res['verdict'], cid, tc,

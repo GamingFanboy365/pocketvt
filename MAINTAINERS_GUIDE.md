@@ -6364,3 +6364,339 @@ NES frame in this run (98a), which moved main's own Funny Coins session from
 The smoke ROMs pass on both cores, the IWRAM .bss ends at 0x03007B08
 (build_pvt) / 0x03007AF8 (devkitARM), and the user stack's lowest point is
 0x03007BA4 (Funny Coins, in the sound HLE, as on main).
+
+## 99. Four "faulty" CUBE Tech carts: band map mode, the VT369 timer, PIX16 sprites by line
+
+The user passed on four carts someone had reported as faulty: Football
+Training VT03 (NES 2.0 mapper 419) and Football Training, Let's Count and
+Speed Type for the VT369 (256.13, CUBE Tech's encryption). All four boot and
+play, but compare_furb scored them 62-79% struct: a band of each screen drew
+another band's tiles, and Let's Count's sums or its HUD digits came out as
+garbage. Three faults (99a-99c). The regression run on the change found a
+fourth problem, in the idle-loop finder (99d), and two false alarms in the
+runner (99e); 99f has the results. The four carts are in
+tools/regress/carts.json now (27 carts); the user's next upload of the ROM
+bundle should include them (testroms/ has them in this session only).
+
+### 99a. Band map mode: any number of BG bank bands
+
+All four draw their screens from nearly unique tiles and switch $2016/$2017
+from the VT timer IRQ at tile-row boundaries, each band with its own 4K of
+tiles. Counted from a one-frame furb_cli --trace and the frame's .nt dump at
+NES frame 300:
+
+| Cart | bands | distinct 1K banks on screen | distinct tiles |
+|---|---|---|---|
+| Speed Type | 7 | 24 | 623 |
+| Football Training VT369 | 6 | 21 | 893 |
+| Let's Count | 14 | 48 | 823 |
+| Football Training VT03 | 5 | 19 | 950 |
+
+The raster-split slots (s.73, s.77, s.79) hold three 256-tile tables at most,
+and VT_MAXB folded every band past the sixth into the last; a band without a
+slot showed the primary's tiles. Whole 64-tile pages cannot be the unit
+either: Let's Count's 48 banks are 96K of 4bpp tiles, more than all of BG
+VRAM.
+
+Band map mode (ppu_vt.c, vt_bm_*) takes over when a frame has more distinct
+bank sets than the slots can take, and VT_MAXB is 32. Every BG line goes to
+char base 2, and blocks 2-3 (free once the PRG copy is evicted, as for the
+slots) become 32 row buffers of 32 tiles. Each map row on screen owns one,
+and its 32 map entries point at its own tiles there, decoded with the banks
+of the band that shows the row, the attribute's palette in bits 12-13 as
+before. Which band shows a row comes from the frame's own line buffers:
+scrollbuff holds each NES line's BG0VOFS and BG0HOFS, bg0cntbuff its screen
+base and size, so runs of lines with the same pair map onto map rows 8 lines
+at a time, and a row goes to the band that covers most of its lines (a
+weighted Boyer-Moore vote, which also kept the rows whole while the band
+edges were a line early, 99b).
+Each row keeps the 32 name bytes, the 8 attribute bytes over it and the banks
+its buffer was decoded from. A still row costs a compare of ten words a
+frame, and a changed one decodes only the cells whose name byte changed:
+Football Training's title redraws its ball, ~100 cells in 11 rows, every few
+frames. The mode stays on until 60 frames in a row would have fitted the
+slots (VT_BM_CALM), then writes the plain map back (tile | attribute << 12,
+as update_whole_map does) and puts every line back on its own char base. It
+touches screen blocks 12/13 only: VT carts are never four-screen, and blocks
+14/15 hold the scanline effect buffers (loadcart.c). A row that shows in two
+screen blocks at once (horizontal scroll) takes two buffers; past 32 rows the
+rest keep what they had, counted in vt_bm_stat[3].
+
+PocketNES's own map writers must stay off meanwhile, as under BKEXTEN. The
+flag vt_bm_live is the byte after vt_bkexten_live (both in vt_bg_owner[2],
+the old name kept as an asm alias), and ppu.s's two writers (consume_bg_cache
+in IWRAM, display_whole_map) read the pair with one ldrh, so the hook cost no
+IWRAM. vt_bk_consume drops the ring in band map mode and the whole-map
+request is cleared: the frame-end compares see every nametable change however
+it was written.
+
+The cost took four tries. The first version shared tiles between cells
+through a 1024-entry hash, one decode per (bank, tile); Football Training
+VT03's title needs 950 tiles, so each ball frame refilled it and it flushed
+every 8 frames (24 fps against 48 on main). Row buffers have no hash, no
+flush and no key table. Let's Count's gameplay then cost 76K cycles a NES
+frame at the frame end (cycprof on the regression session). It rewrites ~4000
+nametable bytes a frame, the same bytes mostly, which overflows PocketNES's
+ring, so main redraws the whole map every frame (update_whole_map and
+update_attributes, 48K); band map mode skips that. Marking writeBG's writes
+instead of comparing (vt369_nt_mark, as VT369 enhanced mode does) cost 42K
+on that game and still marked nearly every row, so it went again. What
+stayed: the vote by runs of lines (ARM vt_bm_same finds a run's end a word at
+a time), a list of the rows on screen instead of three passes over 64, an
+ARM compare of a row's 8 name words that exits on the first difference, and
+the line tags written as one value 240 times when every line has the same
+BG0CNT (still screens), where vt_lines_tag spent 10.5K. Let's Count's frame
+end now costs ~6K more than main's, and it runs faster than main (99d). An
+ARM vt_bm_frame was slower than the Thumb one (55K against 49K): from cart
+ROM, Thumb's 16-bit fetches win over a 32-bit ARM fetch. The bg0cntbuff pair
+is word-aligned now (loadcart.c).
+
+### 99b. The VT timer: the in-picture rephase, and where a VT369 clocks
+
+The band edges also drifted. Furbtendulator's counter (h_OneBus.cpp,
+ppuCycle and clockScanlineCounter) is clocked once a scanline, at dot 256 on
+a VT03 and dot 240 on a VT369, and a VT369 with $411C bit 7 (CPU x3) or bit 5
+set skips the clocks of the pre-render line and line 0. $4102 zeroes the
+counter, so it reloads on the first clock after the write and fires N clocks
+later. PocketVT had two things wrong.
+
+The rephase first. s.79 calibrated sound.s to the write time + N+2 lines,
+which fits a 1x-CPU IRQ handler: Football Training VT03 takes its IRQ at line
+54 dot 256, burns 23 NOPs and writes $4102 at line 55 dot 301, past the next
+clock, so its next IRQ comes N+2 lines on (Table Soccer VT03's handlers are
+alike). A VT369 handler at CPU x3 writes $4102 76-80 dots after its IRQ,
+within the line, and the reference fires N+1 lines on. N+2 slipped a line
+per split, and vt_timer_install_now counted from `timestamp`, the last
+timeout event, which trailed the write by 3 to 78 dots. The rephase now
+counts from the write's exact time (vt_w41_now, which the $41xx path in
+mapVT.s set already and the MMC3 $C000-$E001 path now sets too) to the next
+clock, then N clocks: Furbtendulator's rule. Both kinds of handler come out
+right with it.
+
+Then the clock itself. sound.s counted the lines from line_zero_start_time,
+PocketNES's MMC3 point, dot 292 of the line before line 0. That is within 36
+dots of a VT03's clock, but 289 dots (a line less 52) before a VT369's with
+the line-0 skip. A VT369 handler at CPU x3 writes its banks ~55 dots after
+its IRQ: from the early clock that is dot ~8 of the next line, which
+get_scanline_2 counts as the line it is on, so the band began there; in the
+reference it is dot ~297 of the IRQ's line, shown from the next line. Every
+VT369 split began a line early. My first draft of this section blamed the
+way vt_band_mark numbers a write's line. A probe settled it (bandtime: one
+NES frame of band marks, timer writes and expiries with their times since the
+frame start, beside a furb_cli --trace of the same frame): on Funny Coins at
+NES 700 the IRQ came at line 46 dot 294 where the reference takes it at line
+47 dot ~245, and the handler's writes followed it by the same 55 dots in
+both. vt_timer_clk0 (sound.s) now gives the clock's position, 289 dots later
+on a VT369 with $411C bit 7 or 5 (272 on PAL timing), and the four places
+that schedule the timer from line 0 (the rephase, the arm from vblank, the
+carry into the next frame in vt_timer_handler and vt_timer_reload_check) use
+it. Not modelled, as no test cart runs them: bit 5's 24-cycle IRQ delay, and
+a VT369 with neither bit, whose clock is 52 dots before PocketVT's.
+
+Band lines at NES 300 now equal the reference's (they began at
+0/63/80/97/123/140/189 on Speed Type before, and Let's Count's thirteenth was
+12 lines low):
+
+| Cart | band lines, PocketVT = Furbtendulator |
+|---|---|
+| Speed Type | 0/64/80/96/120/136/184 |
+| Let's Count | 0/40/80/88/96/104/112/128/136/144/152/160/168/176 |
+| Football Training VT369 | 0/40/96/120/152/208 |
+| Football Training VT03 | 0/56/96/144/200 (as before) |
+
+The old N+2 and the early clock cancelled at some splits and not at others:
+that was Funny Coins' one-line streaks at its board's edges (open item 5,
+s.92). Its board frames go from 98.2-98.4% to 99.3-99.4% struct (99f). With
+the new rephase alone, before the clock moved, the board had lost 0.13 at
+every frame (one streak moved, one added), which is how this was found. The
+new rephase also took a stray black line off Jewel Master VT03's title (NES
+60 of the regression session: 99.56% to 99.98% struct; a core with every
+other change of this section and the old rule still draws it).
+
+### 99c. PIX16 sprites: four pixels right, and the mode by line
+
+Football Training VT03's menu text and Let's Count's sums are 16-pixel
+PIX16EN sprites. update_sprites draws them as 16-wide OBJs, scaled ones with
+the double-size flag, which puts the picture half its width in; the X
+correction for that is 4, right for 8-wide OBJs, so every PIX16 sprite sat 4
+pixels right. Both loops take 4 more for a scaled PIX16 OBJ. Table Soccer
+VT03's menus (letters in PIX16 sprites) went from 96.23% to 97.78% with it,
+Table Soccer VT369's "P1" cursor box from 98.59% to 99.23% (every frame of
+both sessions), and Star Ally VT03's menu ($2010 = $1F) no longer draws "ONE
+PLAYER" twice (NES 60: 99.39% to 99.67%, the same with the old timer rule of
+99b).
+
+Let's Count sets PIX16EN ($2010 bit 0) for lines 80-111 only, where the sum
+is. vt_spr_eva_update read $2010 when the GBA vblank came, at any NES line,
+so most frames drew the sum's digits as 8-wide sprites (garbage) and the
+others drew the HUD's score digits as 16-wide pairs. vt_band_hook (ppu.s)
+now also calls vt_2010_mark after a $2010 write; vt_px_frame_end publishes
+the frame's PIX16EN lines as a bitmap (double-buffered: the vblank reads the
+last complete frame), and vt_spr_eva_update assembles the plain16 pair slots
+only for the sprites on those lines and fills vt_spr_line_mode. update_sprites
+reads that per sprite, by OAM Y: bits 0-1 the redirect mode it read from
+vt_spr16_active before, bit 2 PIX16 (OBJ shape, tile doubling, the X
+correction). The per-frame set-up in both loops went, so IWRAM grew 16 bytes
+for 99c in all (__bss_end__ 0x03007B18 on build_pvt). In a mixed frame
+vt_spr16_active stays 0, so vt_obj4_overlay still serves the other sprites;
+the stock cache slots (8-15) and the pair slots (0x06010000-0x06013FFF) never
+overlap. Extension (SPEXTEN) sprites keep the per-frame choice. The table is
+cleared for every cart in vt_prg_obj_reset, which loadcart.c calls for all.
+
+### 99d. Funny Coins' music start: the finder's back-off, per slot
+
+The first full regression of 99a-c failed Funny Coins on the devkitARM core:
+52.80 fps against main's 57.59 (50 s, sound on), its music-start dip 8 s
+long where main's lasts 3-5. With sound off both cores run 60 throughout.
+cycprof over the dip found nothing of 99a-c in the cost: the 6502 ran its
+board loop ($C21A-$C252, the JMP loop of s.98f) unhacked, 23K instructions a
+NES frame against 3.5K on main. A trace of the hack slots every 4 GBA frames
+(gbaplay PEEK of speedhacks, vt_isim_skip, vt_isim_fails) showed why.
+
+find_idle_loop's rate limit (s.98: every 4th call, backing off to every 32nd
+after three failures in a row) kept one skip counter and one failure count
+for all three slots: 0 (vblank), 1 (sprite-0) and B (vt_hack_b_vblank, every
+16th vblank). On the title, B sampled the 6502 at points where the
+simulation gave up, three times (NES 99, 227 and 483 on the new devkitARM
+core; the same samples landed in the title loop on main and found it), so
+when the board loop started at NES 662 the vblank slot's search waited for
+the 32nd call: NES 734. Where those samples land follows the timing of
+everything else in the frame, so 99b moved it; the build_pvt core lost the
+same way in two of nine sessions, main in one. A slot that holds a hack is
+also only called once the hack has gone unused for 8 frames, and its skipped
+calls kept that stale hack for up to 24 more frames.
+
+Each slot now has its own counters (vt_isim_skip[4], vt_isim_fails[4]), and
+a slot whose hack went stale searches at the first call when its last search
+succeeded, without counting a failure if it misses (one sample can land in an
+interrupt handler). Nine speed sessions with the input moved by 0-8 NES
+frames (the regression's speed input, 50 s, sound on), mean NES fps:
+
+| Core | build_pvt | devkitARM | shift 3 (s.98f's bad session) |
+|---|---|---|---|
+| main | 56.49 | 56.49 | 49.85 / 49.83 |
+| 99a-c (first regression) | 55.87 | 51.77 | 57.07 / 44.59 |
+| 99a-d, before 99b's clock | 56.96 | 57.01 | 52.30 / 52.04 |
+| this change | 57.04 | 57.07 | 52.33 / 53.22 |
+
+Sky Fighter, the cart the back-off was made for, is unchanged (57.63/57.72
+against main's 57.65/57.63). The finder still samples the 6502 at a vblank
+or a sprite-0 hit, so a cart whose samples keep landing in an interrupt
+handler finds its loop late; a better fix would sample more than one point.
+
+### 99e. The runner: three false alarms
+
+The same run had two more FAILs that were not the change's. Star Ally UM6578
+on devkitARM: "new core never reached NES 1200". gbaplay dumps the state at
+the instruction that moves frametotal, but only the first arrival in a GBA
+frame, and the new core ran NES 1199 and 1200 in one GBA frame (frame pacing
+catching up). It now dumps every arrival (each with the frame's picture), and
+the cart passes on both toolchains with the RAM differences carts.json
+expects of it.
+
+Star Ally VT03 on devkitARM: play session NES 1000, 99.02% to 97.85%. The
+enemies stand in the same places on another animation frame. Scored at 41
+frames from NES 960 to 1040, main and the new core average 98.17% and 98.18%
+(the same minimum, 96.40), the two taking turns frame by frame. regress.py now
+scores a frame that dropped more than 0.5 again over NES t-8 to t+8 (every
+second frame, ref_window) on both cores; when the new mean is within 0.1 of
+the old, the drop is a WARN marked "animation or display phase". The rule
+that turns a ref WARN into a FAIL when the state check saw a picture change
+with identical RAM now needs the drop at that same frame (the play session's
+frames are state frames, with the same input): it had fired on Star Ally
+VT03's intended change at NES 60 (99c) together with a 0.06 wobble at play
+700. A drop at a frame whose picture changed still fails.
+
+Jumper's play session from NES 700 lands in one of two states with sound on
+(s.96g: it waits on the sound HLE's tick counter), so carts.json gives it
+`ref_drift_from: 700`: a drop there is a WARN with the cart's note, while its
+sound-off state check stays exact (tools/regress/README.md).
+
+### 99f. Results
+
+`regress.py` against main (3d0b2b9) on both toolchains, all 27 carts
+(regress_out/20261104-001937; Star Ally VT03 again with 99e's runner,
+20261104-002858): no FAIL, 15 WARN, 39 PASS.
+
+| Cart | Toolchain | Verdict | ref | speed | state |
+|---|---|---|---|---|---|
+| Football_Training_VT03 | both | WARN | PASS | PASS | WARN |
+| Jewel_Master_VT03 | both | WARN | PASS | PASS | WARN |
+| Jewel_Master_VT369 | devkitARM | WARN | PASS | PASS | WARN |
+| Jumper_SMB_hack | build_pvt | WARN | WARN | PASS | PASS |
+| Star_Ally_UM6578 | both | WARN | WARN | PASS | PASS |
+| Star_Ally_VT03 | both | WARN | WARN | PASS | WARN |
+| Table_Soccer_VT03 | both | WARN | PASS | PASS | WARN |
+| Time_Pilot | both | WARN | PASS | PASS | WARN |
+| VG_Pocket_VT09 | devkitARM | WARN | PASS | PASS | WARN |
+| every other row (39) | | PASS | PASS | PASS | PASS |
+
+The WARNs, one by one. Football Training VT03 and Table Soccer VT03: the
+pictures change at every state frame, as intended (band map mode, PIX16 X),
+with their reference scores up (below), and some dead stack bytes below an
+equal stack pointer. Jewel Master VT03: NES 60 and 120 lose 99b's stray
+black line (99.56% to 99.98% at 60). Jewel Master VT369 on devkitARM: two
+stack bytes ($01F0/$01F1) at two frames, equal with -DVT_NO_SPEEDHACK, the
+finder's race of s.97e. Jumper on build_pvt: the play session from NES 700
+(ref_drift_from, 99e; on devkitARM it landed the other way and passed). Star
+Ally UM6578: its game state follows GBA timing even without sound (s.94,
+carts.json), so its play session drifts (-0.51 at 450 and -1.10 at 1400 on
+devkitARM, -0.63 at 1400 on build_pvt; +0.19 at 1000). Star Ally VT03: NES
+60 is 99c's "ONE PLAYER" fix; on devkitARM the state picture at NES 600
+differs by 2493 pixels with the RAM equal at 599-601 (the starfield scrolled
+on and the enemies on another animation frame), and scored against the
+reference over NES 560-640 (41 frames) main and the new core average 98.07%
+and 98.03% (worst frames 96.38% and 96.85%); play NES 1000 is 99e's phase
+case (NES 992-1008: 98.39% to 98.60% devkitARM, 98.39% to 98.40% build_pvt).
+Time Pilot: the state picture at NES 120 differs (2057 pixels) with every
+reference score the same as main's to the hundredth, as in the first run of
+this change: display phase past the neighbours the state check compares.
+VG Pocket on devkitARM: 14 pixels at NES 900, after its launch race
+(drift_from 900, s.97e/98g); reference scores equal.
+
+compare_furb struct (both sessions, all frames, both toolchains) and speed
+(NES fps, 50 s, sound on, mean):
+
+| Cart | main struct | new struct | main fps | new fps |
+|---|---|---|---|---|
+| Football Training VT03 | 79.2-80.3 | 98.4-99.6 | 32.5 | 36.4 |
+| Football Training VT369 | 76.5-79.0 | 98.4-99.7 | 30.9 | 35.0 |
+| Let's Count | 64.1-69.5 | 98.4-99.4 | 54.4 | 54.8-54.9 |
+| Speed Type | 64.9-67.2 | 99.3-99.9 | 42.2-42.4 | 59.2 |
+| Funny Coins (board frames) | 98.2-98.4 | 99.3-99.4 | 57.6-57.7 | 57.5-57.7 |
+| Table Soccer VT03 (menus) | 96.2 | 97.8 | 59.6 | 59.4 |
+| Table Soccer VT369 | 98.6 | 99.2 | 60 | 60 |
+
+Every other cart's speed is within 0.3 of main's (Star Ally VT03 58.65 to
+58.46 on devkitARM, worst second 51 to 49). The four new carts' ROM
+checks: the smoke ROMs pass on both cores; -DVT_BM_LOG and -DVT_SPLIT_SLOTS=0
+build (CI's diagnostic list has VT_BM_LOG now).
+
+The L+R menu and savestates on Speed Type in band map mode (gbaplay: menu
+open and closed, a state saved, 4456 bytes compressed, loaded and played on)
+come out right; that test ran on the build before 99b's clock and 99d, which
+add no machine state (vt_timer_clk0 reads $411C and the console type each
+time; the finder's counters are not machine state). The tint on that screen
+is the game's own palette cycling (Furbtendulator shows it with B held).
+
+Memory: EWRAM `__end__` 0x0200F9CC to 0x02010978 on build_pvt (+4012 bytes,
+mostly the row snapshots of 99a), 0x0200F9C8 to 0x0201097C on devkitARM; the
+savestate buffers still fit (state_buffers_fit). IWRAM `__bss_end__`
+0x03007B08 to 0x03007B18 on build_pvt and 0x03007AF8 to 0x03007B18 on
+devkitARM (99c's 16 bytes, and devkitARM's alignment); the user stack's
+lowest point is 0x03007B9C (Funny Coins, in vt_adpcm_mix_gba, as on main 8
+bytes higher), 132 bytes above. The IWRAM overlay window is unchanged (1388
+bytes). Core 150168 to 154296 bytes (build_pvt), 149828 to 154164
+(devkitARM).
+
+Found on the way, left as it is: three `__attribute__((target("arm")))` in
+ppu_vt.c (main's lines 969, 1473 and 2266) stand before a variable
+declaration, not the function they were meant for, so GCC ignores them with a
+warning and the functions after them (vt_pal_same, vt_assemble_page_to,
+vt_16c_palette_fixup) compile as Thumb. Moving them is a
+speed experiment for another session (Thumb won from cart ROM in 99a).
+
+Not verified: real hardware (every result here is mGBA against
+Furbtendulator), the four carts past the first minute or two of play
+(their later screens may have more bands than tested), and a VT369 without
+$411C bit 7/5 (99b).

@@ -1003,7 +1003,16 @@ write_vt_rom:
 1:
     stmfd   sp!, {r3, r12, lr}
     stmfd   sp!, {r0}
-    
+
+    @ s.99: the exact 6502 time of this write, as .Lvt41xx records it: the
+    @ timer registers at $C000-$E001 reach vt_timer_install_now from here
+    ldr_    r1, cycles_to_run
+    sub     r1, r1, cycles, asr #CYC_SHIFT
+    ldr_    r2, timestamp
+    add     r1, r1, r2
+    ldr     r2, =vt_w41_now
+    str     r1, [r2]
+
     mov     r1, r0              @ r1 = val (C arg 2)
     mov     r0, addy            @ r0 = addr (C arg 1)
     bl      vt_mmc3_forward

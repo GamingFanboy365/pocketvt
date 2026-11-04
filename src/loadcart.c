@@ -866,7 +866,7 @@ void init_cache(u8* nes_header, int called_from)
 	// coherent to land.
 	{
 		static EWRAM_BSS u16 vt_dispcntbuff2[240];
-		static EWRAM_BSS u16 vt_bg0cntbuff_pair[2][240];
+		static EWRAM_BSS u16 vt_bg0cntbuff_pair[2][240] __attribute__((aligned(4)));	/* s.99: word passes in band map mode */
 		_dmadispcntbuff = vt_dispcntbuff2;
 		_bg0cntbuff     = vt_bg0cntbuff_pair[0];
 		_dmabg0cntbuff  = vt_bg0cntbuff_pair[1];

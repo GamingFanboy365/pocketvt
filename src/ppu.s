@@ -1279,8 +1279,9 @@ consume_bg_cache:
 
 	@ BKEXTEN (session 18): the packed slot encoding cannot be expressed by
 	@ the split name/attr writers below; hand the ring to the C consumer.
+	@ s.99: ldrh also reads vt_bm_live (band map mode), the next byte.
 	ldr r0,=vt_bkexten_live
-	ldrb r0,[r0]
+	ldrh r0,[r0]
 	cmp r0,#0
 	beq no_bkexten_consume
 	mov r0,r6
@@ -1721,8 +1722,9 @@ display_whole_map:
 	bl_long update_tile_init	
 
 	@ BKEXTEN (session 18): rebuild in the packed slot encoding instead.
+	@ s.99: ldrh also reads vt_bm_live; band map mode drops the request.
 	ldr r0,=vt_bkexten_live
-	ldrb r0,[r0]
+	ldrh r0,[r0]
 	cmp r0,#0
 	beq no_bkexten_whole
 	@ SESSION 20: defer the ~1920-cell whole rebuild to the throttled stepper
@@ -3924,10 +3926,7 @@ dm0:
 #if VT_MODE
 	@ PIX16EN (s20b4): 16x8 OBJ -> shape=horizontal (attr0 bit14, word
 	@ bit14).  r6 bit14 doubles as the PIX16 marker for the index math.
-	ldr r1,=vt_pix16_active
-	ldrb r1,[r1]
-	cmp r1,#0
-	orrne r6,r6,#0x4000
+	@ s.99: set per sprite from vt_spr_line_mode in the loop below.
 #endif
 
 @	mov r4,#PRIORITY
@@ -3963,8 +3962,16 @@ dm11:
 	@ (page_bank<<3)|EVA with EVA = OAM byte2 bits 2-4 (r3 bits 18-20).  C
 	@ publishes a slot for each live (page,EVA) pair at spr_cache_map[64 +
 	@ page*8 + EVA]; look there instead of at the raw bank number.
-	ldr r1,=vt_spr16_active
-	ldrb r1,[r1]
+	@ s.99: the mode of the sprite's own line (vt_spr_line_mode, by OAM Y):
+	@ bits 0-1 the redirect mode below, bit 2 PIX16EN.  Let's Count turns
+	@ PIX16EN on for lines 80-111 only, where its sums are; one mode a
+	@ frame drew either the sums or the HUD digits wrong.
+	ldr r1,=vt_spr_line_mode
+	ldrb r1,[r1,r0]
+	tst r1,#4
+	orrne r6,r6,#0x4000
+	biceq r6,r6,#0x4000
+	and r1,r1,#3
 	@ s21b3: the flag is a MODE -- 0 off, 1 redirect all, 2 redirect only
 	@ sprites whose EVA != 0 (the 2bpp SPEXTEN mode: eva==0 sprites stay on
 	@ the stock bankbuffer path).  Collapse mode 2 + eva==0 to "off" here.
@@ -4000,6 +4007,15 @@ dm11:
 	add r1,r1,#SCREEN_LEFT << 6		@add screen left, shifted value corrected later
 	tstne r3,#0x00400000	@NES horizontal flip
 	addne r1,r1,#0x40		@If scaling sprites, add one pixel to X coordinate when flipping if scaling
+#if VT_MODE
+	@ s.99: a double-size OBJ centres its picture, half its width in: 8
+	@ pixels in all for a 16-wide PIX16 OBJ, 4 (0x100) more than the 4 that
+	@ fit 8-wide ones (Football Training VT03's menu text, Let's Count's
+	@ sums, 4 px right before)
+	tst r6,#0x100
+	tstne r6,#0x4000
+	addne r1,r1,#0x100
+#endif
 
 	subs r1,r3,r1,lsl#18	@Subtract X coordinate (ignoring rest of bits)
 @#0x0c000000	@x-8
@@ -4036,13 +4052,8 @@ dm4:	@----------------------- 8 x 16 -----------------------------
 #if VT_MODE
 	@ PIX16EN (s20b4): sprites are 16 pixels wide; with 8x16-tall mode the
 	@ OBJ becomes 16x16: shape=square (no 0x8000), size=1 (attr1 bit14 ->
-	@ word bit30).  r6 bit30 doubles as the per-frame PIX16 marker tested
-	@ by the tile-index math below -- no per-sprite memory load.
-	ldr r1,=vt_pix16_active
-	ldrb r1,[r1]
-	cmp r1,#0
-	orreq r6,r6,#0x8000		@ classic: shape=vertical, size=0 (8x16)
-	orrne r6,r6,#0x40000000	@ PIX16: shape=square, size=1 (16x16)
+	@ word bit30).  r6 bit30 doubles as the PIX16 marker tested by the
+	@ tile-index math below.  s.99: set per sprite in the loop below.
 #else
 	orr r6,r6,#0x8000		@8x16 flag
 #endif
@@ -4064,8 +4075,16 @@ dm12:
 	@ (page_bank<<3)|EVA with EVA = OAM byte2 bits 2-4 (r3 bits 18-20).  C
 	@ publishes a slot for each live (page,EVA) pair at spr_cache_map[64 +
 	@ page*8 + EVA]; look there instead of at the raw bank number.
-	ldr r1,=vt_spr16_active
-	ldrb r1,[r1]
+	@ s.99: the sprite's line's mode, as in the 8x8 loop; PIX16 makes
+	@ the OBJ 16x16 (shape square, size 1), else 8x16 (shape vertical)
+	ldr r1,=vt_spr_line_mode
+	ldrb r1,[r1,r0]
+	bic r6,r6,#0x8000
+	bic r6,r6,#0x40000000
+	tst r1,#4
+	orreq r6,r6,#0x8000
+	orrne r6,r6,#0x40000000
+	and r1,r1,#3
 	@ s21b3: the flag is a MODE -- 0 off, 1 redirect all, 2 redirect only
 	@ sprites whose EVA != 0 (the 2bpp SPEXTEN mode: eva==0 sprites stay on
 	@ the stock bankbuffer path).  Collapse mode 2 + eva==0 to "off" here.
@@ -4105,6 +4124,11 @@ dm12:
 	add r1,r1,#SCREEN_LEFT << 6
 	tstne r3,#0x00400000
 	addne r1,r1,#0x40
+#if VT_MODE
+	tst r6,#0x100			@ s.99: 16-wide PIX16 OBJ, as at dm11
+	tstne r6,#0x40000000
+	addne r1,r1,#0x100
+#endif
 
 	subs r1,r3,r1,lsl#18
 @#0x0c000000	@x-8
@@ -4225,6 +4249,8 @@ vt_band_hook:
 	tst r0,#0x100			@ $21xx page -> not a bank register
 	bxne lr
 	and r0,r0,#0xFF
+	cmp r0,#0x10			@ s.99: $2010 -> PIX16EN by line (vt_2010_mark)
+	beq 1f
 	sub r0,r0,#0x12
 	cmp r0,#5			@ offsets $12..$17
 	bxhi lr
@@ -4232,6 +4258,12 @@ vt_band_hook:
 	bl get_scanline_2		@ addy = NES scanline
 	mov r0,addy
 	bl vt_band_mark
+	ldmfd sp!,{lr}
+	bx lr
+1:	stmfd sp!,{lr}
+	bl get_scanline_2
+	mov r0,addy
+	bl vt_2010_mark
 	ldmfd sp!,{lr}
 	bx lr
 .popsection

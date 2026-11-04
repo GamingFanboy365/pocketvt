@@ -626,6 +626,41 @@ frame_irq_handler:
 @ since reset (boot-vector safety: an IRQ before the game sets its RAM
 @ vector at ($003A) crashes the 6502 -- observed r9=0xFFFF8000).
 @------------------------------------------------------------------------------
+@ s.99b: r12 = the offset in a frame of the VT timer's clock 0.
+@ line_zero_start_time is PocketNES's MMC3 point, dot 292 of the line before
+@ line 0, and VT03 carts were measured against it (s.87: Furbtendulator
+@ clocks a VT03's counter at dot 256 of every line from the pre-render line
+@ on, 36 dots earlier).  A VT369 with $411C bit 7 (CPU x3) or bit 5 set skips
+@ the clocks of the pre-render line and line 0 and clocks at dot 240
+@ (h_OneBus.cpp ppuCycle), so its IRQs come 341 - 52 = 289 dots later.  From
+@ the old point a CPU x3 handler wrote its bank at dot ~8 of the line, where
+@ the reference has it at dot ~297 and shows it from the next line: every
+@ VT369 split began a line early (Funny Coins' board edges, open item 5).
+@ PAL timing (319.6875 dots a line, line 0 at 273): 272.  Bit 5's 24-cycle
+@ IRQ delay and a VT369 without either bit (52 dots earlier) are not
+@ modelled: no test cart runs them.  Keeps r0-r11 and lr.
+vt_timer_clk0:
+	stmfd sp!,{r0}
+	ldr_ r12,line_zero_start_time
+	ldr r0,=vt_console
+	ldrb r0,[r0]
+	cmp r0,#0x0A
+	bne 1f
+	ldr r0,=vt
+	ldrb r0,[r0,#0x1C]		@ $411C
+	tst r0,#0xA0
+	beq 1f
+	ldr_ r0,emuflags
+	tst r0,#DENDY
+	bne 2f
+	tst r0,#PALTIMING
+	addne r12,r12,#272
+	bne 1f
+2:	add r12,r12,#256
+	add r12,r12,#33
+1:	ldmfd sp!,{r0}
+	bx lr
+
 	global_func vt_timer_install_now
 vt_timer_install_now:
 	@ Called from vt_reg_write (in-core memory-handler context, r10 valid
@@ -655,7 +690,11 @@ vt_timer_install_now:
 	moveq r2,#256
 	ldr r1,=341
 	mul r2,r1,r2
-	ldr_ r1,timestamp
+	@ s.99: from the exact time of the write (vt_w41_now: the $41xx and MMC3
+	@ write paths in mapVT.s set it), not `timestamp`, the last timeout event,
+	@ which trailed the write by 3 to 78 dots on Speed Type.
+	ldr r1,=vt_w41_now
+	ldr r1,[r1]
 	@ SESSION 21b9: $4101 D7 (TSYNEN) = 0 counts AD12 transitions, which only
 	@ occur while the PPU is fetching, so the hardware counter STALLS through
 	@ vblank.  Skip vblank instead of compensating for it, with the two cases
@@ -674,12 +713,27 @@ vt_timer_install_now:
 	cmp r1,r0
 	bhs 1f			@ already in vblank -> resume at next frame's line 0
 #if VT_TIMER_NPLUS1
-	@ guide s.79: a rephase INSIDE the picture reloads on the next line's
-	@ clock and then counts N (h_OneBus.cpp clockScanlineCounter, clocked at
-	@ dot 256): calibrated against Furbtendulator as N+2 lines here, where
-	@ an arm from vblank stays N (its first band was already exact).
-	add r2,r2,#640
-	add r2,r2,#42		@ + 2 lines (682 is not an ARM immediate)
+	@ s.99: inside the picture the counter reloads on the first scanline
+	@ clock after the write and fires N clocks later (h_OneBus.cpp: $4102
+	@ zeroes the counter, clockScanlineCounter reloads it from zero).  The
+	@ clocks are the line starts an arm from vblank counts N from.  s.79's
+	@ fixed write + N+2 lines fitted 1x-CPU IRQ handlers, which write $4102
+	@ more than a line after their IRQ (Table Soccer VT03, Football Training
+	@ VT03: next clock + N is N+2 there too); a VT369 handler at CPU x3 writes
+	@ it within the line, and N+2 slipped a line per split (Speed Type's
+	@ fifth band 6 lines low, Let's Count's thirteenth 12).
+	ldr_ r3,frame_timestamp
+	bl vt_timer_clk0
+	add r3,r3,r12		@ r3 = this frame's clock 0, absolute
+	subs r12,r1,r3		@ r12 = the write's time since line 0
+	movmi r1,r3		@ before line 0: line 0 is the next clock
+	bmi 3f
+	ldr lr,=0x00C0306E	@ 2^32 / 341, rounded up (lr is saved above)
+	umull r4,r1,r12,lr	@ r1 = the write's line
+	add r1,r1,#1
+	ldr r4,=341
+	mla r1,r4,r1,r3		@ r1 = the next line start, absolute
+3:
 #endif
 	add r1,r1,r2
 	cmp r1,r0
@@ -688,7 +742,7 @@ vt_timer_install_now:
 1:	ldr_ r0,frame_timestamp
 	ldr_ r12,cyclesperframe
 	add r0,r0,r12
-	ldr_ r12,line_zero_start_time
+	bl vt_timer_clk0
 	add r0,r0,r12		@ r0 = line 0 of the NEXT frame, absolute
 	add r1,r0,r2
 2:
@@ -737,7 +791,7 @@ vt_timer_reload_check:
 1:	ldr_ r0,frame_timestamp
 	ldr_ r12,cyclesperframe
 	add r0,r0,r12
-	ldr_ r12,line_zero_start_time
+	bl vt_timer_clk0
 	add r0,r0,r12
 	add r1,r0,r2
 2:
@@ -802,7 +856,7 @@ vt_timer_handler:
 1:	ldr_ r0,frame_timestamp
 	ldr_ r12,cyclesperframe
 	add r0,r0,r12
-	ldr_ r12,line_zero_start_time
+	bl vt_timer_clk0
 	add r0,r0,r12		@ r0 = line 0 of the NEXT frame, absolute
 	add r1,r0,r2
 2:
