@@ -6374,7 +6374,8 @@ play, but compare_furb scored them 62-79% struct: a band of each screen drew
 another band's tiles, and Let's Count's sums or its HUD digits came out as
 garbage. Three faults (99a-99c). The regression run on the change found a
 fourth problem, in the idle-loop finder (99d), and two false alarms in the
-runner (99e); 99f has the results. The four carts are in
+runner (99e); 99f has the results. 99g, asked for after them, brings
+Football Training from 36 to 51-52 fps. The four carts are in
 tools/regress/carts.json now (27 carts); the user's next upload of the ROM
 bundle should include them (testroms/ has them in this session only).
 
@@ -6700,3 +6701,110 @@ Not verified: real hardware (every result here is mGBA against
 Furbtendulator), the four carts past the first minute or two of play
 (their later screens may have more bands than tested), and a VT369 without
 $411C bit 7/5 (99b).
+
+### 99g. Football Training at speed: nametable DMA, CHR pages, word loads
+
+After 99a-f both Football Training carts were right but slow: 36.4 (VT03) and
+35.0 (VT369) NES fps over the regression's 50 s session, ~32 in gameplay. A
+gameplay NES frame cost ~530K GBA cycles while the game itself ran only ~4K
+6502 instructions (cycprof, OPT/LB): the time went to the host side.
+
+Its engine uploads its nametables by VT video DMA every frame: $4034 selects
+video DMA, then three $4014 writes copy $0400, $0600 and $0700 to PPU $2000,
+$2160 and $2300 (~770 bytes; $CF20-$CF54 on the VT03 cart, $D00A-$D040 on the
+VT369 one). mapVT.s sends each byte through vmdata_W from a loop in cart ROM,
+and writeBG queues a map entry for it that band map mode then drops: 128-157K
+cycles a NES frame. vt_bm_dma_4014 (ppu_vt369.c) now stores such a DMA
+straight into NT RAM while vt_bm_live; it is the core of s.89's vt369_dma_nt
+(mirroring through vram_write_tbl's VRAM_name0/1, +1 or +32 stepping, RAM or
+PRG source) with the enhanced-mode marks left out, since band map mode
+compares every map row with its snapshot at the frame end. It returns 0 for
+anything else (a palette or CHR target, a four-screen quadrant, a source in
+$2000-$7FFF), and the byte loop runs as before.
+
+Its sprites animate by switching their CHR banks ($2013/$2014) every ~10 NES
+frames, and each switch re-assembled all eight 2K pages of vt_chr4_buf from
+cart ROM: ~1M cycles (nearly four GBA frames) a time, ~100K a NES frame on
+average. vt_chr4_stale() now compares each page's source (the 1K bank's byte
+offset) and the CHR base, mask and bus width with what the page was last
+assembled from, and vt_chr4_assemble(pages) decodes the stale pages only;
+everything after the build is as before (the whole buffer to VRAM). The
+assembler and vt_chr_sync_flush's 2bpp window copy also read cart ROM a word
+at a time now: a tile's 32 bytes as eight word loads and its rows as word
+stores (the byte loop stays for an unaligned CHR base), four words a tile for
+the window. The flush's record of the banks it applied was a function-local
+static that outlived cart loads, so a cart starting with the previous cart's
+bank numbers kept the old window; it is file scope now, and vt_prg_obj_reset
+resets it and vt_chr4_built_ok at every cart load.
+
+None of the three is used while BKEXTEN is live (Jewel Master VT03, Star
+Ally VT03, VG Pocket, Sky Fighter VT09): those carts keep the byte loops and
+the full assembly in vt_bk_late. With them, Jewel Master VT03's pause screen
+showed garbled BG tiles for ~30 NES frames (NES 508-536 of the state
+session, 91-95% struct against 99.6%), on both toolchains. Bisected with one
+piece off at a time: without the word copy of the window, or without the
+assembly by page, the screen was clean; without the word assembly the
+garbage only shrank (97.7%). It is not the tile data (the buffer was equal
+at the frames compared) but when the BKEXTEN repairs (vt_bk_late) run
+against the 2bpp re-renders after a bank switch: a race already there,
+which faster code in the flush and the assembler set off. Open item 3.
+
+The tile data is the same: vt_chr4_buf dumped at NES 300, 700 and 1000 of the
+state session on the 99a-f core and on this one is byte for byte equal on 13
+16-colour carts (both Football Trainings, Lonely Island, Star Ally VT03, Push
+the Ball, Jewel Master VT03, both Table Soccers, Soccer 2009, Let's Count,
+Speed Type, Funny Coins, Add 'em Up), and at NES 200-1000 on VG Pocket and
+Lucky Lawn Mower VT09, which run the 16-bit bus layout ($2010 bit 6) through
+the new word path (that check ran before the BKEXTEN gate above; Lucky Lawn
+Mower VT09 is not BKEXTEN, so it still covers the 16-bit path).
+
+A first version went further: after a bank switch the flush copied and marked
+dirty only the changed pages of the 2bpp window, and only the re-assembled
+4bpp pages went to VRAM, the rest left to s.97's stomp marks and probes (55.8
+and 53.9 fps). Aero Gyrodine then showed some tiles as their 2bpp renders
+(its score digits orange, half its ship dark), FAIL on both toolchains.
+Built from a copy of the tree with one shortcut at a time, each alone passed
+Aero's state check, and so did two of the three pairs; the window by page
+with VRAM by page failed. Built from the repo tree, the passing pair (dirty
+marks and VRAM by page) failed after all, with only the code's layout, and
+so its timing, different: whether the 4bpp copies catch every 2bpp re-render
+depends on when the two run, the fragility of open item 3. So the window,
+the dirty marks and the VRAM copy are as they were; a cheaper scheme there
+needs exact stomp tracking first.
+
+| NES fps, 50 s, sound on (main / 99a-f) | first version | this change |
+|---|---|---|
+| Football Training VT03 (32.5 / 36.4) | 55.8 | 52.0-52.2 |
+| Football Training VT369 (30.9 / 35.0) | 53.9 | 50.9-51.2 |
+| Let's Count (54.4 / 54.6-54.9) | | 60.0 (worst second 58) |
+| Speed Type (42.3 / 59.2) | | 59.3 |
+
+Let's Count gained most from the DMA path. Football Training's menus now
+hold 60 and its gameplay 45-56. Screen changes dip for a second
+(13-38 fps: the VT369 cart's GAME OVER back to a new round, the VT03 cart's
+title into the game), a mix of the game's own work, the sound HLE and band
+map row decodes with no one cause. Left in a gameplay frame: band map mode's
+frame end, ~36K cycles of per-row bookkeeping in Thumb from cart ROM (a
+shortcut for unchanged frames would save ~7K, as it would still read both
+line buffers); vt_build_16color_palette at every vblank, ~8K (skipping an
+unchanged build needs every other writer of the GBA palette, the menus among
+them, to invalidate it); on the VT03 cart, mapper 419's joypad and register
+handlers, ~17K; and the 512-tile 2bpp re-render and 16K VRAM copy after each
+sprite bank switch.
+
+`regress.py` against main on both toolchains, all 27 carts
+(regress_out/20261104-103554): no FAIL, 12 WARN, 42 PASS. The WARNs are 99f's
+less two: Time Pilot passes now (its state picture at NES 120 is main's on
+this core) and VG Pocket on devkitARM too (its launch landed main's way). The
+rest as 99f explains them: Football Training VT03 and Table Soccer VT03
+(intended pictures), Jewel Master VT03 (NES 60 and 120, 99b's black line;
+its NES 520 is main's again with the BKEXTEN gate), Jumper (ref_drift_from),
+Star Ally UM6578 (its drifting game: play 1400 -0.55 and -0.57, std 700
+-0.11 and -0.17) and Star Ally VT03: NES 60 is 99c, NES 600 on devkitARM and
+play NES 1000 phase as in 99f, and on build_pvt play NES 200 -0.47, which
+over NES 180-220 averages 99.41 on main and 99.38 here, the frames taking
+turns between the same few values (the menu's animation). The smoke ROMs
+pass on both cores and every diagnostic define builds. EWRAM `__end__`
+0x02010978 to 0x020109AC (+52 bytes), IWRAM `__bss_end__` unchanged
+(0x03007B18), the core 1.2K larger (155404 bytes on devkitARM).
+

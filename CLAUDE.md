@@ -133,7 +133,11 @@ PocketNES's MMC3 point (vt_timer_clk0, sound.s), which also ends Funny Coins'
 one-line streaks; PIX16 sprites 4 px left of where they were and PIX16EN
 taken per NES line (vt_spr_line_mode); the idle-loop finder's back-off per
 slot and an immediate search when a hack goes stale; gbaplay dumps every
-NES-frame arrival; regress.py scores a one-frame ref drop over a window),
+NES-frame arrival; regress.py scores a one-frame ref drop over a window;
+s.99g: Football Training 36 -> 51-52 fps and Let's Count 60, by a video DMA
+into the nametables straight to NT RAM in band map mode (vt_bm_dma_4014), the
+4bpp CHR rebuilt only for pages whose source changed (vt_chr4_stale) and
+cart ROM read a word at a time),
 s.98 (tools/regress runs every test cart against
 the old core in one command, and CI's `checks` job runs the ROM-free checks:
 smoke ROMs, RAM-address lint, .bss assert, diagnostic builds; find_idle_loop
@@ -195,9 +199,9 @@ states, sound) and s.77-78 (raster-split slots, speed).
   title 100%, board 99.3-99.4%, 57-58 fps mean) and Soccer 2009 (VT03 with a 256K CHR ROM, 256.0;
   menus 99.5%, matches 97-99% with exact colours), Star Ally UM6578 (UM6578,
   405; title 100%, gameplay 98-99% where the game state has not drifted,
-  54-61 fps). s.99: Football Training VT03 (419, 98.4-99.6%, 36.5 fps),
-  Football Training VT369 (99.3-99.7%, 35 fps), Let's Count (98.4-99.4%, 54.6
-  fps) and Speed Type (99.3-99.9%, 59.2 fps), all 256.13 VT369 but the first,
+  54-61 fps). s.99: Football Training VT03 (419, 98.4-99.6%, 52 fps),
+  Football Training VT369 (99.3-99.7%, 51 fps), Let's Count (98.4-99.4%, 60
+  fps) and Speed Type (99.3-99.9%, 59.3 fps), all 256.13 VT369 but the first,
   all through band map mode.
 - CPU x3 ($411C bit 7, every VT369 test cart sets it): vt_cpu_x3_set
   rewrites every `cyc`-recorded cost immediate in RAM (section vt_cycpatch,
@@ -233,6 +237,16 @@ states, sound) and s.77-78 (raster-split slots, speed).
   row snapshot; back to the slots after 60 calm frames (VT_BM_CALM).
   vt_bm_live is the byte after vt_bkexten_live (vt_bg_owner[2]); ppu.s's two
   map writers read both with one ldrh. `-DVT_BM_LOG` logs the decisions.
+  A video DMA into the nametables goes straight to NT RAM while it is live
+  (vt_bm_dma_4014, ppu_vt369.c, called from mapVT.s's $4014 path; s.99g).
+- 4bpp primary CHR (s.99g): vt_chr4_assemble(pages) re-decodes only the pages
+  vt_chr4_stale() names (bank byte offset, CHR base, mask, $2010 bit 6 against
+  the last build); anything else that changes how a page decodes must clear
+  vt_chr4_built_ok. Everything after a build (2bpp window copy, 512 dirty
+  tiles, whole-buffer VRAM copy) is as before: cheaper versions put 2bpp
+  renders on screen (Aero Gyrodine). Under BKEXTEN the old byte loops and the
+  full assembly stay (Jewel Master VT03's pause screen garbled with them
+  faster: a timing race, open item 3).
 - VT timer: N+1 lines free-running; an in-picture rephase ($4102) reloads at
   the first clock after the write's exact time (vt_w41_now) and fires N
   clocks later; N from vblank (`VT_TIMER_NPLUS1`). Clocks sit at
@@ -248,9 +262,9 @@ states, sound) and s.77-78 (raster-split slots, speed).
   VT369 (all at CPU x3): Table Soccer, LLM, Zuma, Jewel Master 60, Sky
   Fighter 60 (58.7 mean over the s.97 session: a 3 s dip while its second loop
   is found, s.98), Funny Coins 57-58 mean (music-start dip 3-5 s, s.98f), Fire
-  Fighter 54-60 in gameplay, Jumper 54-60 (s.96); s.99: Speed Type 59.2,
-  Let's Count 54.6, Football Training VT369 35 and VT03 36.5 (CPU-bound in
-  their busy screens, 31-33 on main).
+  Fighter 54-60 in gameplay, Jumper 54-60 (s.96); s.99: Speed Type 59.3,
+  Let's Count 60, Football Training VT369 51 and VT03 52 (gameplay 45-56,
+  menus 60; 31-33 on main, s.99g).
 - Frame pacing (s.87a): every GBA vblank is a credit, every NES frame spends
   one; the frame end waits only without credit (vt_vsync_ahead). Speed probes
   can show 61-62 while a slow stretch is made up; the average stays 60.
@@ -366,9 +380,12 @@ states, sound) and s.77-78 (raster-split slots, speed).
    VT369 without $411C bit 7/5 and bit 5's 24-cycle IRQ delay are not
    modelled in vt_timer_clk0 (no test cart). The finder samples the 6502 only
    at a vblank or a sprite-0 hit, so a cart whose samples keep landing in an
-   interrupt handler finds its loop late (s.99d). Football Training VT03 and
-   VT369 run 35-36 fps in their busy screens (31-33 on main); not profiled
-   past band map mode's share. From s.98: Funny Coins with the input moved
+   interrupt handler finds its loop late (s.99d). Football Training runs
+   51-52 fps (gameplay 45-56, s.99g); left in its frame: band map mode's frame
+   end ~36K cycles of per-row bookkeeping, vt_build_16color_palette every
+   vblank ~8K (a skip needs every other GBA palette writer to invalidate it),
+   mapper 419's joypad/register handlers ~17K on the VT03 cart, and the
+   2bpp re-render + 16K VRAM copy after each sprite bank switch. From s.98: Funny Coins with the input moved
    3 frames slows in a loop at $CF27-$CF3A that reads the joypad ~2600 times
    a NES frame and touches VT369 registers and CHR banks (no finder hacks I/O
    reads; 52 fps mean in that session, 50 on main); its music-start dip is
@@ -404,6 +421,11 @@ states, sound) and s.77-78 (raster-split slots, speed).
    toolchains, s.97e); Push the Ball is at 97.49%. The VG band of
    missing tiles was a BKEXTEN slot stomp, fixed by the slot checksums (s.85c);
    the VG games at 96-98% (3/4, 3/5, 4/1, 4/2) still have a small residue.
+   s.99g: whether the 4bpp copies and BKEXTEN repairs win against the 2bpp
+   re-renders after a bank switch depends on timing: copying fewer pages put
+   2bpp tiles on Aero Gyrodine's HUD (one build layout passed, another
+   failed), and a faster CHR flush or assembler garbled Jewel Master VT03's
+   pause screen for ~30 frames. Exact stomp tracking would make both safe.
 4. Table Soccer formation screen: two 6-line strips need a sixth char block.
 5. (Funny Coins' 1-line streaks at its raster-split edges: fixed in s.99b,
    the VT369 timer clock.)

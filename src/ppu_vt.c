@@ -649,6 +649,12 @@ u32 vt_chr_read(u32 addr)
 }
 
 static u8 vt_chr_sync_pending = 0;
+/* the banks and mode vt_chr_sync_flush last applied to the NES_VRAM window
+ * (s.99g: file scope, reset by vt_prg_obj_reset at each cart load; a
+ * function-local static kept the last cart's, so a cart with the same bank
+ * numbers kept the old window) */
+static u32 vt_chr_applied[8] = {0xFFFFFFFFu,0,0,0,0,0,0,0};
+static u8  vt_chr_applied_mode = 0xFF;
 
 void vt_chr_sync_from_prg(void)
 {
@@ -741,13 +747,11 @@ static void vt_chr_sync_flush(void)
 
     {   /* No-op skip: redundant banking rewrites are the common case during
            the transition storm; identical effective banks = nothing to do. */
-        static u32 applied[8] = {0xFFFFFFFFu,0,0,0,0,0,0,0};
-        static u8  applied_mode = 0xFF;
-        int same = (applied_mode == (u8)four_bpp);
-        for (int p = 0; same && p < 8; p++) if (applied[p] != page_bank[p]) same = 0;
+        int same = (vt_chr_applied_mode == (u8)four_bpp);
+        for (int p = 0; same && p < 8; p++) if (vt_chr_applied[p] != page_bank[p]) same = 0;
         if (same) return;
-        for (int p = 0; p < 8; p++) applied[p] = page_bank[p];
-        applied_mode = (u8)four_bpp;
+        for (int p = 0; p < 8; p++) vt_chr_applied[p] = page_bank[p];
+        vt_chr_applied_mode = (u8)four_bpp;
     }
 
     // rommask is the PRG-ROM address mask (= romsize-1), guaranteed power-of-2
@@ -781,6 +785,16 @@ static void vt_chr_sync_flush(void)
             u32 src_off = (phys_1k * 2048u) & mask;
             u8 *src = cbase + src_off;
             u8 *dp  = dst + (p * 1024);
+            if (!(((u32)src | (u32)dp) & 3u) && !vt_bkexten_live) {
+                /* s.99g: bytes 0-15 of each 32-byte tile, four words at a time
+                 * (not under BKEXTEN: see vt_bk_late) */
+                const u32 *sw = (const u32 *)src; u32 *dw = (u32 *)dp;
+                for (u32 t = 0; t < 64; t++, sw += 8, dw += 4) {
+                    const u32 w0 = sw[0], w1 = sw[1], w2 = sw[2], w3 = sw[3];
+                    dw[0] = w0; dw[1] = w1; dw[2] = w2; dw[3] = w3;
+                }
+                continue;
+            }
             for (u32 j = 0; j < 1024; j++) {
                 u32 src_j = (j & 0xF) | ((j & ~0xFu) << 1);
                 dp[j] = src[src_j & 0x7FF];
@@ -795,7 +809,11 @@ static void vt_chr_sync_flush(void)
     // clean (since we bypassed the per-byte $2007 store path) and the
     // BG / sprite cache never refreshes -- giving the user a black screen
     // even though the CHR bytes are correct.
-    // 512 tile entries (8KB / 16B per tile) + 32 row entries.
+    // 512 tile entries (8KB / 16B per tile) + 32 row entries.  (s.99g
+    // tried copying and marking only the changed pages here, and sending
+    // only the rebuilt 4bpp pages to VRAM: Aero Gyrodine then showed 2bpp
+    // renders of some tiles, which pages depending on the code's timing.
+    // Everything as before; guide s.99g.)
     for (int i = 0; i < 512; i++) dirty_tiles[i] = 0xFF;
     for (int i = 0; i <  32; i++) dirty_rows[i]  = 0xFF;
 }
@@ -1183,9 +1201,34 @@ static void vt_spread_init(void)
 // vt_spread history in MAINTAINERS_GUIDE.md s.74).
 EWRAM_BSS static u16 vt_chr4_sigoff[8];
 
-// Tight, fast 4bpp tile assembler using the spread table.
+/* s.99g: what each 2K page of vt_chr4_buf was assembled from: the 1K
+ * bank's byte offset, and the CHR base, mask and bus width of that build.
+ * A bank write used to re-assemble all eight pages (~1M cycles, nearly four
+ * GBA frames, from cart ROM); Football Training changes its two sprite pages
+ * every ~10 NES frames to animate them, which cost ~100K cycles a NES frame
+ * on average.  vt_chr4_stale() names the pages whose source differs, so a
+ * build re-decodes those alone; the result is the same as a full build
+ * (the source is ROM).  vt_chr4_built_ok = 0 (each cart load) builds all. */
+EWRAM_BSS static u32 vt_chr4_built_src[8];
+EWRAM_BSS static const u8 *vt_chr4_built_base;
+EWRAM_BSS static u32 vt_chr4_built_mask;
+EWRAM_BSS static u8 vt_chr4_built_wide, vt_chr4_built_ok;
+
+static u32 vt_chr4_stale(void)
+{
+    if (!vt_chr4_built_ok || vt_chr4_built_base != vt_chr_base() || vt_chr4_built_mask != vt_chr_mask_get() ||
+        vt_chr4_built_wide != (u8)((vt_reg_2010 & 0x40) != 0))
+        return 0xFF;
+    u32 m = 0;
+    for (int p = 0; p < 8; p++)
+        if (vt_chr_bank_byte_offset_n(vt_chr4_page_bank[p], 1) != vt_chr4_built_src[p]) m |= 1u << p;
+    return m;
+}
+
+// Tight, fast 4bpp tile assembler using the spread table.  s.99g: the pages
+// in `pages` only (bit p = 2K page p).
 __attribute__((target("arm"), noinline))
-static void vt_chr4_assemble(void)
+static void vt_chr4_assemble(u32 pages)
 {
     if (!vt_spread_ready) vt_spread_init();
     u32 mask = vt_chr_mask_get(); const u8 *cbase = vt_chr_base();
@@ -1195,10 +1238,50 @@ static void vt_chr4_assemble(void)
     const u32 o2 = wide16 ?  1u : 16u;   /* plane 2 */
     const u32 o3 = wide16 ? 17u : 24u;   /* plane 3 */
     const u32 rs = wide16 ?  2u : 1u;    /* row stride */
+    vt_chr4_built_base = cbase; vt_chr4_built_mask = vt_chr_mask_get();
+    vt_chr4_built_wide = (u8)wide16; vt_chr4_built_ok = 1;
     for (int p = 0; p < 8; p++) {
-        u32 src_base = (vt_chr_bank_byte_offset_n(vt_chr4_page_bank[p], 1) >> 10) * 2048u;
+        if (!((pages >> p) & 1u)) { g += 2048; continue; }
+        vt_chr4_built_src[p] = vt_chr_bank_byte_offset_n(vt_chr4_page_bank[p], 1);
+        u32 src_base = (vt_chr4_built_src[p] >> 10) * 2048u;
         u16 sig = 0xFFFF;
         u16 widx = 0;
+        if (!((u32)cbase & 3u) && mask >= 31u && !vt_bkexten_live) {
+            /* s.99g: a tile's 32 bytes as 8 word loads from cart ROM and its
+             * 8 rows as word stores; the same rows as the byte loop below,
+             * which read 32 bytes a tile one at a time (~2K cycles a tile).
+             * Not under BKEXTEN: see vt_bk_late. */
+            u32 *gw = (u32 *)g;
+            for (int t = 0; t < 64; t++, src_base += 32, gw += 8) {
+                const u32 *w = (const u32 *)(cbase + (src_base & mask));
+                u32 a = w[0], b = w[1], c = w[2], d = w[3], e = w[4], f = w[5], h = w[6], k = w[7];
+                if (!wide16) {
+                    /* 8-bit bus: plane q's rows 0-3 in word 2q, rows 4-7 in 2q+1 */
+                    for (int r = 0; r < 4; r++) {
+                        gw[r] = vt_spread[a & 0xFFu] | vt_spread[c & 0xFFu] << 1 |
+                                vt_spread[e & 0xFFu] << 2 | vt_spread[h & 0xFFu] << 3;
+                        gw[r + 4] = vt_spread[b & 0xFFu] | vt_spread[d & 0xFFu] << 1 |
+                                    vt_spread[f & 0xFFu] << 2 | vt_spread[k & 0xFFu] << 3;
+                        a >>= 8; b >>= 8; c >>= 8; d >>= 8; e >>= 8; f >>= 8; h >>= 8; k >>= 8;
+                    }
+                } else {
+                    /* 16-bit bus: bytes 2r and 2r+1 hold planes 0 and 2 of row r,
+                     * bytes 16+2r and 17+2r planes 1 and 3 */
+                    const u32 lo[4] = { a, b, c, d }, hi[4] = { e, f, h, k };
+                    for (int r = 0; r < 8; r++) {
+                        const u32 sh = (u32)(r & 1) * 16u, x = lo[r >> 1] >> sh, y = hi[r >> 1] >> sh;
+                        gw[r] = vt_spread[x & 0xFFu] | vt_spread[y & 0xFFu] << 1 |
+                                vt_spread[(x >> 8) & 0xFFu] << 2 | vt_spread[(y >> 8) & 0xFFu] << 3;
+                    }
+                }
+                if (sig == 0xFFFF)
+                    for (int r = 0; r < 8; r++)
+                        if (gw[r] & 0xCCCCCCCCu) { sig = (u16)(t * 8 + r); break; }
+            }
+            g += 2048;
+            vt_chr4_sigoff[p] = sig;
+            continue;
+        }
         for (int t = 0; t < 64; t++, src_base += 32) {
             for (int r = 0; r < 8; r++, widx++) {
                 /* s21b57: plane byte offsets are frame constants (o1..o3, rs set
@@ -1309,7 +1392,7 @@ static void vt_chr4_copy_to_vram_all(void)
 __attribute__((target("arm"), noinline, used))
 void vt_chr4_do_rebuild(void)
 {
-    vt_chr4_assemble();
+    vt_chr4_assemble(0xFF);
     vt_chr4_copy_to_vram_all();
     vt_build_16color_palette();
 }
@@ -1381,7 +1464,13 @@ void vt_bk_late(void)
          * Buffer only -- BKEXTEN owns BG VRAM -- and outside the IME mask. */
         if (vt_chr4_dirty && (vt_reg_2010 & 0x04) && !vt_spr16_active) {
             vt_chr4_dirty = 0;
-            vt_chr4_assemble();
+            /* s.99g: every page, the old way, as the flush's window copy
+             * under BKEXTEN.  With either of them faster, Jewel Master
+             * VT03's pause screen showed garbled BG tiles for ~30 NES frames
+             * (NES 508-536 of the state session; 95% struct against 99.6%):
+             * when the BKEXTEN repairs run against the 2bpp re-renders
+             * matters, as in open item 3. */
+            vt_chr4_assemble(0xFF);
         }
     }
 }
@@ -1404,7 +1493,7 @@ static void vt_chr4_rebuild_rest(void)
     // overwrites ours after the first frame (-> screen reverts to backdrop).
     if (vt_chr4_dirty) {
         vt_chr4_dirty = 0;
-        vt_chr4_assemble();
+        vt_chr4_assemble(vt_chr4_stale());   /* s.99g: the pages whose source changed */
         vt_chr4_copy_to_vram_all();   // everything changed: unconditional
     } else {
         vt_chr4_copy_to_vram();       // cheap: re-copy only stomped pages
@@ -2963,6 +3052,8 @@ void vt_prg_obj_reset(void)
 {
     vt_prg_obj_evicted = 0;
     vt_spr_mode_reset();           /* s.99: loadcart.c calls this for every cart */
+    vt_chr4_built_ok = 0;          /* s.99g: the next build decodes every page */
+    vt_chr_applied_mode = 0xFF;    /* s.99g: and the next flush copies every page */
 }
 
 #if VT_SPLIT_SLOTS

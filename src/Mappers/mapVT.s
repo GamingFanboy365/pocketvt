@@ -634,6 +634,21 @@ write_vt4xxx:
     tst     r1, #0x01
     beq     .Lvt_w_4014_sprite       @ bit0=0 -> stock sprite DMA
 
+    @ s.99g: in band map mode a video DMA into the nametables only has to
+    @ land in NT RAM (ppu_vt369.c vt_bm_dma_4014; 0 = not handled, e.g. a
+    @ palette target: the paths below run as before).  The frame saved
+    @ r3/r12/lr above, so the C call may clobber them.
+    ldr     r2, =vt_bm_live
+    ldrb    r2, [r2]
+    cmp     r2, #0
+    beq     8f
+    stmfd   sp!, {r0, r1}
+    bl      vt_bm_dma_4014
+    cmp     r0, #0
+    ldmfd   sp!, {r0, r1}
+    bne     .Lvt_write_done
+8:
+
     @ --- Video DMA path ($4034 bit 0 = 1, target = $2007) -----------
     @
     @ Layout:

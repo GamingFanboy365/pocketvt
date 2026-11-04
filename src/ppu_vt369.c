@@ -745,9 +745,10 @@ static inline u32 vt369_dma_byte(u32 a)
  * into the nametable and marks the words that changed for vt369_nt_diff:
  * through $4014 -> vmdata_W -> writeBG -> vt369_nt_mark each byte cost ~100
  * cycles, and Sky Fighter's title DMAs ~1.5K nametable bytes a frame (46
- * fps).  Returns 0, having done nothing, for anything else. */
+ * fps).  Returns 0, having done nothing, for anything else.  s.99g: mark = 0
+ * for band map mode (vt_bm_dma_4014), which needs no marks. */
 extern void VRAM_name0(void), VRAM_name1(void);
-static int vt369_dma_nt(u32 src, u32 len)
+static int vt_dma_nt_core(u32 src, u32 len, const int mark)
 {
     const u32 step = (_ppuctrl0 & 4) ? 32u : 1u;
     const u32 a0 = _vramaddr & 0x3FFF, a1 = a0 + (len - 1) * step;
@@ -790,6 +791,9 @@ static int vt369_dma_nt(u32 src, u32 len)
                 u32 *dw = (u32 *)dp;
                 u8 *mk = &vt369_nt_dw[off >> 2];
                 seg &= ~3u;
+                if (!mark)
+                    for (u32 k = 0; k < seg / 4; k++) dw[k] = sw[k];
+                else
                 for (u32 k = 0; k < seg / 4; k++) {
                     const u32 v = sw[k];
                     if (dw[k] == v) continue;
@@ -801,7 +805,7 @@ static int vt369_dma_nt(u32 src, u32 len)
                 for (u32 k = 0; k < seg; k++) {
                     if (dp[k] == sp[k]) continue;
                     dp[k] = sp[k];
-                    vt369_nt_dw[(off + k) >> 2] = 1;
+                    if (mark) vt369_nt_dw[(off + k) >> 2] = 1;
                     any = 1;
                 }
             }
@@ -814,13 +818,31 @@ static int vt369_dma_nt(u32 src, u32 len)
             const u32 off = base[a >> 10] | (a & 0x3FF);
             if (nt[off] == v) continue;
             nt[off] = (u8)v;
-            vt369_nt_dw[off >> 2] = 1;
+            if (mark) vt369_nt_dw[off >> 2] = 1;
             any = 1;
         }
     }
-    if (any) vt369_nt_any = 1;
+    if (any && mark) vt369_nt_any = 1;
     _vramaddr = (_vramaddr & 0xFFFF0000u) | (u16)(_vramaddr + len * step);   /* as vmdata_W's strh */
     return 1;
+}
+
+static int vt369_dma_nt(u32 src, u32 len) { return vt_dma_nt_core(src, len, 1); }
+
+/* s.99g: band map mode (ppu_vt.c vt_bm_*) owns the BG map and compares every
+ * map row's name and attribute bytes with its snapshot at the frame end, so a
+ * video DMA into the nametables only has to land in NT RAM.  Through vmdata_W
+ * (writeBG queueing map entries that band map mode drops), Football
+ * Training's three a frame (~770 bytes: $0400/$0600/$0700 to $2000/$2160/
+ * $2300) cost 128-157K cycles of a NES frame from cart ROM.  mapVT.s calls
+ * this for a video DMA while vt_bm_live; 0 = not handled (a palette or CHR
+ * target, a four-screen quadrant, a source in $2000-$7FFF): the byte loop
+ * runs as before. */
+int vt_bm_dma_4014(u32 val)
+{
+    extern u8 vt_dma_lo;
+    const u32 len = 1u << (((vt_dma_settings >> 1) & 7) ? ((vt_dma_settings >> 1) & 7) : 8);
+    return vt_dma_nt_core(val << 8 | vt_dma_lo, len, 0);
 }
 
 int vt369_dma_4014(u32 val)
