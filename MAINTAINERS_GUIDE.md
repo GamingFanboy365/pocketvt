@@ -6808,3 +6808,188 @@ pass on both cores and every diagnostic define builds. EWRAM `__end__`
 0x02010978 to 0x020109AC (+52 bytes), IWRAM `__bss_end__` unchanged
 (0x03007B18), the core 1.2K larger (155404 bytes on devkitARM).
 
+
+## 100. Football Training's flicker: the HBlank DMA set-up, and 2bpp tiles in the picture
+
+The person who reported the four carts of s.99 (issue 14) tried the merged
+build: Let's Count and Speed Type work, "only football training still has one
+problem: strange graphical flickering", with a screenshot of the target game.
+The screenshot is itself one of the bad frames: the goal at the top edge and
+the target larger than in a normal frame, the crowd above them missing.
+
+### 100a. One unscaled frame in ten
+
+gbaplay dumped 300 consecutive GBA frames of the play session's target game
+(GBA frames 700-1000) on main's devkitARM core for both carts. About one
+frame in ten (23 on the VT03 cart, 28 on the VT369 one) differed from both
+its neighbours in some 14,000 pixels while the neighbours were equal. Matched
+row by row against a normal frame, row y of such a frame is NES line y plus
+the window top plus 53: the picture without the vertical scaling, BG0VOFS
+left at the value the last line's HBlank DMA entry wrote. Every one of them
+fell on a GBA frame in which no NES frame ended.
+
+The vblank handler stops the three HBlank DMAs (scroll, DISPCNT, BG0CNT) on
+entry and arms them again after its set-up (vbl5). Before the set-up it
+called vt_chr4_rebuild_stacked. A scratch probe (vbltime: VCOUNT whenever the
+pc reaches chosen addresses, single-stepping) showed that after a sprite bank
+switch ($2013/$2014, every ~10 NES frames on this game) the call ran from line
+161 to line 77 of the frame after next, ~370 lines: vt_chr_sync_flush ~40,
+vt_chr4_assemble 140-275 (one to four stale pages), vt_chr4_copy_to_vram_all
+~50. The vblank in between found inside_gba_vblank at 2 and returned at once,
+with the DMAs it had just stopped still stopped: that frame went out
+unscaled. s.87 had found the same with BKEXTEN carts and moved their work
+after the set-up (vt_bk_late); the other path still ran before it.
+
+vt_chr4_rebuild_stacked is now called after skipdma, in a top-level vblank
+only, and before update_sprites, so its order against the rest of the
+vblank's CHR work is as it was. Nothing in it touches what the set-up reads:
+vt_split_repair re-decodes slot tiles in VRAM, and the BG0CNT line tags are
+written at the NES frame end. A vblank that arrives while it runs finds
+inside_gba_vblank at 1, sets the DMAs up for its frame and leaves, and now
+puts inside_gba_vblank back to 1 as it leaves: it used to leave 2 behind, so
+a second vblank during the same outer handler would bail with the DMAs
+stopped. The rebuild no longer runs in such a nested vblank (it did when the
+outer handler was in its tail, in the middle of update_sprites or
+consume_recent_tiles); the next top-level vblank does it. vt_vbl_outer still
+says what the nested handler wrote last, which only decides whether the
+rebuild builds the 16-colour palette (vt_chr4_rebuild_rest's last line), so
+a nested vblank can at worst cost one extra build.
+
+### 100b. 2bpp tiles in the picture after a bank switch
+
+With the scaling right, a smaller fault showed in the same frames: the goal
+net's tiles garbled for a frame, and the player grey and yellow for up to
+three. A second scratch probe (vwatch: every change of chosen words,
+single-stepping) on the player's OBJ tiles (833-865, slot 13) named the
+writers. PocketNES's 2bpp renderer (render_tiles_2) wrote them from the main
+thread: after a bank switch the flush marks all 512 tiles dirty, the frame
+end's tile scan (storetileloop) fills the recent-tiles list, and
+flush_recent_tiles renders each full list at once, over ~100 lines of the
+picture. Each tile goes to BG tile t and to OBJ slot 8 + t/64. The 4bpp
+copies put them back only at the next vblank: the BG pages through s.97's
+stomp marks, the sprite slots through vt_obj4_overlay, which copies two slots
+a vblank, so the player's slot came back three vblanks later.
+
+vt_render_run (ppu_vt.c), called by render_recent_tiles before each run of
+tiles, takes the render's place where the 4bpp copies own both destinations:
+with SP16EN set ($2010 bit 2; the BG copy runs whenever bit 1 or 2 is set),
+and not under BKEXTEN, VT369 enhanced mode, SPEVA (vt_spr16_active: its
+sprites come from slots 0-3 and the overlay does not run) or the SRAM menus,
+or in a half lent to split slot 2, it copies the run's tiles from
+vt_chr4_buf to the BG tiles and to OBJ slot 8 + t/64, from the page the
+overlay keeps in that slot or else from page t/64 itself (what the overlay
+puts there once that page is resident; pages whose 2bpp and 4bpp forms agree
+it never copies, so the slot must not be left stale), and the 2bpp render is
+skipped, r4 moved past the run's 16-byte snapshots as render_tiles_2 leaves
+it. vt_chr4_buf holds the same banks as the 2bpp
+window whenever the main thread renders: vt_chr4_rebuild_rest flushes the
+window and assembles the stale pages in one vblank. Any other run renders as
+before and then marks its BG pages for the vblank copy (the same call with
+bit 31, after the writes, as s.97 required). The C call clobbers r2
+(decodeptr), which is reloaded after it; the call goes through an EWRAM
+stack trampoline (vt_render_run_stacked), safe from the main thread because
+interruptdispatcher.s runs handlers in System mode on the interrupted stack,
+so a vblank that lands in the middle nests below it. The new IWRAM block
+takes no more room than the one it replaces; the nested exit's one
+instruction moves `__bss_end__` from 0x03007B18 to 0x03007B28 on build_pvt
+(alignment) and leaves it at 0x03007B18 on devkitARM. spmin from power-on
+with the same input (Start at GBA 100/300/500, Right held from 600, A every
+50 frames) puts Funny Coins' lowest user stack at 0x03007B90 on build_pvt,
+in vt_adpcm_mix_gba as before, against 0x03007B9C on main's core: 12 bytes
+deeper, for a reason not found (the C call runs on the EWRAM stack, and
+render_recent_tiles reaches the same depth as before around
+render_tiles_2), 104 bytes above `__bss_end__`. Football Training VT03's
+lowest is 0x03007C0C.
+
+Over the same 300 frames neither cart now has a frame unlike both
+neighbours in more than 200 pixels; what remains between two GBA frames of
+one NES frame is sprites moving (OAM is taken at each GBA vblank) and the
+GET READY sprites appearing.
+
+### 100c. A flicker count in the runner
+
+The state check compares pictures at 15 NES frames, and a fault on one GBA
+frame in ten fell between them every time. gbaplay's FLICKFT=a-b counts the
+GBA frames, while frametotal is in a..b, that differ from both neighbours in
+FLICKPX pixels (4800, an eighth of the screen) while the neighbours agree,
+in memory and at no cost to the run. regress.py's state session sets it from
+NES 60 to its last frame on both cores: more such frames on the new core is
+a WARN, five more a FAIL. A game's own flashes count on both cores. On
+main's core it counts 45 such frames on Football Training VT03 and 55 on
+the VT369 cart over NES 200-1000 with sound on, on this one 0 and 0.
+
+### 100d. Results
+
+`regress.py` against main (f541a9b) on both toolchains, all 27 carts
+(regress_out/20261104-215232): no FAIL, 9 WARN, 45 PASS.
+
+| Cart | Toolchain | Verdict | ref | speed | state |
+|---|---|---|---|---|---|
+| Football_Training_VT03 | docker | WARN | PASS | PASS | WARN |
+| Football_Training_VT03 | pvt | WARN | PASS | WARN | WARN |
+| Football_Training_VT369 | docker | WARN | PASS | WARN | PASS |
+| Football_Training_VT369 | pvt | WARN | WARN | WARN | PASS |
+| Lucky_Lawn_Mower_VT09 | pvt | WARN | PASS | PASS | WARN |
+| Star_Ally_UM6578 | pvt | WARN | WARN | PASS | PASS |
+| Star_Ally_VT03 | both | WARN | WARN | PASS | PASS |
+| VG_Pocket_VT09 | pvt | WARN | PASS | PASS | WARN |
+| every other row (45) | | PASS | PASS | PASS | PASS |
+
+The WARNs, one by one. Football Training VT03: its state pictures at NES
+700, 1000 and 1400 differ in 270-430 pixels, and those pixels are the fix:
+main's core shows the player grey and yellow and the goal net garbled there,
+this one a blue player and a clean net; its flicker count falls from 98 to 0
+on both toolchains, and its play session's NES 1400 scores 0.63 higher. Its
+speed WARN on build_pvt is the worst second, 33 to 23 inside the dip at a
+change of round, with the mean up from 52.0 to 54.2 (devkitARM 52.2 to
+54.2). Football Training VT369: the same worst-second rule (28 to 18 on
+build_pvt, 27 to 21 on devkitARM) with the mean up from 50.9 to 52.0 and
+from 51.2 to 52.1; summed over the dip's four seconds both cores ran the same
+number of NES frames (157 and 159, first run), the expensive stretch now
+falling inside one second. On build_pvt its play session's NES 700 scores
+99.28 against 99.47: the player and the ball a step apart on this sound-on
+cart, whose sound-off state check is equal; NES 1400 rises 0.23. Lucky Lawn
+Mower VT09 on build_pvt: the flicker count rises from 1 to 2, and the new
+frame is the game's own: at a level start (NES 661) the picture jumps 16 NES
+lines down for one frame, as Furbtendulator shows it (its frame 658), and on
+this core that frame fell between two equal ones. Star Ally UM6578 on
+build_pvt: its drifting game (play 1000 -0.60, 1400 +0.51; carts.json).
+Star Ally VT03: the play session's NES 200 and 1000 change sign between the
+toolchains (-0.47/+0.47 and +1.17/-1.17; NES 992-1008 average 98.43 and
+98.60), and build_pvt's NES 1400 (-0.39) is the value both devkitARM cores
+score: animation and display phase, as in 99f and 99g. VG Pocket on
+build_pvt: the flicker count rises from 3 to 4 at its game launch, where the
+two cores' NES RAM is equal at NES 820 and differs from NES 830 on by
+one-frame offsets ($0026, $01F3, $0501: the race of s.97e and s.98g,
+drift_from 900); the frames are its board loading (garbled on both cores, a
+BKEXTEN cart) and a striped graphic that main's core shows for NES 848-852
+and this one for a single GBA frame. On devkitARM the count falls from 2 to
+0.
+
+Flicker counts in the state session, main to this core: Football Training
+VT03 98 to 0 on both toolchains, Hex City X and Push the Ball 1 to 0 on both,
+Soccer 2009, Jewel Master VT03 and Sky Fighter VT09 one fewer on devkitARM,
+the two above one more on build_pvt, every other cart equal (most 0). Every
+other cart's speed is within 0.2 of main's (Star Ally VT03 58.70 to 58.48 on
+build_pvt). The smoke ROMs pass on both cores, and the devkitARM core's
+memory is unchanged (`__bss_end__` 0x03007B18, EWRAM `__end__` 0x020109AC;
+the core 155972 bytes, 568 more).
+
+Football Training VT369 counted 0 flicker frames on both cores in the state
+session: VT369 carts run it on -DVT369_SND_OFF builds, and without the sound
+HLE's load main's core never ran its rebuild past the next vblank there.
+With sound on (the shipping core, NES 200-1000 of the same input) it counted
+55. So the speed session, which runs the shipping cores with sound on,
+counts them too on the sound_hle carts. Run on those 11 carts
+(regress_out/20261105-063847, main to this core, build_pvt and devkitARM):
+Football Training VT369 192 to 0 and 194 to 0, Funny Coins 2 to 0 and 3 to
+0, Sky Fighter 7 to 3 and 4 to 8, Jumper 2 and 0 and Lucky Lawn Mower VT369
+1 on both cores, the rest 0. Sky Fighter's are the same two moments on every
+core: NES 107, where the battleplane select hands over to the game and one
+NES frame lasts ~17 GBA frames while the game loads its graphics, so
+PocketVT shows the half-loaded states (noise behind the menu, stripes, a
+blank screen) at each GBA vblank, and NES 1661. How many of them land
+between two equal frames moves with timing, so the sound-on rule is five
+more for a WARN and twenty for a FAIL; the state session's FAIL is five more
+(a game's own jump and VG Pocket's launch moved it by one). Sky Fighter's
+long frames are open item 9.

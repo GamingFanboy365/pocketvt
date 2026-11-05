@@ -1000,27 +1000,32 @@ render_recent_tiles_loop:
 1:
 	@r3 = original tilenum, r0 = highest consecutive tilenum
 #if VT_MODE
-	@ s.97: the 2K BG pages (64 tiles each) this run writes go into
-	@ vt_bg2_stomp, for ppu_vt.c to copy back from the 4bpp tiles while
-	@ those own BG VRAM.  Marked after the writes: a vblank in between would
-	@ otherwise copy the pages back and clear the bits before the stomp.
-	sub r1,r0,#1
-	mov r1,r1,lsr#6
-	mov r12,#2
-	mov r12,r12,lsl r1		@ 2 << last page
-	mov r1,r3,lsr#6
-	mov r10,#1
-	sub r12,r12,r10,lsl r1		@ - (1 << first page)
-	sub r3,r0,r3
-	stmfd sp!,{r12}
+	@ s.100: vt_render_run (ppu_vt.c) first.  Where the 4bpp copies own both
+	@ of this run's destinations (BG tiles, OBJ slot 8+tile/64) it writes the
+	@ 4bpp tiles there and returns nonzero: the 2bpp render is skipped (nesptr
+	@ moves past the run as render_tiles_2 would move it).  Rendered here in
+	@ the main thread (flush_recent_tiles), the 2bpp tiles showed until the
+	@ next vblank's copies.  Otherwise, after the render, the same call with
+	@ bit 31 set puts its BG pages in vt_bg2_stomp (s.97), after the writes: a
+	@ vblank in between would copy the pages back and clear the bits before
+	@ the stomp.  C clobbers r2 (decodeptr): reloaded after each call.
+	sub r1,r0,r3			@ tiles in the run
+	orr r0,r3,r0,lsl#16		@ first | end << 16
+	stmfd sp!,{r0,r1}
+	bl_long vt_render_run_stacked
+	ldmfd sp!,{r1,r3}		@ r1 = run, r3 = tiles
+	ldr decodeptr,=CHR_DECODE
+	cmp r0,#0
+	addne r4,r4,r3,lsl#4
+	bne render_recent_tiles_loop
+	stmfd sp!,{r1}
 	adr lr,2f
 	@destroys r0,r1,r3,r4,r9,r10,r11,r12
 	b render_tiles_2
 2:	ldmfd sp!,{r0}
-	ldr r1,=vt_bg2_stomp
-	ldrb r12,[r1]
-	orr r12,r12,r0
-	strb r12,[r1]
+	orr r0,r0,#0x80000000
+	bl_long vt_render_run_stacked
+	ldr decodeptr,=CHR_DECODE
 	b render_recent_tiles_loop
 #else
 	sub r3,r0,r3
@@ -3000,10 +3005,8 @@ vblankinterrupt:@
 nopal60:
 	bl_long showfps_
 
-	@ Piece 2/3: assemble 4bpp tiles + 16-colour palette once per frame. Runs
-	@ in the vblank IRQ (the reliable per-frame point). The IRQ stack was
-	@ enlarged (gba_cart_my.ld __sp_irq) so this heavy work no longer overflows.
-	bl_long vt_chr4_rebuild_stacked	@ vt_chr4_rebuild_if_dirty on the EWRAM stack (mapVT.s, guide s.78e)
+	@ s.100: vt_chr4_rebuild_stacked (the 4bpp CHR rebuild) moved below
+	@ skipdma, after the HBlank DMA set-up; see there.
 	bl_long vt_timer_tick_frame	@ maintains the VT timer boot-safety latch
 	
 	ldrb_ r0,okay_to_run_hdma
@@ -3092,10 +3095,22 @@ vbl5:
 skipdma:
 	ldmfd sp!,{r0}
 	cmp r0,#1
+	@ s.100: a nested vblank (the outer handler is past its DMA set-up) puts
+	@ inside_gba_vblank back to 1 as it leaves: left at 2, the next vblank
+	@ during the outer handler bailed at entry with HBlank DMA stopped.
+	strgeb_ r0,inside_gba_vblank
 	bge exit_gba_vblank
 	mov r0,#1
 	strb_ r0,inside_gba_vblank
-	
+
+	@ Piece 2/3: assemble 4bpp tiles + 16-colour palette once per frame, on
+	@ the EWRAM stack (mapVT.s, guide s.78e).  s.100: here, after the HBlank
+	@ DMA set-up and in a top-level vblank only.  Before the set-up, a sprite
+	@ bank switch on Football Training (flush, page assembly, 16K VRAM copy:
+	@ ~370 lines) ran into the next frame: that frame showed with HBlank DMA
+	@ stopped (unscaled, one frame in ten), as s.87 found for BKEXTEN.
+	bl_long vt_chr4_rebuild_stacked	@ vt_chr4_rebuild_if_dirty
+
 	ldrb_ r0,firstframeready
 	movs r0,r0
 	beq 0f
