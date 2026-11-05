@@ -28,7 +28,16 @@ an equal stack pointer, and RAM from a cart's `drift_from` frame on (VG
 Pocket's launch); a difference is re-run on `-DVT_NO_SPEEDHACK` builds, and
 one that goes away there is the idle-loop finder's race (s.97e), a WARN. A picture that differs but equals the old
 core's picture of a neighbouring NES frame is display phase; any other
-picture change is a WARN with an old | new | difference PNG next to it.
+picture change is a WARN with an old | new | difference PNG next to it. The
+same run counts the GBA frames, from NES 60 on, whose picture differs from
+both neighbours in an eighth of the screen while the two neighbours agree
+(gbaplay `FLICKFT`): a game's own flashes count on both cores, so more of
+them on the new core is a WARN and five or more a FAIL (s.100: Football
+Training showed one unscaled frame in ten, which no fixed picture caught).
+The VT369 carts (`sound_hle`) run that session without sound, so the speed
+session counts them too, with sound on: five more is a WARN, twenty a FAIL
+(Sky Fighter's long load frames give 3-8 on any core; Football Training
+VT369's fault gave 192, and only with sound on).
 **ref** runs compare_furb against Furbtendulator at NES 150/400/700 (Start at
 320, the frames the guide quotes) and on the state session's input at
 200/450/700/1000/1400; struct may not drop. A picture change together with a

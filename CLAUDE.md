@@ -79,7 +79,10 @@ section of the change. Paste the report's table into the PR.
   -DVT_NO_SPEEDHACK; dead stack below an equal SP is benign), ref (compare_furb
   struct at the guide's frames, must not drop; a drop of more than 0.5 at one
   frame is scored again over NES t-8..t+8 and is a WARN when the means agree,
-  s.99e), speed (50 s, sound on).
+  s.99e), flicker (GBA frames unlike both neighbours, which agree, counted
+  over the state session by gbaplay FLICKFT: more than the old core is a WARN,
+  five more a FAIL; on VT369 carts the speed session counts them with sound
+  on too, 5 more WARN, 20 FAIL; s.100), speed (50 s, sound on).
 - CI (`checks` job in build.yml) runs what needs no ROM: no ROMs in git, no
   fixed EWRAM/IWRAM addresses in code (tools/ci/lint_ram_addresses.py), the
   .bss budget assert, the VT369 sound host test, the smoke ROMs
@@ -123,8 +126,15 @@ section of the change. Paste the report's table into the PR.
   two correct cores: confirm with -DVT_NO_SPEEDHACK builds (s.97e). Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.99)
-See MAINTAINERS_GUIDE.md s.99 (four CUBE Tech carts reported faulty, Football
+## Current state (after s.100)
+See MAINTAINERS_GUIDE.md s.100 (Football Training's reported flicker: after
+a sprite bank switch the 4bpp CHR rebuild ran ~370 lines before the vblank's
+HBlank DMA set-up, so one frame in ten went out unscaled; it runs after the
+set-up now, and a nested vblank leaves inside_gba_vblank at 1. With SP16EN,
+vt_render_run puts 4bpp tiles where PocketNES's 2bpp renderer would have
+written BG and OBJ tiles in the main thread, which showed as a garbled goal
+net and a grey player for 1-3 frames; regress.py counts flicker frames),
+s.99 (four CUBE Tech carts reported faulty, Football
 Training VT03/VT369, Let's Count, Speed Type: band map mode gives every BG map
 row its own 32 tiles when a frame has more bank bands than the 3 split slots
 (vt_bm_*, ppu_vt.c); the VT timer's rephase counts from the exact write to
@@ -199,8 +209,8 @@ states, sound) and s.77-78 (raster-split slots, speed).
   title 100%, board 99.3-99.4%, 57-58 fps mean) and Soccer 2009 (VT03 with a 256K CHR ROM, 256.0;
   menus 99.5%, matches 97-99% with exact colours), Star Ally UM6578 (UM6578,
   405; title 100%, gameplay 98-99% where the game state has not drifted,
-  54-61 fps). s.99: Football Training VT03 (419, 98.4-99.6%, 52 fps),
-  Football Training VT369 (99.3-99.7%, 51 fps), Let's Count (98.4-99.4%, 60
+  54-61 fps). s.99: Football Training VT03 (419, 98.4-99.6%, 54 fps since
+  s.100), Football Training VT369 (99.3-99.7%, 52 fps), Let's Count (98.4-99.4%, 60
   fps) and Speed Type (99.3-99.9%, 59.3 fps), all 256.13 VT369 but the first,
   all through band map mode.
 - CPU x3 ($411C bit 7, every VT369 test cart sets it): vt_cpu_x3_set
@@ -263,8 +273,8 @@ states, sound) and s.77-78 (raster-split slots, speed).
   Fighter 60 (58.7 mean over the s.97 session: a 3 s dip while its second loop
   is found, s.98), Funny Coins 57-58 mean (music-start dip 3-5 s, s.98f), Fire
   Fighter 54-60 in gameplay, Jumper 54-60 (s.96); s.99: Speed Type 59.3,
-  Let's Count 60, Football Training VT369 51 and VT03 52 (gameplay 45-56,
-  menus 60; 31-33 on main, s.99g).
+  Let's Count 60, Football Training VT369 52 and VT03 54 (s.100; gameplay
+  45-60, menus 60, a ~1 s dip to ~20 at a change of round; 31-33 before s.99g).
 - Frame pacing (s.87a): every GBA vblank is a credit, every NES frame spends
   one; the frame end waits only without credit (vt_vsync_ahead). Speed probes
   can show 61-62 while a slow stretch is made up; the average stays 60.
@@ -272,6 +282,11 @@ states, sound) and s.77-78 (raster-split slots, speed).
   work runs in vt_bk_late (from vrom_update_tiles) after the HBlank DMA
   set-up, and run_palette skips itself while vt_pal_owned. Anything heavy
   added before the DMA set-up brings back shifted frames and grey lines.
+  The 4bpp CHR rebuild (vt_chr4_rebuild_stacked) runs after it too, in a
+  top-level vblank only (s.100): before it, a 370-line rebuild left the next
+  frame without HBlank DMA (unscaled). A nested vblank arms the DMA, then
+  puts inside_gba_vblank back to 1; at 2, the next vblank bails with the
+  DMAs stopped.
 - writemem_4 on VT carts (not 419) is write_vt4xxx_v in .vram1 (s.87b);
   ROM handler in vt_w4_next = vt_w4_bank ($4107/$4108 and $4136/$4137, s.89c),
   then vt_w4_slow. Write handlers may clobber only r0-r2 and addy: r3 is
@@ -351,7 +366,13 @@ states, sound) and s.77-78 (raster-split slots, speed).
 - 4bpp BG pages (s.97): render_recent_tiles ORs the 2K pages each run wrote
   into vt_bg2_stomp; vt_chr4_copy_to_vram copies marked pages whatever its
   four probe words say, and vt_16c_palette_fixup_body repeats it at the end
-  of a top-level vblank. VT carts never take render_a_kilobyte.
+  of a top-level vblank. VT carts never take render_a_kilobyte. s.100:
+  render_recent_tiles asks vt_render_run first; with SP16EN (not BKEXTEN,
+  VT369 enhanced, SPEVA, SRAM menus, or a half lent to split slot 2) it
+  copies the run's tiles from vt_chr4_buf to BG and to OBJ slot 8+t/64 (the
+  page the overlay keeps there, else page t/64), and the 2bpp render is
+  skipped (r4 += 16 per tile). Anything that makes vt_chr4_buf disagree with the 2bpp window
+  between vblanks must turn that off.
 - loadcart.c copies op_table back from its load address for every cart
   (s.96): a VT cart's encryption leaves it permuted. VT369 carts whose code
   runs from one 32K of cart ROM get it copied into the VRAM PRG copy after 60
@@ -365,9 +386,10 @@ states, sound) and s.77-78 (raster-split slots, speed).
   measures it (mode 0x12).
 - The IWRAM user stack is ~150 bytes above .bss; ALL new C globals go in
   EWRAM_BSS (`__bss_end__` must stay <= 0x03007B84, which the linker now
-  asserts; 0x03007B18 on both toolchains after s.99's PIX16-by-line; the
-  user stack's lowest point measured 0x03007B9C on Funny Coins in the sound
-  HLE (vt_adpcm_mix_gba, s.99f; 0x03007BA4 in s.98), 0x03007BAC on Hex City X
+  asserts; 0x03007B28 on build_pvt and 0x03007B18 on devkitARM after s.100;
+  the user stack's lowest point measured 0x03007B90 on Funny Coins in the
+  sound HLE (vt_adpcm_mix_gba, s.100; 0x03007B9C on main with the same input,
+  0x03007BA4 in s.98), 0x03007BAC on Hex City X
   from power-on and 0x03007C24 through a menu Restart). Heavy VT C runs on
   the 3K EWRAM stack. Measure with tools/probes/spmin from power-on.
 
@@ -381,11 +403,14 @@ states, sound) and s.77-78 (raster-split slots, speed).
    modelled in vt_timer_clk0 (no test cart). The finder samples the 6502 only
    at a vblank or a sprite-0 hit, so a cart whose samples keep landing in an
    interrupt handler finds its loop late (s.99d). Football Training runs
-   51-52 fps (gameplay 45-56, s.99g); left in its frame: band map mode's frame
+   52-54 fps (s.100); left in its frame: band map mode's frame
    end ~36K cycles of per-row bookkeeping, vt_build_16color_palette every
    vblank ~8K (a skip needs every other GBA palette writer to invalidate it),
-   mapper 419's joypad/register handlers ~17K on the VT03 cart, and the
-   2bpp re-render + 16K VRAM copy after each sprite bank switch. From s.98: Funny Coins with the input moved
+   mapper 419's joypad/register handlers ~17K on the VT03 cart, and after
+   each sprite bank switch the flush (~40 lines), the page assembly (140-275
+   lines) and the 16K VRAM copy (~50), which now run after the HBlank DMA
+   set-up but still past the vblank: the tiles change mid-picture for a
+   frame (s.100a). The 2bpp re-render is gone for SP16EN carts (s.100b). From s.98: Funny Coins with the input moved
    3 frames slows in a loop at $CF27-$CF3A that reads the joypad ~2600 times
    a NES frame and touches VT369 registers and CHR banks (no finder hacks I/O
    reads; 52 fps mean in that session, 50 on main); its music-start dip is
@@ -439,6 +464,12 @@ states, sound) and s.77-78 (raster-split slots, speed).
    differences (s.95).
 8. Scramble's shot (s.70c): one-pixel sprite on texture row 7 dropped by the
    sprite affine matrix.
+9. Long NES frames show half-loaded pictures (s.100d): Sky Fighter's NES 107
+   (battleplane select to the game) lasts ~17 GBA frames while the game loads
+   its graphics, and each GBA vblank shows the state so far (noise behind the
+   menu, stripes, a blank screen) for 3-8 frames; again at NES 1661. Every
+   core does it; Furbtendulator shows one frame. Holding the last finished
+   picture through a long NES frame would hide it.
 
 ## Reference material
 LOCAL ONLY, gitignored, never commit (the user supplies them as test.zip):

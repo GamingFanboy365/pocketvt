@@ -373,6 +373,7 @@ vt_apply_prg_dirty:
     vt_ewram_trampoline vt_16c_palette_fixup_stacked, vt_16c_palette_fixup
     vt_ewram_trampoline vt369_snd_fill_stacked, vt369_snd_fill    @ guide s.84
     vt_ewram_trampoline vt_bk_late_stacked, vt_bk_late            @ s.87
+    vt_ewram_trampoline vt_render_run_stacked, vt_render_run      @ s.100 (ppu.s render_recent_tiles)
     .ltorg
 
 @ ============================================================================

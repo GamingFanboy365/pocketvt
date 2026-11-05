@@ -1419,6 +1419,61 @@ void vt_chr4_rebuild_if_dirty(void)
     vt_chr4_rebuild_rest();
 }
 
+/* s.100: render_recent_tiles (ppu.s) calls this, on the EWRAM stack, before
+ * each run of tiles first..end-1 it would render (run = first | end << 16; a
+ * run never crosses tile 256).  PocketNES's 2bpp renderer writes each tile to
+ * BG tile t and to OBJ slot 8 + t/64; with 16-colour sprites ($2010 bit 2)
+ * vt_chr4_rebuild_rest copies vt_chr4_buf over the BG pages and the overlay
+ * (vt_obj4_overlay) over the resident sprite slots at the next vblank.  After
+ * Football Training's sprite bank switches the 2bpp tiles were rendered in
+ * the main thread (flush_recent_tiles), so they showed until those copies:
+ * the goal net garbled for a frame, the player grey and yellow for up to three
+ * (the overlay copies two slots a vblank).  Here the run's 4bpp tiles go to
+ * both places at once and the 2bpp render is skipped (returns 1); SPEVA carts
+ * (vt_spr16_active) keep the render: their slots 8-15 are not shown, and
+ * the overlay does not run for them.  vt_chr4_buf holds the same banks as
+ * the 2bpp window: both are rebuilt in one vblank
+ * (vt_chr4_rebuild_rest).  Anything else returns 0 and the render runs as
+ * before; bit 31 set (after that render) marks its BG pages for the vblank
+ * copy (s.97). */
+__attribute__((target("arm"), noinline))
+int vt_render_run(u32 run)
+{
+    u32 t = run & 0xFFFFu;
+    const u32 end = (run >> 16) & 0x7FFFu;
+    if (run & 0x80000000u) {
+        vt_bg2_stomp |= (u8)((2u << ((end - 1u) >> 6)) - (1u << (t >> 6)));
+        return 0;
+    }
+    if (!vt_active || ewram_owner_is_sram || vt_bkexten_live || vt369_enh) return 0;
+    if (!(vt_reg_2010 & 0x04) || vt_spr16_active) return 0;   /* 2bpp sprites; SPEVA: as before */
+    if ((t >> 8) == (u32)vt_blk_lent - 1u) return 0;     /* half lent to split slot 2 (s.79) */
+    while (t < end) {
+        const u32 p = t >> 6;
+        const u32 e = ((p + 1u) << 6) < end ? (p + 1u) << 6 : end;
+        const u32 *s = (const u32 *)(vt_chr4_buf + t * 32u);
+        u32 *d = (u32 *)(0x06000000u + t * 32u + ((t & 0x100u) ? 0x2000u : 0u));
+        for (u32 n = e - t; n; n--, s += 8, d += 8) {
+            d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+            d[4] = s[4]; d[5] = s[5]; d[6] = s[6]; d[7] = s[7];
+        }
+        /* OBJ slot 8+p: the page the overlay keeps there, else page p, what
+         * the overlay puts there once p is resident (pages whose 2bpp and
+         * 4bpp forms agree it never copies, so the slot must not go stale) */
+        u32 src = p;
+        for (u32 q = 0; q < 8; q++)
+            if ((signed char)spr_cache_map[q] == (int)(8u + p)) { src = q; break; }
+        s = (const u32 *)(vt_chr4_buf + src * 2048u + (t & 63u) * 32u);
+        d = (u32 *)(0x06014000u + t * 32u);
+        for (u32 n = e - t; n; n--, s += 8, d += 8) {
+            d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+            d[4] = s[4]; d[5] = s[5]; d[6] = s[6]; d[7] = s[7];
+        }
+        t = e;
+    }
+    return 1;
+}
+
 /* s.87: ppu.s calls this (on the EWRAM stack) right after the HBlank DMA
  * set-up of a top-level vblank. */
 __attribute__((target("arm")))

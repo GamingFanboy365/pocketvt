@@ -21,6 +21,12 @@
  *                               moved frametotal) and .ppm (that GBA frame), k counting the
  *                               arrivals: a loaded savestate takes frametotal back, so k=1 is the
  *                               replay of k=0 and the two files should be identical
+ *   FLICKFT="a-b" [FLICKPX=n]   (with FT) counts the GBA frames, while frametotal is in a..b,
+ *                               that differ from both neighbours in n pixels (4800, an eighth
+ *                               of the screen) where the neighbours agree: prints the first 20
+ *                               ("flicker gba=.. ft=.. px=..") and "flicker_frames=N" at the
+ *                               end.  Football Training showed one unscaled frame in ten that
+ *                               no picture at a fixed NES frame caught (s.100)
  *   STOPFT=n                    (with FT) ends the run at the end of the GBA frame in which
  *                               frametotal passes n, so a slow core still gets there in one call
  *                               (NFRAMES is then the cap); tools/regress/regress.py uses it
@@ -97,6 +103,10 @@ int main(int argc, char **argv) {
 	long stopft = getenv("STOPFT") ? atol(getenv("STOPFT")) : -1;
 	for (const char *p = watch; p && *p && nw < 16; ) { char *e; wa[nw++] = strtoul(p, &e, 16) & ~1u; p = e; if (*p == ',') p++; }
 	const char *ksn = getenv("KEYSN");
+	unsigned flick_lo = 0, flick_hi = 0, flick_px = getenv("FLICKPX") ? strtoul(getenv("FLICKPX"), 0, 0) : 4800;
+	int flick_have = 0, flick_n = 0;
+	static uint32_t flick_p1[240 * 160], flick_p2[240 * 160];
+	if (fta && getenv("FLICKFT") && sscanf(getenv("FLICKFT"), "%u-%u", &flick_lo, &flick_hi) != 2) flick_lo = flick_hi = 0;
 	for (int f = 1; f <= n; f++) {
 		c->setKeys(c, keys_at(ks, f) | (fta ? keys_at(ksn, c->busRead32(c, fta)) : 0));
 		/* FTDUMP: the state is dumped at the instruction that moves frametotal (single-
@@ -158,6 +168,23 @@ int main(int argc, char **argv) {
 				fwrite(rgb, 1, 3, o); }
 			fclose(o);
 		}
+		if (flick_lo || flick_hi) {	/* FLICKFT (s.100): a frame unlike both neighbours that agree */
+			const unsigned ft = c->busRead32(c, fta);
+			if (ft >= flick_lo && ft <= flick_hi) {
+				if (flick_have >= 2) {
+					unsigned odd = 0;
+					for (unsigned i = 0; i < w * h; i++)
+						odd += (buf[i] & 0xFFFFFF) == flick_p2[i] && flick_p1[i] != flick_p2[i];
+					if (odd >= flick_px) {
+						flick_n++;
+						if (flick_n <= 20) printf("flicker gba=%d ft=%u px=%u\n", f - 1, ft, odd);
+					}
+				}
+				memcpy(flick_p2, flick_p1, sizeof flick_p1);
+				for (unsigned i = 0; i < w * h; i++) flick_p1[i] = buf[i] & 0xFFFFFF;
+				flick_have++;
+			} else flick_have = 0;
+		}
 		if (in_list(shots, f)) {
 			char name[512]; snprintf(name, sizeof name, "%s_f%05d.ppm", out, f);
 			FILE *o = fopen(name, "wb"); fprintf(o, "P6\n%u %u\n255\n", w, h);
@@ -190,6 +217,7 @@ int main(int argc, char **argv) {
 		}
 		if (stop) break;
 	}
+	if (flick_lo || flick_hi) printf("flicker_frames=%d\n", flick_n);
 	if (getenv("SRAMOUT")) {
 		FILE *so = fopen(getenv("SRAMOUT"), "wb");
 		for (unsigned i = 0; i < 0x10000; i++) fputc(c->busRead8(c, 0x0E000000 + i), so);

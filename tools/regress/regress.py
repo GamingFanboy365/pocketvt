@@ -22,7 +22,10 @@ old and the new core run three checks (MAINTAINERS_GUIDE s.98):
          idle-loop finder samples on GBA time (s.97e).  A picture that differs
          is accepted when it is the old core's picture of the next or the
          previous NES frame (display phase); otherwise it is a WARN with a
-         side-by-side PNG.
+         side-by-side PNG.  The same run counts GBA frames unlike both their
+         neighbours (which agree) from NES 60 on: more than the old core is a
+         WARN, five more a FAIL (s.100, gbaplay FLICKFT).  VT369 carts count
+         them in the speed session too, with sound on (5 more WARN, 20 FAIL).
   ref    compare_furb against Furbtendulator (furb_cli): NES 150/400/700 with
          Start at 320 (the frames the guide quotes), and NES 200/450/700/
          1000/1400 on the state session's input.  struct must not drop.
@@ -51,6 +54,17 @@ STATE_SPANS = [(100, 104, 8), (300, 304, 8), (500, 504, 8), (600, 1400, 16)] + \
 SPEED_SPANS = [(100, 104, 8), (300, 304, 8), (500, 504, 8)] + \
               [s for f in range(600, 3000, 90) for s in ((f, f + 59, 16), (f + 60, f + 69, 17))]
 SPEED_GBA = 3000
+# The flicker count (s.100) runs over the state session from this NES frame:
+# any more such frames than the old core is a WARN, this many more a FAIL
+# (a game's own one-frame jump, or a launch race, moves it by one; the fault
+# it was made for gave 98).
+FLICKER_FROM = 60
+FLICKER_FAIL = 5
+# The speed session counts them too on sound_hle carts (sound on, the game
+# state on GBA time): Sky Fighter's long load frames give 3-8 on any core,
+# Football Training VT369's fault 192.  This many more is a WARN, a FAIL.
+FLICKER_WARN_SOUND = 5
+FLICKER_FAIL_SOUND = 20
 REF_SESSIONS = {
     'std': (['150', '400', '700'], '320-325:Start'),
     'play': (['200', '450', '700', '1000', '1400'], None),     # STATE_SPANS
@@ -342,14 +356,21 @@ def run_state(args, core, cart, rom, outdir):
     syms = symbols(core)
     frames = sorted({g for f in STATE_FRAMES for g in (f - 1, f, f + 1)})
     # NES RAM, then the 6502 stack pointer (its low byte), for the dead-stack rule in judge_state
+    # FLICKFT (s.100): GBA frames unlike both neighbours, which agree, over the
+    # whole session -- Football Training's one unscaled frame in ten fell
+    # between the 15 pictures.
     env = dict(os.environ, KEYSN=keys_str(STATE_SPANS), FT=syms['frametotal'], FTDUMP=','.join(map(str, frames)),
                DUMP='03000000:%d,%s:4' % (cart['ram'], syms['_m6502_s']), OUT=os.path.join(outdir, 'd'),
-               STOPFT=str(max(frames) + 1))
+               STOPFT=str(max(frames) + 1), FLICKFT='%d-%d' % (FLICKER_FROM, max(frames)))
     r = sh([args.gbaplay, play, '12000'], env=env, cwd=outdir)
     open(os.path.join(outdir, 'gbaplay.log'), 'w').write(r.stdout)
     res = {'frames': {}, 'last_ft': 0}
     for m in re.finditer(r'frametotal=(\d+)', r.stdout):
         res['last_ft'] = int(m.group(1))
+    m = re.search(r'^flicker_frames=(\d+)', r.stdout, re.M)
+    if m:
+        res['flicker'] = int(m.group(1))
+        res['flicker_at'] = [(int(a), int(b)) for a, b in re.findall(r'^flicker gba=\d+ ft=(\d+) px=(\d+)', r.stdout, re.M)]
     for f in frames:
         b, p = os.path.join(outdir, 'd_ft%d_0.bin' % f), os.path.join(outdir, 'd_ft%d_0.ppm' % f)
         if os.path.exists(b) and os.path.exists(p):
@@ -362,14 +383,23 @@ def run_speed(args, core, cart, rom, outdir):
     play = play_rom(core, cart, rom)
     syms = symbols(core)
     env = dict(os.environ, KEYSN=keys_str(SPEED_SPANS), FT=syms['frametotal'])
+    if cart.get('sound_hle'):
+        # their state session runs without the sound HLE; Football Training
+        # VT369 showed its unscaled frames only with it (s.100)
+        env['FLICKFT'] = '%d-1000000' % FLICKER_FROM
     r = sh([args.gbaplay, play, str(args.speed_gba)], env=env, cwd=outdir)
     open(os.path.join(outdir, 'speed.log'), 'w').write(r.stdout)
     fts = [int(m.group(1)) for m in re.finditer(r'^frame \d+ pc=\S+ frametotal=(\d+)', r.stdout, re.M)]
     per = [b - a for a, b in zip(fts, fts[1:])]
     pcs = re.findall(r'^frame \d+ pc=(\S+)', r.stdout, re.M)
     g = per[3:] or per or [0]
-    return dict(mean=round(sum(g) / len(g), 2), min=min(g), slow=sum(1 for x in g if x < 55),
-                final=fts[-1] if fts else 0, per_second=per, last_pc=pcs[-1] if pcs else None)
+    res = dict(mean=round(sum(g) / len(g), 2), min=min(g), slow=sum(1 for x in g if x < 55),
+               final=fts[-1] if fts else 0, per_second=per, last_pc=pcs[-1] if pcs else None)
+    m = re.search(r'^flicker_frames=(\d+)', r.stdout, re.M)
+    if m:
+        res['flicker'] = int(m.group(1))
+        res['flicker_at'] = [(int(a), int(b)) for a, b in re.findall(r'^flicker gba=\d+ ft=(\d+) px=(\d+)', r.stdout, re.M)]
+    return res
 
 
 def run_ref(args, core, cart, rom, outdir, session, frames=None):
@@ -488,6 +518,15 @@ def judge_state(cart, old, new, outdir):
         notes.append('pictures differ at %s (pixels; old|new|diff PNGs in %s)' %
                      (', '.join('NES %d: %d' % (f, px) for f, px, _ in differ[:6]), outdir))
         verdict = max(verdict, 'WARN', key=ORDER.get)
+    # flicker (s.100): GBA frames whose picture differs from both neighbours in
+    # an eighth of the screen while the neighbours agree.  A game's own flashes
+    # count on both cores; more of them on the new core is a display fault.
+    fo, fn = old.get('flicker'), new.get('flicker')
+    if fo is not None and fn is not None and fn != fo:
+        at = ', '.join('NES %d: %d px' % e for e in new.get('flicker_at', [])[:4])
+        notes.append('flicker frames (unlike both neighbours) %d -> %d%s' % (fo, fn, ' (%s)' % at if fn > fo and at else ''))
+        if fn > fo:
+            verdict = max(verdict, 'FAIL' if fn >= fo + FLICKER_FAIL else 'WARN', key=ORDER.get)
     return verdict, notes, not ram_bad, [f for f, _, _ in differ]
 
 
@@ -498,9 +537,20 @@ def judge_speed(cart, old, new):
     fail_at = 3.0 if loose else 1.5
     if new['final'] < 120 or (old['mean'] >= 55 and new['mean'] < 45):
         return 'FAIL', notes + ['new core stalls (NES frame %d after %d GBA frames)' % (new['final'], SPEED_GBA)]
-    if drop > fail_at:
+    # flicker with sound on (s.100, sound_hle carts): the game state follows
+    # GBA time here, so the counts move a little between two good cores
+    fl = None
+    fo, fn = old.get('flicker'), new.get('flicker')
+    if fo is not None and fn is not None and fn != fo:
+        at = ', '.join('NES %d: %d px' % e for e in new.get('flicker_at', [])[:4])
+        notes.append('flicker frames, sound on, %d -> %d%s' % (fo, fn, ' (%s)' % at if fn > fo and at else ''))
+        if fn >= fo + FLICKER_FAIL_SOUND:
+            fl = 'FAIL'
+        elif fn >= fo + FLICKER_WARN_SOUND:
+            fl = 'WARN'
+    if drop > fail_at or fl == 'FAIL':
         return 'FAIL', notes
-    if drop > 0.3 or new['min'] < old['min'] - 5:
+    if drop > 0.3 or new['min'] < old['min'] - 5 or fl == 'WARN':
         return 'WARN', notes + (['sound-on game state follows GBA time on this cart: re-check with a longer run'] if loose else [])
     return 'PASS', notes
 
