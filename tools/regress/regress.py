@@ -753,7 +753,7 @@ def main():
     for tc in tcs:
         for t in (old_t, new_t):
             need.add((t, tc, ()))
-            if 'state' in checks and any(c.get('sound_hle') for c in carts):
+            if 'state' in checks and any(c.get('sound_hle') and not c.get('state_sound') for c in carts):
                 need.add((t, tc, ('VT369_SND_OFF',)))
     futs = {pool.submit(b.core, *k): k for k in need}
     cores = {}
@@ -775,7 +775,10 @@ def main():
         res = dict(cart=cid, toolchain=tc, checks={})
         pic_diff = []
         base = os.path.join(out, cid, tc)
-        state_defs = ('VT369_SND_OFF',) if cart.get('sound_hle') else ()
+        # state_sound (s.101): a cart that waits for the sound CPU shows a
+        # black screen without the HLE (Battle Field), so its state session
+        # runs the shipping cores
+        state_defs = ('VT369_SND_OFF',) if cart.get('sound_hle') and not cart.get('state_sound') else ()
         if 'state' in checks:
             o = run_state(args, core_of(old_t, tc, state_defs), cart, rom, os.path.join(base, 'state_old'))
             n = run_state(args, core_of(new_t, tc, state_defs), cart, rom, os.path.join(base, 'state_new'))

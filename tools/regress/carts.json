@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "about": "PocketVT test carts, read by tools/regress/regress.py. The ROMs are NOT in git (copyright): regress.py --stage finds them by md5 in testroms/, the session uploads folder or any zip (the user keeps all of them as pocketvt_testroms.zip) and copies them into testroms/ (gitignored). ram_benign: NES RAM ranges (6502 addresses) whose differences are known and harmless; drift: game state follows GBA timing, so NES RAM is not compared; drift_from: RAM differences from that NES frame on are expected (a WARN). ref_drift_from: from that NES frame on, a struct drop in the play reference session is a WARN (sound-on game state follows GBA timing). Any other RAM difference is re-checked on -DVT_NO_SPEEDHACK builds.",
+ "about": "PocketVT test carts, read by tools/regress/regress.py. The ROMs are NOT in git (copyright): regress.py --stage finds them by md5 in testroms/, the session uploads folder or any zip (the user keeps all of them as pocketvt_testroms.zip) and copies them into testroms/ (gitignored). ram_benign: NES RAM ranges (6502 addresses) whose differences are known and harmless; drift: game state follows GBA timing, so NES RAM is not compared; drift_from: RAM differences from that NES frame on are expected (a WARN). ref_drift_from: from that NES frame on, a struct drop in the play reference session is a WARN (sound-on game state follows GBA timing). state_sound: the state session runs the shipping (sound-on) cores for a sound_hle cart that does not start without the sound HLE. Any other RAM difference is re-checked on -DVT_NO_SPEEDHACK builds.",
  "vg_pocket_wrap": "VG_Pocket_VT09.nes is the raw 4 MB vgpocket.bin behind the NES 2.0 header 4E 45 53 1A 00 00 00 0B 01 01 00 00 00 08 00 00 (guide s.54)",
  "carts": [
   {
@@ -22,6 +22,21 @@
    "console": "VT03",
    "sound_hle": false,
    "ram": 2048
+  },
+  {
+   "id": "Battle_Field",
+   "file": "Battle_Field.nes",
+   "md5": "95b6197db14da536bc595b99a9342903",
+   "size": 1048592,
+   "mapper": "256.13",
+   "console": "VT369",
+   "sound_hle": true,
+   "state_sound": true,
+   "ram": 4096,
+   "ram_benign": [
+    "0x0073"
+   ],
+   "note": "enhanced 8bpp sprites from the $2016 bank ($201E bit 0 clear, $201C = $22): s.101. Black screen on -DVT369_SND_OFF builds, so its state session runs with sound on (state_sound); $0073 is a step counter (0/1/4/5/6) that follows the sound HLE's GBA timing: main differs from itself there across toolchains and across -DVT_NO_SPEEDHACK, a step apart at 1-4 of 15 frames, and every other RAM byte is equal"
   },
   {
    "id": "Fire_Fighter_VT369",

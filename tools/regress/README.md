@@ -20,7 +20,9 @@ A raw VG Pocket `vgpocket.bin` is wrapped with its NES 2.0 header on the way.
 For each cart and toolchain (build_pvt.sh and the devkitARM Docker image, the
 one CI uses) the old and the new core run three checks. **state** plays the
 same input keyed to NES frames on both cores and compares NES RAM and the
-picture at 15 frames; VT369 carts run on `-DVT369_SND_OFF` builds because
+picture at 15 frames; VT369 carts run on `-DVT369_SND_OFF` builds (unless
+carts.json marks them `state_sound`: Battle Field shows a black screen
+without the sound HLE, s.101) because
 their sound HLE runs on GBA time. gbaplay applies the input exactly at the
 NES frame (it single-steps near each key change). RAM must be identical
 outside the byte ranges `carts.json` marks benign, the dead stack just below

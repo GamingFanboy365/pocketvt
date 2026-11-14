@@ -64,18 +64,20 @@ it injected 0 games.
 ## Regression procedure (do this for ANY change)
 **Run `python3 tools/regress/regress.py` before every push** (s.98,
 tools/regress/README.md). It builds the old core (origin/main) and the new one
-(your working tree) on build_pvt.sh AND the devkitARM image, plays all 27 test
+(your working tree) on build_pvt.sh AND the devkitARM image, plays all 28 test
 carts on both and writes `regress_out/<time>/report.md`: PASS/WARN/FAIL per
 cart and toolchain, exit 1 on any FAIL. ~10 min with cached cores;
 `--quick` (8 carts, build_pvt, no reference) for iteration, `--carts A,B`,
 `--old <ref>`. A FAIL blocks the push; every WARN gets a sentence in the guide
 section of the change. Paste the report's table into the PR.
-- **ROMs**: never in git (CI fails on one). The user keeps all 27 as ONE file,
-  `pocketvt_testroms.zip`: ask for that single upload; the runner finds the
+- **ROMs**: never in git (CI fails on one). The user keeps them as ONE file,
+  `pocketvt_testroms.zip` (27 carts when last uploaded; Battle Field, s.101,
+  came as a single upload and should go into it): ask for that single upload; the runner finds the
   carts by md5 in testroms/, ~/.claude/uploads or `--bundle` and stages them.
   tools/regress/carts.json is the manifest (md5s, benign RAM bytes, drift).
 - What it checks: state (NES RAM + picture at 15 NES frames, input keyed to NES
-  frames, -DVT369_SND_OFF on VT369; a RAM difference is re-run with
+  frames, -DVT369_SND_OFF on VT369 unless carts.json says state_sound (Battle
+  Field shows a black screen without the sound HLE, s.101); a RAM difference is re-run with
   -DVT_NO_SPEEDHACK; dead stack below an equal SP is benign), ref (compare_furb
   struct at the guide's frames, must not drop; a drop of more than 0.5 at one
   frame is scored again over NES t-8..t+8 and is a WARN when the means agree,
@@ -126,8 +128,12 @@ section of the change. Paste the report's table into the PR.
   two correct cores: confirm with -DVT_NO_SPEEDHACK builds (s.97e). Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.100)
-See MAINTAINERS_GUIDE.md s.100 (Football Training's reported flicker: after
+## Current state (after s.101)
+See MAINTAINERS_GUIDE.md s.101 (Battle Field, VT369 256.13, reported with
+broken sprites: with $201E bit 0 clear, enhanced sprites take their patterns
+from the $2016 bank, or the $2012 bank for the right table, not from
+$2022/$2023; vt369_sbase in ppu_vt369.c),
+s.100 (Football Training's reported flicker: after
 a sprite bank switch the 4bpp CHR rebuild ran ~370 lines before the vblank's
 HBlank DMA set-up, so one frame in ten went out unscaled; it runs after the
 set-up now, and a nested vblank leaves inside_gba_vblank at 1. With SP16EN,
@@ -212,7 +218,8 @@ states, sound) and s.77-78 (raster-split slots, speed).
   54-61 fps). s.99: Football Training VT03 (419, 98.4-99.6%, 54 fps since
   s.100), Football Training VT369 (99.3-99.7%, 52 fps), Let's Count (98.4-99.4%, 60
   fps) and Speed Type (99.3-99.9%, 59.3 fps), all 256.13 VT369 but the first,
-  all through band map mode.
+  all through band map mode. s.101: Battle Field (VT369 256.13, enhanced
+  8bpp; 99.1-99.99%, 60 fps).
 - CPU x3 ($411C bit 7, every VT369 test cart sets it): vt_cpu_x3_set
   rewrites every `cyc`-recorded cost immediate in RAM (section vt_cycpatch,
   6502mac.h) between 3 and 1 dots a cycle. New cycle charges in RAM code
@@ -226,7 +233,11 @@ states, sound) and s.77-78 (raster-split slots, speed).
   furb_cli dumps sound RAM as `.snd`; `-DVT369_SND_OFF` turns the HLE off.
 - VT369 enhanced mode ($201E != 0) owns BG VRAM, the tilemap, the GBA palette
   and OAM (vt369_enh); PocketNES's BG writers are off via vt_bkexten_live.
-  8bpp BG tiles may use 0x06008000+ after vt_prg_evict (s.77a).
+  8bpp BG tiles may use 0x06008000+ after vt_prg_evict (s.77a). Pattern
+  bases follow $201E bit 0: set, $2020/$2021 (BG) and $2022/$2023 (sprites);
+  clear, the $2012/$2016 banks shifted by $201C (vt369_bg_base; for sprites
+  vt369_sbase, right table by $2000 bit 3 or, in NES 8x16 mode, by each
+  tile's bit 0, s.101; the 8x16 case is untested).
 - vt_palette_ram holds FULL bytes (VT369 colours are 15-bit); VT03/VT09
   readers must mask & 0x3F. On VT369 vt_reg_write ignores $4140-$41FF.
 - $4119 reads vt_4119 (loadcart.c): $00 NTSC, $18 PAL/Dendy from NES 2.0 byte
@@ -423,6 +434,11 @@ states, sound) and s.77-78 (raster-split slots, speed).
    with a small CHR-ROM turns up.
 1. VT369 leftovers (s.82): 8bpp 16-row sprites through $201D bit 2 are done
    but untested, hi-res mode ($201C bit 2), CPU x3 in ROM handlers (s.88d).
+   s.101: enhanced sprites with $201E bit 0 clear in NES 8x16 mode (the
+   table by each tile's bit 0) are done but untested; the outer-bank term
+   (vt369relative) is still taken as 0; Battle Field does not start on a
+   -DVT369_SND_OFF build (what it waits for was not traced), so its state
+   check runs with sound on.
    Speed at x3: Fire Fighter 54-60 (s.89, before the s.96 overlay; not
    re-measured), Jumper's level reloads 54 (s.96g: tile-cache cell updates,
    ~530K cycles in the first reload frame, Thumb from ROM; the overlay has
@@ -479,13 +495,18 @@ LOCAL ONLY, gitignored, never commit (the user supplies them as test.zip):
 - reference/gba_bios.bin: the real GBA BIOS (user-supplied) for
   `compare_furb.py --bios` and tools/probes/biosboot.
 - reference/Furbtendulator-main/: the full Furbtendulator source (from
-  Furbtendulator-main.zip); tools/furb_cli builds it headless.
+  Furbtendulator-main.zip); tools/furb_cli builds it headless. When
+  reference/ is gone (a new container), the same source is in the public
+  repo GamingFanboy365/furbtendulator: clone it next to this tree
+  (../gamingfanboy365/furbtendulator; Furbtendulator-src/src-main/src has
+  OneBus_VT369.cpp, src-mappers/src/Hardware has h_OneBus.cpp). s.101 was
+  read from there.
 - testroms/: Add 'em Up, Push the Ball, Scramble, Table Soccer (VT03), Time
   Pilot; supplied later: Aero Gyrodine, Hex City X, VG Pocket VT09, Lucky Lawn
   Mower VT369, Table Soccer VT369, Fire Fighter VT369, Jewel Master VT369,
   Star Ally, Lonely Island, LLM VT09, Jewel Master VT03, Funny Coins, Soccer
   2009, Star Ally UM6578 (UM6578 docs in reference/um6578/); s.99: Football
-  Training VT03 and VT369, Let's Count, Speed Type.
+  Training VT03 and VT369, Let's Count, Speed Type; s.101: Battle Field.
 
 In git:
 - DATASHEET_DIGEST*.md: VT02/VT03 datasheet notes. Bit numbering there is
