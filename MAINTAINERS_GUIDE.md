@@ -6993,3 +6993,118 @@ between two equal frames moves with timing, so the sound-on rule is five
 more for a WARN and twenty for a FAIL; the state session's FAIL is five more
 (a game's own jump and VG Pocket's launch moved it by one). Sky Fighter's
 long frames are open item 9.
+
+## 101. Battle Field: enhanced sprites from the $2016 bank
+
+The user passed on a fifth cart from the same reporter, "this has problems
+with sprites": Battle Field, a vertical shooter for the VT369 (NES 2.0 mapper
+256.13, 1 MB, CUBE Tech's encryption). On main it boots and plays at 60 fps,
+but every sprite is wrong: the stage text, the score and the lives count are
+unreadable blocks on black boxes, and the planes are fragments of other
+graphics. compare_furb scored it 94.7-98.2% struct, with all the mismatch on
+the sprites; the background is right. 101a has the fault, 101b a gap it
+showed in the regression runner, 101c the results. The cart is in
+tools/regress/carts.json now (28 carts); the user's next upload of the ROM
+bundle should include it (testroms/ has it in this session only). The
+Furbtendulator source this section quotes was read from a clone of the
+public repo GamingFanboy365/furbtendulator (../gamingfanboy365/furbtendulator):
+reference/ did not survive into this container.
+
+### 101a. The fault
+
+Battle Field runs the VT369's enhanced picture with a register set no test
+cart had used: $201E = $18, $201C = $22, $201D = $00, $2000 = $92, $2010 =
+$9E (furb_cli's register dump at NES 400). $201C = $22 is 8bpp backgrounds
+and 8bpp sprites, as Jumper has them. The difference is $201E bit 0, which is
+clear here and set on every other enhanced cart (Fire Fighter, Jewel Master,
+Lucky Lawn Mower, Zuma and Sky Fighter $0F, Jumper $1B). That bit says where
+pattern data starts (Furbtendulator OneBus_VT369.cpp). Set, backgrounds start
+at vt369bgData ($2020/$2021) and sprites at vt369sprData ($2022/$2023).
+Clear, both come from the video bank registers: backgrounds from $2012 or
+$2016 by $2000 bit 4, and sprites, in ProcessSpritesEnhanced, from
+
+    reg2000[rightTable ? $12 : $16] << ($201C bit 7 ? 10 : 13) << ($201C >> 4 & 3)
+
+where rightTable is $2000 bit 3, or in NES 8x16 mode ($2000 bit 5) bit 0 of
+each sprite's own tile number. vt369_bg_base (s.82) had both cases for the
+background. vt369_sprites had only the first: it took $2022/$2023 whatever
+$201E said, which on this cart is 0, so every sprite was drawn from the
+start of the ROM. Battle Field's sprites are at $2016 = $04 shifted by 15:
+ROM offset $20000.
+
+vt369_sprites now works out the base of each table (vt369_sbase[2]) and
+whether the table goes by the tile (vt369_srt_tile), and vt369_sprite_build
+takes its base from them. In the by-tile case the tile cache is keyed by
+tile | rightTable: an 8x16 tile number is even after its bit 0 is cleared, so
+the two tables' copies of one number get a slot each. A change of either
+base, or of the mode, resets the sprite cache like any other change of
+configuration; $2016 and $2012 are read at each vblank, so a bank switch
+takes effect at the next one. With $201E bit 0 set both bases are the old
+one, so the six carts above run the code they ran before. The 8x16 by-tile
+case has no test cart and is untested.
+
+### 101b. The runner: a cart that does not start without sound
+
+The state check runs VT369 carts on -DVT369_SND_OFF builds, where the game
+state does not follow GBA time (s.96a). Battle Field shows a black screen on
+such a build at all 15 state frames: with the define the sound HLE never
+turns on (vt369_snd_ctl), and the game does not get past its start without
+it. What it waits for was not traced. The check passed there, comparing two
+black screens. carts.json's new `state_sound` makes a sound_hle cart's state
+session run the shipping cores instead, and Battle Field has it.
+
+With sound on, one byte of its RAM moves with timing: $0073, a step counter
+that takes the values 0, 1, 4, 5 and 6 and stands a step apart between two
+cores at one to four of the 15 frames, then agrees again. Main differs from
+itself there, between its two toolchains and between its shipping and
+-DVT_NO_SPEEDHACK builds, so it is `ram_benign` for this cart. Every other
+byte of its 4K is equal at all 15 frames on both toolchains, apart from the
+dead stack below an equal stack pointer.
+
+### 101c. Results
+
+Battle Field against Furbtendulator (compare_furb struct, both toolchains
+equal), main to this core: 95.38 to 99.22 at NES 150, 94.68 to 99.92 at 400
+and 98.18 to 99.99 at 700 with Start at 320; on the state session's input
+95.03 to 99.28 at NES 200, 94.98 to 99.12 at 450, 98.20 to 99.85 at 700,
+97.62 to 99.43 at 1000 and 97.32 to 99.69 at 1400; on the speed session's
+input (Right held, A tapped) 99.14-99.97 at NES 1200-2800. What is left is
+sprites a line or a pixel from the reference's (the cart's game state runs
+on the sound HLE's GBA time, like the other VT369 carts). It holds 60.0 fps
+over 50 s with sound on and counts no flicker frame in either session.
+
+`regress.py` against main (6125f07) on both toolchains, all 28 carts
+(regress_out/20261114-185442; Battle Field's state check again with
+state_sound, 20261114-190021): no FAIL, 4 WARN, 52 PASS.
+
+| Cart | Toolchain | Verdict | ref | speed | state |
+|---|---|---|---|---|---|
+| Battle_Field | both | WARN | PASS | PASS | WARN |
+| Star_Ally_UM6578 | devkitARM | WARN | WARN | PASS | PASS |
+| VG_Pocket_VT09 | devkitARM | WARN | PASS | PASS | WARN |
+| every other row (52) | | PASS | PASS | PASS | PASS |
+
+The WARNs. Battle Field: with sound on its state pictures differ at NES
+120-450 (2150-2555 pixels) and at later frames; on the sheets looked at
+(NES 200, 450 and 1000) the differing pixels are the sprite cells: garbage
+on main, the stage text, the score and the planes here (101a). Its RAM is
+equal but for $0073 (101b). Star Ally UM6578
+on devkitARM: its drifting game (play 450 -0.28, 700 -0.23; carts.json);
+that cart never runs ppu_vt369.c. VG Pocket on devkitARM: its launch race
+(s.97e, s.98g, 100d) landed the other way, so the state picture at NES 900
+differs and the flicker count goes from 0 to 2 at NES 900-902, its board
+loading; the reference scores are equal. It is a VT09 cart and does not run
+the changed code either: the race moves with the core's layout.
+
+The six other enhanced carts, which all set $201E bit 0, pass state, ref and
+speed on both toolchains with equal RAM and pictures. Every cart's speed is
+within 0.3 of main's (Jumper 59.61 to 59.35 on devkitARM), and Sky
+Fighter's sound-on flicker count moved from 3 to 7 on build_pvt and from 8
+to 4 on devkitARM, inside the range 100d gives for it. The smoke ROMs
+pass, the RAM-address lint is clean. Memory: IWRAM `__bss_end__` unchanged
+(0x03007B18 devkitARM, 0x03007B28 build_pvt), EWRAM `__end__` 0x020109AC to
+0x020109BC on devkitARM (+16) and to 0x020109B4 on build_pvt (+8), the core
+155972 to 156180 bytes on devkitARM.
+
+Not verified: real hardware; Battle Field past its first stage (the checks
+cover its first ~50 seconds); the 8x16 by-tile table (101a).

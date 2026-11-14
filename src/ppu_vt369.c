@@ -479,6 +479,14 @@ EWRAM_BSS u32 vt369_okey[128];        /* OAM bytes y|tile|attr|x the entry was b
 EWRAM_BSS u16 vt369_oslot[128];       /* its slot, 0xFFFF hidden, 0xFFFE rebuild */
 EWRAM_BSS u16 vt369_oent[128 * 4] __attribute__((aligned(4)));   /* its GBA attr0-2 (s.89: 4 a sprite, for word copies) */
 EWRAM_BSS u8  vt369_oblank[VT369_OSLOT];  /* s.89: slot holds no opaque pixel */
+/* s.101: where sprite patterns start.  With $201E bit 0 set, vt369sprData
+ * ($2022/$2023), the only case until Battle Field; clear, the $2016 bank, or
+ * the $2012 bank for the "right table": $2000 bit 3, or in NES 8x16 mode
+ * ($2000 bit 5) each sprite's tile bit 0 (ProcessSpritesEnhanced:
+ * rightTable).  [1] is the right table's; vt369_srt_tile says the table goes
+ * by the tile. */
+EWRAM_BSS u32 vt369_sbase[2];
+EWRAM_BSS u8  vt369_srt_tile;
 
 /* s.89: sprite n lets go of its slot */
 static inline void vt369_orel(u32 n)
@@ -511,6 +519,11 @@ static void vt369_sprite_build(int n, u32 key, u32 r1d, u32 w, u32 h, u32 base, 
     }
     if (vt369_reg[0x1C] & 0x80) tile &= 0xFF;
     tile = vt369_tile_fix(tile);
+    /* s.101: the right table by tile bit 0, taken before 8x16 clears it; the
+     * cache below is keyed by tile | rt (an 8x16 tile is even, so the two
+     * tables' copies of one tile number get a slot each) */
+    const u32 rt = vt369_srt_tile ? (tile & 1u) : 0u;
+    base = vt369_sbase[rt];
     /* s.86: 16 rows through $2000 bit 5 (NES 8x16) use tiles t & ~1 and
      * t | 1 (64-byte stride); through $201D bit 2, one 128-byte tile. */
     const int s8 = vt369_spr8();                       /* s.88: a byte a pixel */
@@ -518,7 +531,8 @@ static void vt369_sprite_build(int n, u32 key, u32 r1d, u32 w, u32 h, u32 base, 
     if (h == 16 && !(r1d & 4)) tile &= ~1u;
     if (y >= 240 || y <= -(int)h || x >= 256 || x <= -(int)w) return;
 
-    u32 s = vt369_ot2s[tile];
+    const u32 ckey = tile | rt;
+    u32 s = vt369_ot2s[ckey];
     if (s == 0xFFFF) {
         u32 k = 0, c = vt369_ocur;
         for (; k < VT369_OSLOT; k++, c = (c + 1) & (VT369_OSLOT - 1))
@@ -526,7 +540,7 @@ static void vt369_sprite_build(int n, u32 key, u32 r1d, u32 w, u32 h, u32 base, 
         if (k == VT369_OSLOT) return;
         s = c; vt369_ocur = (u16)((c + 1) & (VT369_OSLOT - 1));
         if (vt369_os2t[s] != 0xFFFF) vt369_ot2s[vt369_os2t[s]] = 0xFFFF;
-        vt369_os2t[s] = (u16)tile; vt369_ot2s[tile] = (u16)s;
+        vt369_os2t[s] = (u16)ckey; vt369_ot2s[ckey] = (u16)s;
         const u32 *src = (const u32 *)(vt369_prg() + ((base + tile * tstride) & vt369_prg_mask()));
         volatile u32 *dst = (volatile u32 *)(0x06010000u + s * 128u);
         u32 any = 0;
@@ -593,7 +607,19 @@ static void vt369_sprites(void)
     const u32 base = (u32)(vt369_reg[0x22] | vt369_reg[0x23] << 8) << 13;
     const u32 cfg = (u32)r1d << 24 | (vt369_reg[0x1E] & 1) << 23 | (u32)tall << 22 | (base >> 13)
                   ^ ((u32)vt369_spr8() << 21);
-    if (cfg != vt369_ocfg) { vt369_ocfg = cfg; vt369_obj_reset(); }
+    /* s.101: the pattern base of each table (see vt369_sbase) */
+    u32 b0 = base, b1 = base, bytile = 0;
+    if (!(vt369_reg[0x1E] & 1)) {
+        const u32 sh = ((vt369_reg[0x1C] & 0x80) ? 10u : 13u) + (vt369_reg[0x1C] >> 4 & 3u);
+        b0 = (u32)vt_chr_reg[4] << sh;                 /* $2016 */
+        b1 = (u32)vt_chr_reg[0] << sh;                 /* $2012 */
+        if (_ppuctrl0 & 0x20) bytile = 1;
+        else if (_ppuctrl0 & 0x08) b0 = b1;
+    }
+    if (cfg != vt369_ocfg || b0 != vt369_sbase[0] || b1 != vt369_sbase[1] || bytile != vt369_srt_tile) {
+        vt369_ocfg = cfg; vt369_sbase[0] = b0; vt369_sbase[1] = b1; vt369_srt_tile = (u8)bytile;
+        vt369_obj_reset();
+    }
     const int stype = (emuflags >> 8) & 0xFF;
     const int affine = stype == 3, scaled = stype >= 2;
     const int nspr = (r1d & 1) ? 128 : 64;
