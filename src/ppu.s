@@ -4266,6 +4266,9 @@ vt_band_hook:
 	and r0,r0,#0xFF
 	cmp r0,#0x10			@ s.99: $2010 -> PIX16EN by line (vt_2010_mark)
 	beq 1f
+	cmp r0,#0x20			@ s.102: $2020/$2021 -> the VT369 enhanced
+	cmpne r0,#0x21			@ BG base by line (vt369_base_mark)
+	beq 2f
 	sub r0,r0,#0x12
 	cmp r0,#5			@ offsets $12..$17
 	bxhi lr
@@ -4279,6 +4282,12 @@ vt_band_hook:
 	bl get_scanline_2
 	mov r0,addy
 	bl vt_2010_mark
+	ldmfd sp!,{lr}
+	bx lr
+2:	stmfd sp!,{lr}
+	bl get_scanline_2
+	mov r0,addy
+	bl vt369_base_mark
 	ldmfd sp!,{lr}
 	bx lr
 .popsection

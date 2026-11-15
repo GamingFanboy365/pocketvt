@@ -72,7 +72,8 @@ cart and toolchain, exit 1 on any FAIL. ~10 min with cached cores;
 section of the change. Paste the report's table into the PR.
 - **ROMs**: never in git (CI fails on one). The user keeps them as ONE file,
   `pocketvt_testroms.zip` (27 carts when last uploaded; Battle Field, s.101,
-  came as a single upload and should go into it): ask for that single upload; the runner finds the
+  and the two Math Genius ROMs, s.102, came as single uploads and should go
+  into it): ask for that single upload; the runner finds the
   carts by md5 in testroms/, ~/.claude/uploads or `--bundle` and stages them.
   tools/regress/carts.json is the manifest (md5s, benign RAM bytes, drift).
 - What it checks: state (NES RAM + picture at 15 NES frames, input keyed to NES
@@ -122,14 +123,25 @@ section of the change. Paste the report's table into the PR.
 - Diagnostic hooks used this project: DMA_LOG (mapVT.s video DMA), TLOG /
   NMIDBG style counters; s.87 adds -DVT_NO_SPEEDHACK, -DVT_DIAG_NOVSYNC
   (frame end never waits) and -DVT_TIMER_LOG (VT timer expiry/re-arm ring);
-  s.97 adds -DVT_NO_JMPSKIP (no "jmp *" skip in either JMP wrapper).
+  s.97 adds -DVT_NO_JMPSKIP (no "jmp *" skip in either JMP wrapper);
+  s.102 adds -DVT_NO_B4 (no vt_branch4_generic skip of unheld *-4 loops).
   The idle-loop finder samples the 6502 on GBA time, so a cart that installs
   hacks during a race (VG Pocket's game launch) can differ in NES RAM between
   two correct cores: confirm with -DVT_NO_SPEEDHACK builds (s.97e). Always build them into a SEPARATE build dir and
   verify the shipping tree is clean afterwards.
 
-## Current state (after s.101)
-See MAINTAINERS_GUIDE.md s.101 (Battle Field, VT369 256.13, reported with
+## Current state (after s.102)
+See MAINTAINERS_GUIDE.md s.102 (Math Genius, a 256K and a 512K VT369 cart
+reported not working: the 256K draws its keypad, rows 22-29, from a second BG
+pattern base that a timer IRQ at line 175 sets ($2020 = $04): the enhanced
+renderer records base changes by line (vt369_base_mark, from vt_band_hook and
+vt_band_mark) and the frame end gives each map row its band's base
+(vt369_frame_rows; tile ids 1024+ are base slot 1). The 512K's main loop was
+missed by find_idle_loop (an inner scan loop entered afresh by fall-through:
+is_turn returns -1, the head is skipped); slot B may share A's raw opcode at
+an equal branch length, keeps a costly find_idle_loop find when A moves on,
+and a Bxx *-4 over a zero-page read that no slot holds skips whole turns
+(vt_branch4_generic, speedhack_asm.s)), s.101 (Battle Field, VT369 256.13, reported with
 broken sprites: with $201E bit 0 clear, enhanced sprites take their patterns
 from the $2016 bank, or the $2012 bank for the right table, not from
 $2022/$2023; vt369_sbase in ppu_vt369.c),
@@ -219,7 +231,9 @@ states, sound) and s.77-78 (raster-split slots, speed).
   s.100), Football Training VT369 (99.3-99.7%, 52 fps), Let's Count (98.4-99.4%, 60
   fps) and Speed Type (99.3-99.9%, 59.3 fps), all 256.13 VT369 but the first,
   all through band map mode. s.101: Battle Field (VT369 256.13, enhanced
-  8bpp; 99.1-99.99%, 60 fps).
+  8bpp; 99.1-99.99%, 60 fps). s.102: Math Genius 256K (VT369 256.13, two
+  BG bases a frame; 100% at every reference frame, 48.7 fps) and 512K
+  (98.9-100%, 57.7 fps).
 - CPU x3 ($411C bit 7, every VT369 test cart sets it): vt_cpu_x3_set
   rewrites every `cyc`-recorded cost immediate in RAM (section vt_cycpatch,
   6502mac.h) between 3 and 1 dots a cycle. New cycle charges in RAM code
@@ -237,7 +251,15 @@ states, sound) and s.77-78 (raster-split slots, speed).
   bases follow $201E bit 0: set, $2020/$2021 (BG) and $2022/$2023 (sprites);
   clear, the $2012/$2016 banks shifted by $201C (vt369_bg_base; for sprites
   vt369_sbase, right table by $2000 bit 3 or, in NES 8x16 mode, by each
-  tile's bit 0, s.101; the 8x16 case is untested).
+  tile's bit 0, s.101; the 8x16 case is untested). s.102: two BG bases a
+  frame: base changes are recorded by NES line (vt369_base_mark, called from
+  vt_band_hook for $2020/$2021 and from vt_band_mark for $2012-$2017),
+  vt369_frame_rows (NES line 242) votes each map row onto the base of the
+  band its lines were in (scrollbuff/bg0cntbuff runs, as band map mode), and
+  the cache keys tiles by id: 0-1023 base slot 0 (the top band's, content-
+  shared through vt369_canon), 1024-2047 base slot 1 (no sharing). One-base
+  frames read the base live at the vblank as before; vt369_rows1 = 0 skips
+  the row table. A third base in a frame is drawn with the top band's.
 - vt_palette_ram holds FULL bytes (VT369 colours are 15-bit); VT03/VT09
   readers must mask & 0x3F. On VT369 vt_reg_write ignores $4140-$41FF.
 - $4119 reads vt_4119 (loadcart.c): $00 NTSC, $18 PAL/Dendy from NES 2.0 byte
@@ -285,7 +307,10 @@ states, sound) and s.77-78 (raster-split slots, speed).
   is found, s.98), Funny Coins 57-58 mean (music-start dip 3-5 s, s.98f), Fire
   Fighter 54-60 in gameplay, Jumper 54-60 (s.96); s.99: Speed Type 59.3,
   Let's Count 60, Football Training VT369 52 and VT03 54 (s.100; gameplay
-  45-60, menus 60, a ~1 s dip to ~20 at a change of round; 31-33 before s.99g).
+  45-60, menus 60, a ~1 s dip to ~20 at a change of round; 31-33 before s.99g);
+  s.102: Math Genius 512K 57.7 (33-35 before), 256K 48.7 (24-26; the game's
+  copy loop at $C530 and its 6502 code in EWRAM: 633 tile slots evict the
+  VRAM PRG copy).
 - Frame pacing (s.87a): every GBA vblank is a credit, every NES frame spends
   one; the frame end waits only without credit (vt_vsync_ahead). Speed probes
   can show 61-62 while a slow stretch is made up; the average stays 60.
@@ -327,7 +352,17 @@ states, sound) and s.77-78 (raster-split slots, speed).
   from the 6502's flags (vt_isim_regs[3..4] = m6502_nz, cycles). C called from
   assembly with bl_long must be target("arm") (an ldr to pc does not switch to
   Thumb on the ARM7). On VT carts set_cpu_hack(1) with an empty slot 1 keeps
-  slot 0's hack.
+  slot 0's hack. s.102: B may share A's raw opcode when the branch length is
+  equal (vt_hb_shares; never unpatch a handler A shares); when the finder
+  replaces A's loop, B takes the old one if B is free, or if the old one was a
+  find_idle_loop find (vt_isim_hack[]) and B's is not. is_turn returns -1
+  when a turn comes back to its head by another path: the head is an inner
+  loop's and find_idle_loop runs on to the enclosing loop's backward jump.
+  dobranchhack/dobranchhackbne fall through to vt_branch4_generic (ROM): a
+  taken Bxx *-4 over LDA/LDX/LDY/CMP/CPX/CPY/BIT zp skips whole turns to the
+  end of the timeslice, second chance included; it sees only branches of the
+  handler's patched length. PocketNES's timeslices run from one timed event
+  to the next, not a line, so a hack skips most of a frame in one go.
 - UM6578 (s.94): mapUMinit patches two literal words in ppu.s
   (vt_frame_end_call, vt_vbl_fixup_call) to um_frame_end / um_vblank_stacked;
   cart.s restores them on every cart load, so VT carts run unchanged code.
@@ -438,7 +473,10 @@ states, sound) and s.77-78 (raster-split slots, speed).
    table by each tile's bit 0) are done but untested; the outer-bank term
    (vt369relative) is still taken as 0; Battle Field does not start on a
    -DVT369_SND_OFF build (what it waits for was not traced), so its state
-   check runs with sound on.
+   check runs with sound on. s.102: base slot 1 of the enhanced BG cache
+   shares no tiles by content, and a third BG base in one frame is drawn
+   with the top band's (no test cart has three); the 256K Math Genius runs
+   at 48.7 fps (its copy loop at $C530, 6502 code in EWRAM).
    Speed at x3: Fire Fighter 54-60 (s.89, before the s.96 overlay; not
    re-measured), Jumper's level reloads 54 (s.96g: tile-cache cell updates,
    ~530K cycles in the first reload frame, Thumb from ROM; the overlay has
@@ -506,7 +544,8 @@ LOCAL ONLY, gitignored, never commit (the user supplies them as test.zip):
   Mower VT369, Table Soccer VT369, Fire Fighter VT369, Jewel Master VT369,
   Star Ally, Lonely Island, LLM VT09, Jewel Master VT03, Funny Coins, Soccer
   2009, Star Ally UM6578 (UM6578 docs in reference/um6578/); s.99: Football
-  Training VT03 and VT369, Let's Count, Speed Type; s.101: Battle Field.
+  Training VT03 and VT369, Let's Count, Speed Type; s.101: Battle Field;
+  s.102: Math Genius 256K and 512K.
 
 In git:
 - DATASHEET_DIGEST*.md: VT02/VT03 datasheet notes. Bit numbering there is

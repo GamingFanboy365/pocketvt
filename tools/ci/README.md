@@ -10,7 +10,7 @@ is built (MAINTAINERS_GUIDE s.98). Each one also runs locally as shown.
 | IWRAM budget | the link itself (`src/gba_cart_my.ld`) | `.bss` past 0x03007B84, into the user stack |
 | VT369 sound HLE | `tools/probes/vt369snd_test.c` | the batched HLE leaving Furbtendulator's per-tick model |
 | Smoke ROMs | `python3 tools/ci/smoke/smoke.py --core pocketvt.gba` | a 6502 instruction, VT PRG banking or the 2bpp picture changing |
-| Diagnostic builds | `EXTRA_CFLAGS=-DVT_NO_SPEEDHACK bash build_pvt.sh`, and ten more | a diagnostic define that no longer builds |
+| Diagnostic builds | `EXTRA_CFLAGS=-DVT_NO_SPEEDHACK bash build_pvt.sh`, and twelve more | a diagnostic define that no longer builds |
 
 ## Smoke ROMs
 

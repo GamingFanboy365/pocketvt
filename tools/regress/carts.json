@@ -79,7 +79,8 @@
    "console": "VT369",
    "sound_hle": true,
    "ram": 4096,
-   "note": "sound-on runs can stay at ~15 fps when find_idle_loop keeps failing (s.97f); its music start depends on where the finder's samples land (per-slot back-off, s.99d)"
+   "ref_drift_from": 650,
+   "note": "sound-on runs can stay at ~15 fps when find_idle_loop keeps failing (s.97f); its music start depends on where the finder's samples land (per-slot back-off, s.99d); with sound on the play session's first board (NES ~650) follows GBA timing: s.102's build_pvt core drew another coin layout from NES 680 (87.7-88.1% struct against 99.3-99.4%) while its devkitARM core, main on both toolchains and every sound-off state frame agreed with main byte for byte"
   },
   {
    "id": "Hex_City_X",
@@ -167,6 +168,28 @@
    "console": "VT369",
    "sound_hle": true,
    "ram": 4096
+  },
+  {
+   "id": "Math_Genius_256K",
+   "file": "Math_Genius_256K.nes",
+   "md5": "36a96664f71d99dc0833ced879c7a8d6",
+   "size": 262160,
+   "mapper": "256.13",
+   "console": "VT369",
+   "sound_hle": true,
+   "ram": 4096,
+   "note": "worksheet from $2020 = $01, keypad (rows 22-29) from $2020 = $04 after a timer IRQ at line 175: two BG bases a frame (s.102)"
+  },
+  {
+   "id": "Math_Genius_512K",
+   "file": "Math_Genius_512K.nes",
+   "md5": "5d267da8e37552fbe282cca29ed1df23",
+   "size": 524304,
+   "mapper": "256.13",
+   "console": "VT369",
+   "sound_hle": true,
+   "ram": 4096,
+   "note": "a busy main loop ($9232-$9263) and two BNE *-4 waits ($81CD, $812B) take turns: s.102's speed hacks"
   },
   {
    "id": "Push_the_Ball",

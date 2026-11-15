@@ -7108,3 +7108,199 @@ pass, the RAM-address lint is clean. Memory: IWRAM `__bss_end__` unchanged
 
 Not verified: real hardware; Battle Field past its first stage (the checks
 cover its first ~50 seconds); the 8x16 by-tile table (101a).
+
+## 102. Math Genius: a keypad from a second pattern base, and three idle loops
+
+The user passed on a report that Math Genius "doesn't work", with two
+versions of it: a 256K and a 512K ROM, both VT369 (NES 2.0 mapper 256.13,
+CUBE Tech's encryption, $411C = $C0, so CPU x3). On main the 256K draws its
+worksheet but garbles the bottom eighth of the screen, the on-screen keypad
+(compare_furb 78.42% struct at NES 150, 400 and 700), and runs at 25.6 NES
+fps; the 512K draws right (98.4-100%) but runs at 35 fps, with seconds at
+21-23. 102a has the 256K's picture, 102b the speed of both, 102c the
+results. Both carts are in tools/regress/carts.json (30 carts now) and should
+go into the user's ROM bundle; testroms/ has them in this session only.
+
+### 102a. A second pattern base in one frame
+
+Furbtendulator's trace of the 256K at NES 400 has the game writing
+$2020 = $01 in vblank and, from a VT timer IRQ at line 175, $2020 = $04.
+With $201E = $0F the enhanced picture takes its background patterns from
+$2020/$2021 << 13 (s.82), so the worksheet comes from ROM $2000 and the
+keypad, map rows 22-29 (line 176 is the first line of row 22), from ROM
+$8000. The enhanced renderer (ppu_vt369.c) had one base a frame and read it
+from the registers at the GBA vblank, which lands before or after that IRQ
+depending on the frame's timing. The keypad rows got the worksheet's base,
+and each time the base read changed the whole tile cache reset and every
+cell was copied again (vt369_dbg[5] counted about 20 resets in 300 GBA
+frames, ~9000 tile copies): the 256K's slowness.
+
+The base changes are now recorded by line, the way s.73 records the 4bpp
+path's raster-split bands. vt_band_hook (ppu.s) calls vt369_base_mark after
+a write to $2020 or $2021, and vt_band_mark calls it for $2012-$2017, which
+move the base when $201E bit 0 is clear. A write in the picture opens a
+band; a write in vblank sets the next frame's first band once the frame end
+has run. At the frame end (NES line 242) vt369_frame_rows gives each map row
+the base of the band it was drawn in, by a vote of the lines it showed on in
+scrollbuff and bg0cntbuff, read in runs of equal lines as band map mode reads
+them (s.99a); a first version that read them a line at a time cost ~70K
+cycles a NES frame (17% of the 256K's time). The tile cache holds two
+bases. Tile ids 0-1023 are base slot 0, the frame's top band, still sharing
+tiles by content through vt369_canon (s.88); ids 1024-2047 are base slot 1,
+one more base, without the sharing, which keeps the EWRAM growth to the 2K of
+vt369_t2s. A frame with one base works as before, with the base read live
+at the vblank. Two bases count once two frames in a row had the same two;
+then both come from the last frame's record. Sky Fighter and Battle Field
+write the base once mid-frame while they load, and acting on that one frame
+reset the cache twice more: Sky Fighter's load went from 869 to 2031 tile
+copies (the fourth second of its speed session from 53 to 38 fps), and
+Battle Field's sound-on game state, which follows GBA time (s.101b), moved
+with the extra time, from NES 60 on. A third base in one frame counts as the
+top band's. A row that moves between the slots has its 32 cells derived
+again; a slot that changes base resets the cache, as any change of base did
+before. While no row is on slot 1, vt369_rows1 is 0 and the cell lookups
+skip the row table.
+
+The 256K's screen uses 633 slots (377 of the top base, 256 of the keypad's),
+more than the 319 below the map, so the PRG copy in VRAM is moved out
+(s.77a, s.96) and its 6502 code runs from EWRAM. The top base alone needs
+377, so this was so on main too.
+
+EWRAM headroom for savestates (s.95), measured on all 30 carts with this
+core (devkitARM): ewram_heap_end leaves 6.3K (VG Pocket VT09) to 8.5K beyond
+what a 28K raw state needs, 2.2K less than main; the UM6578 refuses states as
+before. A second base slot with content sharing would need another 2K of
+vt369_canon, which is why slot 1 has none.
+
+### 102b. The 512K's speed: a main loop the finder missed, and three loops for two slots
+
+Furbtendulator's trace over NES 1270-1330 shows where the 512K spends its
+frames. Its main loop runs from $9232 to $9263, about 300 turns a NES frame.
+Each turn calls three subroutines, rewrites the same 20 bytes of sprite RAM,
+and scans $0300-$0307 for a set flag with LDA $0300,X / BNE / INX / CPX #8 /
+BCC, then goes back with BEQ $9232. Its two waits are LDA $04 / BNE *-4 at
+$812B and CMP $0A / BNE *-4 at $81CD. The game spends ~60 NES frames in the
+main loop, then an idle phase of ~28 in the two waits (the second one frame
+in eight). At CPU x3 a NES frame of unhacked looping is ~89K 6502 cycles,
+about three GBA frames.
+
+find_idle_loop (s.92) never took the main loop. Its simulation runs to a
+backward jump and tests two turns from that jump's target. Sampled in the
+scan, the first target is the scan's own BCC. Two turns of the scan differ
+(X), so it runs on, and the turn that reaches X = 7 leaves the scan, goes
+round the main loop and comes back to the scan's head by the fall-through
+from LDX #0, not by the BCC. is_turn returned 0 for that and the finder gave
+up. It returns -1 now: the finder notes that head as an inner loop's (up to
+four), ignores jumps back to it and runs on to the next backward jump, here
+the BEQ $9232, whose two turns agree. PocketNES's 6502 runs from one timed
+event to the next (frame start, mid-screen, render end, vblank, an IRQ),
+not a line at a time, so a hacked loop with a 300-cycle turn still skips
+almost all of a frame.
+
+With the main loop found, slot A (the hack set_cpu_hack holds) carried
+whichever of the three loops the finder had sampled last. Slot B (s.98)
+refused both waits next to a BNE *-4 in A, because of the opcode. Three
+changes. B may share A's raw opcode when the branch length is the same: the
+branch handler compares the pc with both slots under one patched length, and
+op_vt_JMP_absy compares both JMPs with nothing patched (vt_hb_shares). When
+the finder replaces A's loop and the old loop was a find_idle_loop find (a
+costly one: the simulation is rate-limited), B takes it if B is free or holds
+a cheap loop; so the main loop is still hacked when the idle phase ends
+(vt_hack_b_check). And a taken Bxx *-4 that neither slot holds, over a
+2-byte zero-page read (LDA, LDX, LDY, CMP, CPX, CPY or BIT zp), skips whole
+turns up to the end of the timeslice as a slot's hack does, second chance
+included (vt_branch4_generic, speedhack_asm.s, in ROM). Such a loop reads
+one RAM byte and branches on it, so only an interrupt can end it. The
+handlers send only branches of their patched length there, so it works while
+a slot holds a *-4 branch of the same opcode. dobranchhack and
+dobranchhackbne (6502.s) jump there instead of to branchhack_back, the only
+IWRAM change; -DVT_NO_B4 (a diagnostic define, in CI's list) sends them
+straight back. A first rule, letting B take A's old loop whenever B had gone
+unused as long, passed the three loops round the two slots and averaged 42
+fps, below the 46 of the finder fix alone; the cheap waits draw the vblank
+samples, because while unhacked they take most of the GBA time. Before the
+skip for the waits, the one left out spun ~8 NES frames of every idle phase.
+
+What is left of the 256K's time is its own work: a copy loop at $C530
+(LDA ($nn),Y / STA ($nn),Y, ~770 bytes a NES frame) and its 6502 code
+running from EWRAM (102a).
+
+### 102c. Results
+
+Math Genius 256K against Furbtendulator (compare_furb struct, both
+toolchains equal): 78.42 to 100.00 at NES 150, 400 and 700 with Start at
+320, and 100.00 at every frame of the state session's input (NES 200-1400;
++21.5 to +54.8); exact5 is 100.00 too. Its sound-on flicker count (s.100)
+went from 94 (devkitARM) and 299 (build_pvt) to 0: the base read at the
+vblank flipped the keypad between the two bases from one GBA frame to the
+next. Speed over the regression's
+50 s with sound on, main to this core: 25.57 to 48.61 NES fps on devkitARM
+and 24.09 to 48.74 on build_pvt, worst second 12-14 to 48. Math Genius 512K:
+98.86-100.00 at the same frames on both cores, equal or up to +0.49; 35.00
+to 57.65 fps on devkitARM and 32.91 to 57.67 on build_pvt, worst second
+19-21 to 46-47. The two carts' state checks pass on both toolchains.
+
+`regress.py` against main (23a1396) on both toolchains, all 30 carts
+(regress_out/20261115-114624, then Funny Coins again with its new carts.json
+entry, 20261115-115439): no FAIL, 13 WARN, 47 PASS.
+
+| Cart | Toolchain | Verdict | ref | speed | state |
+|---|---|---|---|---|---|
+| Funny_Coins | build_pvt | WARN | WARN | PASS | PASS |
+| Football_Training_VT03 | devkitARM | WARN | PASS | PASS | WARN |
+| Football_Training_VT03 | build_pvt | WARN | WARN | PASS | WARN |
+| Football_Training_VT369 | devkitARM | WARN | WARN | PASS | PASS |
+| Jewel_Master_VT369 | build_pvt | WARN | PASS | PASS | WARN |
+| Jumper_SMB_hack | both | WARN | WARN | PASS | PASS |
+| Sky_Fighter_VT09 | both | WARN | PASS | PASS | WARN |
+| Star_Ally_UM6578 | both | WARN | WARN | PASS | PASS |
+| Time_Pilot | build_pvt | WARN | PASS | PASS | WARN |
+| VG_Pocket_VT09 | build_pvt | WARN | PASS | WARN | WARN |
+| every other row (47) | | PASS | PASS | PASS | PASS |
+
+The WARNs. Football Training VT03 on both toolchains: its title at NES 450
+differs by 11-17 pixels in the ball's greys, where main differs from itself
+across toolchains by 53; on build_pvt its play frame 1400 lost 0.25 to the
+player's animation step, while the state check's RAM and picture at 1400 are
+equal (display phase). Football Training VT369 on devkitARM: play 700 -0.19,
+sound-on drift; its sound-off state check is equal. Jewel Master VT369 on
+build_pvt: three stack bytes ($01F0-$01F2) at three of the 15 frames, equal
+with -DVT_NO_SPEEDHACK on both cores, so where the finder's GBA-time samples
+land (s.97e); its pictures are equal at every frame. Jumper on both
+toolchains: its expected sound-on drift from NES 700 (carts.json), the
+NES 1000 state swapping the other way (+1.51 on build_pvt, -1.51 on
+devkitARM). Sky Fighter VT09 on both toolchains: the playfield scrolls a
+frame apart at NES 449 (20214 pixels), the sprites differ at 450 (163) and
+451 is equal, with NES RAM equal; the same pictures differ between
+-DVT_NO_SPEEDHACK builds of main and this core, and not between main and main
+with this core's EWRAM layout, so the code's GBA-side timing moves where the
+capture lands; it never runs ppu_vt369.c. Star Ally UM6578 on both: its known
+drift. Time Pilot on build_pvt: its transition frame (s.97f) moved from NES
+119, where main's two toolchains already differ by 2096 pixels, to 120. VG
+Pocket on build_pvt: its launch race (s.97e, s.98g, 100d) at NES 900-902,
+which also moved its worst second from 47 to 40 (2885 NES frames in the 50 s
+against 2890). Funny Coins on build_pvt failed the reference check at play
+frames 700-1400 (99.27-99.40 to 87.73-87.97): from NES 680 that core drew
+another coin board with sound on, while this core on devkitARM, main on both
+toolchains and the sound-off state check (equal at all 15 frames) agree. Its
+first board follows the sound HLE's GBA time, as Jumper's state does;
+carts.json gives it ref_drift_from 650, and the check is a WARN with that
+note.
+
+Battle Field and Sky Fighter, which s.102's first build (without the
+two-frame rule of 102a) moved, pass: Battle Field's RAM is main's but for its
+known $0073 and dead stack, Sky Fighter runs 57.65 fps against 57.63-57.70.
+The smoke ROMs pass on both toolchains, the RAM-address lint is clean, there
+are no ROMs in git, and -DVT_NO_B4 builds. Memory: IWRAM `__bss_end__`
+0x03007B18 to 0x03007B28 on devkitARM (+16, the two literals for
+vt_branch4_generic), unchanged at 0x03007B28 on build_pvt; EWRAM `__end__`
+0x020109BC to 0x0201127C on devkitARM (+2240: vt369_t2s doubled and the band
+records); the core 156180 to 158076 bytes. spmin from power-on with the
+speed session's keys over 160M steps (~1800 NES frames, into play) puts
+Funny Coins' lowest user stack at 0x03007B8C in vt_adpcm_mix_gba, against
+0x03007B94 on main's build_pvt core, 100 bytes above `__bss_end__`; Math
+Genius 256K's at 0x03007C00 over its first 280 NES frames. Savestates (s.95):
+ewram_heap_end leaves 6.3-8.5K beyond a 28K raw state on every VT cart.
+
+Not verified: real hardware; a frame with three BG bases (no test cart has
+one); Math Genius past the first ~50 seconds of either version.

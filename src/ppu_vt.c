@@ -2948,8 +2948,10 @@ static int vt_regs_same(const u8 *a, const u8 *b)
 { for (int i = 0; i < 6; i++) if (a[i] != b[i]) return 0; return 1; }
 static void vt_regs_copy(u8 *d, const u8 *s) { for (int i = 0; i < 6; i++) d[i] = s[i]; }
 
+void vt369_base_mark(u32 line);
 void vt_band_mark(u32 line)
 {
+    vt369_base_mark(line);                     /* s.102: in bank mode the banks move the VT369 BG base */
     if (vt_nband == 0) {                       /* first use after reset */
         vt_band[0].line = 0; vt_regs_copy(vt_band[0].reg, vt_chr_reg);
         vt_nband = 1; vt_band_fresh = 1;

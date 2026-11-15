@@ -1189,14 +1189,14 @@ dobranchhackbne:
 	beq_long dobranchhack2b
 	cmp r0,#-3
 	beq_long dobnehack
-	b branchhack_back
+	b_long vt_branch4_generic	@ s.102: a pure 2-instruction loop neither slot holds
 dobranchhack:
 	ldr_ r1,speedhack_pc
 	cmp m6502_pc,r1
 	beq_long dobranchhack2
 	ldr_ r1,speedhack_pcb		@ s.98: the second hack
 	cmp m6502_pc,r1
-	bne branchhack_back
+	bne_long vt_branch4_generic	@ s.102
 	b_long dobranchhack2b
 @----------------------------------------------------------------------------
 _F1:@   SBC ($nn),Y
