@@ -66,7 +66,7 @@ EWRAM_BSS u32 vt369_dbg[8];            /* 0 full sweeps 1 tile copies 2 alloc fa
 #define VT369_NSLOT 832
 EWRAM_BSS u8  vt369_nt_shadow[0x800] __attribute__((aligned(4)));
 EWRAM_BSS u16 vt369_cell[0x800];       /* tile shown by each map cell, 0xFFFF = none */
-EWRAM_BSS u16 vt369_t2s[1024];         /* tile -> slot, 0xFFFF = not cached */
+EWRAM_BSS u16 vt369_t2s[2048];         /* tile id -> slot, 0xFFFF = not cached (s.102: 1024+ = base slot 1) */
 EWRAM_BSS u16 vt369_s2t[VT369_NSLOT];  /* slot -> tile, 0xFFFF = empty */
 EWRAM_BSS u16 vt369_rc[VT369_NSLOT];   /* map cells using the slot */
 EWRAM_BSS u16 vt369_alloc_cur;
@@ -84,6 +84,29 @@ EWRAM_BSS u16 vt369_full_gen;          /* free_gen when alloc last found none */
 EWRAM_BSS u16 vt369_full_n;            /* slot count then */
 EWRAM_BSS u8  vt369_nofree;
 EWRAM_BSS u32 vt369_cfg;               /* cfg the cache was built for */
+/* s.102: two BG pattern bases a frame.  Math Genius (256K) draws its
+ * worksheet from $2020 = $01 and, from a timer IRQ at line 175, its keypad
+ * from $2020 = $04.  The cache knew one base, read from the registers at
+ * the GBA vblank, which lands before or after that IRQ: the keypad rows
+ * showed worksheet tiles, and each change of the base reset the cache and
+ * re-copied ~1900 cells (25 fps).  Now the base changes are recorded by
+ * line (vt369_base_mark) and the frame end gives each map row the base of
+ * the band it was drawn in (vt369_frame_rows).  Tile ids below 1024 are
+ * base slot 0 (the base at the top of the frame; content-shared through
+ * vt369_canon), 1024+ base slot 1 (one more base, ids not shared). */
+#define VT369_BB_MAX 8
+EWRAM_BSS u8  vt369_bb_n;              /* base bands of the frame being drawn */
+EWRAM_BSS u8  vt369_bb_fresh;          /* frame end ran: a write in vblank sets band 0 */
+EWRAM_BSS u8  vt369_bb_line[VT369_BB_MAX];
+EWRAM_BSS u32 vt369_bb_base[VT369_BB_MAX];
+EWRAM_BSS u8  vt369_fb_split;          /* the last two finished frames had the same two bases */
+EWRAM_BSS u8  vt369_fb_last;           /* the last finished frame had two bases: last_p, last_q */
+EWRAM_BSS u32 vt369_fb_last_p, vt369_fb_last_q;
+EWRAM_BSS u32 vt369_fb_base[2];        /* its bases: top band's, the other */
+EWRAM_BSS u8  vt369_fb_rowbs[64];      /* its base slot per map row (block * 32 + row) */
+EWRAM_BSS u32 vt369_bsl[2];            /* the bases the cache's slots 0 and 1 hold */
+EWRAM_BSS u8  vt369_rowbs[64];         /* base slot each map row's cells use now */
+EWRAM_BSS u8  vt369_rows1;             /* rows on base slot 1 (0: every cart with one base) */
 EWRAM_BSS u16 vt369_gba_pal[512] __attribute__((aligned(4)));   /* 256 BG + 256 OBJ (s.88) */
 
 /* Slot ranges, as GBA tile indices from char base 0.  8bpp tiles are 64
@@ -163,7 +186,7 @@ static u32 vt369_canon_tile(u32 tile)
 {
     const u32 c = vt369_canon[tile];
     if (c != 0xFFFF) return c;
-    const u32 tsz = vt369_bpp8() ? 64u : 32u, base = vt369_bg_base(), m = vt369_prg_mask();
+    const u32 tsz = vt369_bpp8() ? 64u : 32u, base = vt369_bsl[0], m = vt369_prg_mask();
     const u8 *prg = vt369_prg();
     const u32 *d = (const u32 *)(prg + ((base + tile * tsz) & m));
     u32 h = 0;
@@ -182,7 +205,7 @@ static void vt369_cache_reset(void)
 {
     for (int i = 0; i < 1024; i++) vt369_canon[i] = 0xFFFF;
     for (int i = 0; i < 2048; i++) vt369_chash[i] = 0xFFFF;
-    for (int i = 0; i < 1024; i++) vt369_t2s[i] = 0xFFFF;
+    for (int i = 0; i < 2048; i++) vt369_t2s[i] = 0xFFFF;
     for (int i = 0; i < 0x800; i++) vt369_cell[i] = 0xFFFF;
     for (int i = 0; i < VT369_NSLOT; i++) { vt369_s2t[i] = 0xFFFF; vt369_rc[i] = 0; }
     vt369_alloc_cur = 0;
@@ -191,10 +214,16 @@ static void vt369_cache_reset(void)
     vt369_nofree = 0;
 }
 
+/* PRG of tile id t (s.102: bits 0-9 the tile, bit 10 the base slot) */
+static inline const u32 *vt369_tile_src(u32 t, u32 tsz)
+{
+    return (const u32 *)(vt369_prg() + ((vt369_bsl[t >> 10 & 1] + (t & 1023) * tsz) & vt369_prg_mask()));
+}
+
 static void vt369_copy_tile(u32 s, u32 tile)
 {
     const u32 tsz = vt369_bpp8() ? 64u : 32u;
-    const u32 *src = (const u32 *)(vt369_prg() + ((vt369_bg_base() + tile * tsz) & vt369_prg_mask()));
+    const u32 *src = vt369_tile_src(tile, tsz);
     volatile u32 *dst = (volatile u32 *)(0x06000000u + vt369_slot_idx(s) * tsz);
     for (u32 i = 0; i < tsz / 4; i += 4) {
         const u32 a = src[i], b = src[i + 1], c = src[i + 2], d = src[i + 3];
@@ -251,15 +280,18 @@ static void vt369_cell_set(u32 o, u32 tile)
     vt369_dbg[4]++;
 }
 
-/* Tile number of NES nametable cell o (0-0x7FF; o & 0x3FF < 0x3C0). */
+/* Tile id of NES nametable cell o (0-0x7FF; o & 0x3FF < 0x3C0), in the
+ * base slot of its row (s.102). */
 static inline u32 vt369_cell_tile(const u8 *nt, u32 o)
 {
     u32 tile = nt[o];
+    const u32 t = o & 0x3FF, row = t >> 5;
     if (!(vt369_reg[0x1C] & 8)) {
-        const u32 t = o & 0x3FF, col = t & 31, row = t >> 5;
+        const u32 col = t & 31;
         const u32 ab = nt[(o & 0x400) + 0x3C0 + ((row >> 2) << 3) + (col >> 2)];
         tile |= ((ab >> (((row & 2) << 1) | (col & 2))) & 3) << 8;
     }
+    if (vt369_rows1 && vt369_rowbs[(o >> 10) << 5 | row]) return 1024u | tile;
     return vt369_canon_tile(tile);
 }
 
@@ -351,12 +383,133 @@ static void vt369_nt_diff(const u8 *nt)
     }
 }
 
+/* s.102: a write that can move the BG pattern base (vt_band_hook in ppu.s
+ * for $2020/$2021, vt_band_mark for $2012-$2017), at NES line 'line'.  As
+ * vt_band_mark: in the picture it opens a band; in vblank it sets the next
+ * frame's band 0 once the frame end has run (before, the frame end reads
+ * the registers itself). */
+__attribute__((target("arm")))
+void vt369_base_mark(u32 line)
+{
+    if (!vt369_enh) return;
+    const u32 b = vt369_bg_base();
+    if (!vt369_bb_n) { vt369_bb_n = 1; vt369_bb_line[0] = 0; vt369_bb_base[0] = b; vt369_bb_fresh = 1; return; }
+    if (line >= 240) { if (vt369_bb_fresh) vt369_bb_base[0] = b; return; }
+    vt369_bb_fresh = 0;
+    u32 i = vt369_bb_n - 1u;
+    if (vt369_bb_base[i] == b) return;
+    if (line <= vt369_bb_line[i]) { vt369_bb_base[i] = b; return; }
+    if (vt369_bb_n < VT369_BB_MAX) { i = vt369_bb_n++; vt369_bb_line[i] = (u8)line; }
+    vt369_bb_base[i] = b;
+}
+
+/* How many of the n words at p, from the first, equal v (ARM, four a step;
+ * as ppu_vt.c's vt_bm_same, which builds only with the split slots). */
+__attribute__((target("arm"), noinline))
+static u32 vt369_same(const u32 *p, u32 n, u32 v)
+{
+    u32 i = 0;
+    for (; i + 4u <= n; i += 4u, p += 4) {
+        const u32 a = p[0], b = p[1], c = p[2], d = p[3];
+        if ((a ^ v) | (b ^ v) | (c ^ v) | (d ^ v)) break;
+    }
+    for (; i < n && *p == v; i++, p++) ;
+    return i;
+}
+
+/* s.102: NES line 242, the frame just drawn: which base each map row was
+ * drawn with, by the lines it showed on (scrollbuff and bg0cntbuff, read
+ * in runs of equal lines as band map mode reads them in ppu_vt.c; a line
+ * at a time cost ~70K cycles a NES frame).  Rows not on screen keep their
+ * slot.  A third base counts as the top band's.  Two bases count only when
+ * the frame before had the same two: Sky Fighter and Battle Field write the
+ * base once mid-frame while loading, and acting on that one frame reset the
+ * cache twice more (Sky Fighter's load 869 -> 2031 tile copies, and Battle
+ * Field's sound-on game state moved with the time). */
+static void vt369_frame_rows(void)
+{
+    const u32 n = vt369_bb_n;
+    const u32 p = vt369_bb_base[0];
+    u32 q = p;
+    for (u32 i = 1; i < n; i++) if (vt369_bb_base[i] != p) { q = vt369_bb_base[i]; break; }
+    const int two = n > 1 && q != p;
+    vt369_fb_split = two && vt369_fb_last && vt369_fb_last_p == p && vt369_fb_last_q == q;
+    vt369_fb_last = (u8)two; vt369_fb_last_p = p; vt369_fb_last_q = q;
+    if (vt369_fb_split) {
+        u8 v0[64], v1[64];
+        for (u32 r = 0; r < 16; r++) ((u32 *)v0)[r] = ((u32 *)v1)[r] = 0;
+        const u32 *sb = (const u32 *)_scrollbuff;
+        const u16 *cb = (const u16 *)_bg0cntbuff;
+        const u32 c0 = cb[0];
+        const int one = !((u32)cb & 3u) && vt369_same((const u32 *)cb, 120, c0 | c0 << 16) == 120;
+        u32 bi = 0;
+        for (u32 l = 0; l < 240; ) {
+            while (bi + 1u < n && vt369_bb_line[bi + 1u] <= l) bi++;
+            const u32 lim = bi + 1u < n ? vt369_bb_line[bi + 1u] : 240u;
+            u8 *vv = vt369_bb_base[bi] == q ? v1 : v0;
+            const u32 cnt = cb[l], v = sb[l];
+            u32 e = l + 1u + vt369_same(sb + l + 1u, lim - l - 1u, v);
+            if (!one) for (u32 f = l + 1u; f < e; f++) if (cb[f] != cnt) { e = f; break; }
+            const u32 size = cnt >> 14, sbase = (cnt >> 8) & 31u;
+            if (sbase < 12u || sbase > 13u) { l = e; continue; }
+            const u32 ym = (size & 2u) ? 511u : 255u, x0 = v & ((size & 1u) ? 511u : 255u);
+            const u32 hb = (size & 1u) ? (x0 >> 8) & 1u : 0u;
+            const u32 two = (size & 1u) && (x0 & 255u) + 239u >= 256u;
+            while (l < e) {
+                const u32 ty = (l + (v >> 16)) & ym, trow = ty >> 3, row = trow & 31u;
+                u32 nx = l + 8u - (ty & 7u);
+                if (nx > e) nx = e;
+                if (row < 30u) {
+                    u32 kb = sbase - 12u;
+                    if (size & 2u) kb += (trow >> 5) * ((size & 1u) ? 2u : 1u);
+                    for (u32 j = 0; j <= two; j++) {
+                        const u32 b = kb + (hb ^ j);
+                        if (b <= 1u) vv[b * 32u + row] = (u8)(vv[b * 32u + row] + (nx - l));
+                    }
+                }
+                l = nx;
+            }
+        }
+        for (u32 r = 0; r < 64; r++)
+            if (v0[r] | v1[r]) vt369_fb_rowbs[r] = v1[r] > v0[r];
+        vt369_fb_base[0] = p;
+        vt369_fb_base[1] = q;
+    }
+    vt369_bb_n = 1;
+    vt369_bb_line[0] = 0;
+    vt369_bb_base[0] = vt369_bg_base();
+    vt369_bb_fresh = 1;
+}
+
 __attribute__((noinline))
 static void vt369_bg_update(void)
 {
-    const u32 cfg = (u32)vt369_bpp8() << 31 | (vt369_reg[0x1C] & 8) << 27 | vt369_bg_base();
-    if (cfg != vt369_cfg) { vt369_cfg = cfg; vt369_cache_reset(); vt369_dbg[5]++; }
+    /* s.102: the bases of the last frame drawn with two, else the live one */
+    const int split = vt369_fb_split;
+    const u32 b0 = split ? vt369_fb_base[0] : vt369_bg_base();
+    const u32 cfg = (u32)vt369_bpp8() << 31 | (vt369_reg[0x1C] & 8) << 27;
+    if (cfg != vt369_cfg || b0 != vt369_bsl[0] || (split && vt369_fb_base[1] != vt369_bsl[1])) {
+        vt369_cfg = cfg;
+        vt369_bsl[0] = b0;
+        if (split) vt369_bsl[1] = vt369_fb_base[1];
+        vt369_cache_reset();
+        vt369_dbg[5]++;
+    }
     const u8 *nt = (const u8 *)vt_bk_consts[1];
+    if (split || vt369_rows1) {                /* rows moving to the other base: their cells again */
+        u32 ones = 0;
+        for (u32 r = 0; r < 64; r++) {
+            const u8 want = split ? vt369_fb_rowbs[r] : 0;
+            ones += want;
+            if (want == vt369_rowbs[r]) continue;
+            vt369_rowbs[r] = want;
+            vt369_rows1 = 1;                   /* (until the count below) cells read their row's slot */
+            if (vt369_full || (r & 31u) >= 30u) continue;
+            const u32 o = (r >> 5) << 10 | (r & 31u) << 5;
+            for (u32 c = 0; c < 32; c++) vt369_cell_set(o + c, vt369_cell_tile(nt, o + c));
+        }
+        vt369_rows1 = (u8)(ones != 0);
+    }
     u32 *sh = (u32 *)vt369_nt_shadow;
     const u32 *cur = (const u32 *)nt;
 
@@ -380,7 +533,7 @@ static void vt369_bg_update(void)
         if (s >= n) { s = 0; vt369_verify_cur = 1; }
         const u32 tile = vt369_s2t[s];
         if (tile == 0xFFFF) continue;
-        const u32 *src = (const u32 *)(vt369_prg() + ((vt369_bg_base() + tile * tsz) & vt369_prg_mask()));
+        const u32 *src = vt369_tile_src(tile, tsz);
         const volatile u32 *dst = (const volatile u32 *)(0x06000000u + vt369_slot_idx(s) * tsz);
         if (dst[0] != src[0] || dst[tsz / 4 - 1] != src[tsz / 4 - 1]) {
             vt369_copy_tile(s, tile);
@@ -721,6 +874,7 @@ static void vt369_set_mode(int on)
         _vram_write_tbl[15] = (u32)vt369_pal_W;
         vt_bkexten_live = 1;               /* PocketNES BG map writers off */
         vt369_cfg = 0xFFFFFFFFu;           /* cache reset on the next vblank */
+        vt369_bb_n = 0; vt369_fb_split = vt369_fb_last = 0;   /* s.102 */
         vt369_ocfg = 0xFFFFFFFFu;
         vt369_oparam = 0xFFFFFFFFu;
         vt369_pal_dirty = 1;
@@ -1010,6 +1164,7 @@ int vt369_spr0_hit(u32 ctrl1)
 EWRAM_BSS void (*vt_ovl_fend)(u16 *b, u32 set);
 void vt369_frame_end(void)
 {
+    vt369_frame_rows();                    /* s.102: before the colour bits below (they leave the screen base alone) */
     u16 *b = (u16 *)_bg0cntbuff;
     const u16 set = vt369_bpp8() ? 0x0080 : 0;
     if (vt_ovl_fend && !((u32)b & 3)) { vt_ovl_fend(b, set); return; }
@@ -1048,6 +1203,7 @@ void vt369_state_apply(void)
     if (on != vt369_enh) { vt369_set_mode(on); return; }   /* loadcart left it off */
     if (!on) return;
     vt369_cfg = 0xFFFFFFFFu;               /* as vt369_set_mode(1) */
+    vt369_bb_n = 0; vt369_fb_split = vt369_fb_last = 0;    /* s.102: bands rebuild from the next writes */
     vt369_ocfg = 0xFFFFFFFFu;
     vt369_oparam = 0xFFFFFFFFu;
     vt369_pal_dirty = 1;

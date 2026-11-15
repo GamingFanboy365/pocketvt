@@ -704,7 +704,9 @@ static int is_step(void)
 /* One turn of the loop whose head is pc 'head' at call depth 'level', from
  * the current state: run until the simulation is back at the head at that
  * depth.  The turn must leave that depth only downwards (calls) and come back
- * through the same backward jump 'back'.  Returns its cycles, or 0. */
+ * through the same backward jump 'back'.  Returns its cycles, 0 if it cannot,
+ * or -1 if it came back to the head another way (s.102: the head is an inner
+ * loop's, entered afresh by a loop around it). */
 static int is_turn(int head, int level, int back)
 {
 	is_sim *S = &vt_isim;
@@ -712,7 +714,7 @@ static int is_turn(int head, int level, int back)
 	for (;;) {
 		const int pc = S->pc, d = S->depth;
 		if (!is_step() || S->depth < level) return 0;
-		if (S->pc == head && S->depth == level) return S->tookback && d == level && pc == back ? S->cycles : 0;
+		if (S->pc == head && S->depth == level) return S->tookback && d == level && pc == back ? S->cycles : -1;
 	}
 }
 
@@ -777,15 +779,25 @@ static bool find_idle_loop_run(const u8 *initpc, const u8 *lastbank, int hacknum
 	 * far; its target is a loop head.  Test two turns from it; if they differ
 	 * (an inner loop, a counter) keep running, out to the enclosing loop. */
 	S->pc = start; S->depth = 0;
-	int mindepth = 0, back = -1, cycles = 0;
+	int mindepth = 0, back = -1, cycles = 0, ninner = 0;
+	u16 inner[4];
 	for (;;) {
 		const int pc = S->pc, d = S->depth;
 		if (!is_step()) return false;
 		if (S->depth < mindepth) mindepth = S->depth;
 		if (!S->tookback || d != mindepth) continue;
 		const int head = S->pc, level = d;
+		int k = 0;
+		while (k < ninner && inner[k] != head) k++;
+		if (k < ninner) continue;                /* s.102: an inner loop's head */
 		back = pc;
 		cycles = is_turn(head, level, back);
+		/* s.102: back at the head another way: the loop sits inside a bigger
+		 * one that enters it afresh (Math Genius' main loop scans $0300-$0307
+		 * with LDA $0300,X / BNE / INX / CPX #8 / BCC, then BEQs back to its
+		 * start, which leads into the scan again).  Run on to the bigger
+		 * loop's backward jump; this head is left alone from now on. */
+		if (cycles < 0) { if (S->ok && S->budget > 0 && ninner < 4) { inner[ninner++] = (u16)head; continue; } return false; }
 		if (!cycles) { if (S->ok && S->budget > 0 && S->depth < level) { mindepth = S->depth; continue; } return false; }
 		S->first = *t;
 		if (is_turn(head, level, back) != cycles) { if (S->ok && S->budget > 0) continue; return false; }
@@ -887,10 +899,20 @@ static void vt_hb_apply(void)
 	if (n < 8) ((u8 *)speedhackops[n])[12] = (u8)(0x100 - pb[1]);   /* branch length, as set_cpu_hack */
 }
 
+/* s.102: B on A's own raw opcode.  A branch handler compares the pc with
+ * both slots under one patched length, so two branches share it when their
+ * lengths are equal; op_vt_JMP_absy compares both JMPs with nothing patched.
+ * Math Genius waits in two BNE *-4 loops ($81CD and $812B, one frame in
+ * eight in the second), and B refused the second for its opcode. */
+static int vt_hb_shares(const u8 *h, const u8 *pa)
+{
+	return *h == *pa && (vt_hb_type(h) == 8 || h[1] == pa[1]);
+}
+
 /* a loop B may hold beside A (pa) */
 static int vt_hb_fits(const u8 *h, const u8 *pa)
 {
-	return h && vt_hb_type(h) >= 0 && (!pa || (h != pa && *h != *pa));
+	return h && vt_hb_type(h) >= 0 && (!pa || (h != pa && (*h != *pa || vt_hb_shares(h, pa))));
 }
 
 static void vt_hb_set(const u8 *h, const speedhack_T *from, const u16 *incs)
@@ -916,16 +938,35 @@ __attribute__((target("arm")))
 void vt_hack_b_check(void)
 {
 	const u8 *pa = _speedhack_pc2, *pb = _speedhack_pcb2, *old = vt_hb_last_a;
+	/* s.102: the finder replaced A's loop: the old one is in neither slot 0
+	 * nor 1 any more (a loop that only moved between them, in sprite-0
+	 * games, is still held there).  Math Genius alternates between its main
+	 * loop (~60 NES frames; only find_idle_loop's simulation finds it, and
+	 * that is rate-limited) and an idle phase (~28) spent in two LDA or CMP /
+	 * BNE *-4 waits, which find_hack takes from the first sample.  A holds
+	 * the loop of the moment; B now keeps the old one when it was a costly
+	 * find and B is free or holds a cheap one.  Before, each change of phase
+	 * left the main loop unhacked for 8-30 frames, at CPU x3 three GBA
+	 * frames each (23 fps seconds). */
+	const int replaced = old && pa && old != pa && old != speedhacks[0].hack_pc && old != speedhacks[1].hack_pc &&
+	                     vt_hb_last_par.cycles_per_iteration && vt_hb_fits(old, pa);
+	const int costly = replaced && (old == vt_isim_hack[0] || old == vt_isim_hack[1] || old == vt_isim_hack[2]);
 	if (pb) {
 		if (pa == pb) {                      /* A took B's loop: B takes A's old one */
 			vt_hb_forget();
 			if (old && vt_hb_last_par.cycles_per_iteration && vt_hb_fits(old, pa))
 				vt_hb_set(old, &vt_hb_last_par, vt_hb_last_incs);
-		} else if (pa && *pa == *pb) {
+		} else if (costly && old != pb && pb != vt_isim_hack[0] && pb != vt_isim_hack[1] && pb != vt_isim_hack[2]) {
+			if (!pa || *pa != *pb) vt_hb_unpatch(pb);   /* a handler A shares stays */
+			vt_hb_forget();
+			vt_hb_set(old, &vt_hb_last_par, vt_hb_last_incs);
+		} else if (pa && *pa == *pb && !vt_hb_shares(pb, pa)) {
 			vt_hb_forget();                  /* A's opcode now: A's branch length */
 		} else {
 			vt_hb_apply();
 		}
+	} else if (replaced) {
+		vt_hb_set(old, &vt_hb_last_par, vt_hb_last_incs);
 	}
 	vt_hb_last_a = pa;
 	vt_hb_last_par.cycles_per_iteration = 0;
@@ -949,7 +990,11 @@ void vt_hack_b_vblank(const u8 *pc, const u8 *lastbank)
 	if (!vt_active) return;
 	if (_speedhack_pcb2) {
 		if (b->hack_was_used) { b->hack_was_used = 0; b->frames_hack_not_used = 0; }
-		else if (++b->frames_hack_not_used >= 120) { vt_hb_unpatch(_speedhack_pcb2); vt_hb_forget(); }
+		else if (++b->frames_hack_not_used >= 120) {
+			/* s.102: a handler B shares with A stays */
+			if (!_speedhack_pc2 || *_speedhack_pc2 != *_speedhack_pcb2) vt_hb_unpatch(_speedhack_pcb2);
+			vt_hb_forget();
+		}
 		return;
 	}
 	const u8 *pa = _speedhack_pc2;

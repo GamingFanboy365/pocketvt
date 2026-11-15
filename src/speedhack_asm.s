@@ -184,6 +184,63 @@ dobranchhack2b:
 	ldrsb r0,[m6502_pc,#-1]
 	b_long branchhack_back
 
+@ s.102: a taken branch with the hack handlers' patched length that neither
+@ slot holds (dobranchhack, dobranchhackbne in 6502.s).  When it is Bxx *-4
+@ over a 2-byte zero-page read (LDA/LDX/LDY/CMP/CPX/CPY/BIT zp), every turn
+@ reads the same byte and branches the same way until an interrupt changes
+@ RAM, so whole turns are skipped up to the end of the timeslice, as a slot's
+@ hack does (second chance included).  It only sees branches of the length
+@ a slot patched, so it works while a slot holds a *-4 branch of the same
+@ opcode.  Math Genius waits in LDA $04 / BNE and CMP $0A / BNE besides its
+@ main loop: three loops for two slots, and the one left out spun unhacked
+@ for ~8 NES frames of each idle phase (three GBA frames each at CPU x3).
+@ In: r0 = the branch offset, m6502_pc past it.  Out: branchhack_back, r0 kept.
+	.global vt_branch4_generic
+vt_branch4_generic:
+#ifdef VT_NO_B4
+	b_long branchhack_back		@ DIAGNOSTIC: no skip for unheld *-4 loops
+#endif
+	cmn r0,#4
+	bne_long branchhack_back
+	ldrb r1,[m6502_pc,#-4]
+	ldr r2,=vt_active
+	ldrb r2,[r2]
+	cmp r2,#0
+	ldrne r2,=vt_op_dec_p		@ the opcode the byte runs (VT encryption)
+	ldrne r2,[r2]
+	ldrneb r1,[r2,r1]
+	cmp r1,#0xA5			@ LDA zp
+	cmpne r1,#0xA6			@ LDX zp
+	cmpne r1,#0xA4			@ LDY zp
+	cmpne r1,#0xC5			@ CMP zp
+	cmpne r1,#0xE4			@ CPX zp
+	cmpne r1,#0xC4			@ CPY zp
+	cmpne r1,#0x24			@ BIT zp
+	bne_long branchhack_back
+	tst cycles,#BRANCH		@ second chance, as dobranchhack2
+	orr cycles,cycles,#BRANCH
+	beq_long branchhack_back
+	sub r1,m6502_pc,#4		@ a turn: zp read 3 + taken branch 3, +1 across a page
+	eor r1,r1,m6502_pc
+	ands r1,r1,#0xFF00
+	movne r1,#1
+	ldr r2,=vt_cpu_x3		@ dots a cycle: 1 at VT369 CPU x3, else 3
+	ldrb r2,[r2]
+	cmp r2,#0
+	orreq r1,r1,#2
+	adr r2,vt_b4_tab
+	add r2,r2,r1,lsl#3
+	ldmia r2,{r1,r2}		@ r1 = dots a turn, r2 = 2^32 / r1 rounded up
+	mov r12,cycles,asr#CYC_SHIFT
+	umull r0,r12,r2,r12		@ r12 = whole turns left in the timeslice
+	mul r2,r12,r1
+	sub cycles,cycles,r2,lsl#CYC_SHIFT
+	mvn r0,#3			@ r0 = -4 again
+	b_long branchhack_back
+vt_b4_tab:
+	.word 6, 0x2AAAAAAB, 7, 0x24924925, 18, 0x0E38E38F, 21, 0x0C30C30D
+	.ltorg
+
 @ s.92: call_quickhackfinder (.vram1) calls speedhack_manager through here.
 @ The 6502's A, X and Y are still in r5-r7 (value << 24); find_idle_loop
 @ (new_speed_hack.c) starts its simulation from them.  In ROM, so .vram1 only
